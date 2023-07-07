@@ -1,0 +1,16 @@
+{
+    "diameter": 6,
+    "power_laws": [
+        0.75
+    ],
+    "shapes": [
+        "Von Karman Ogive",
+        "Power Law"
+    ],
+    "length": {
+        "minimum": 18,
+        "maximum": 22,
+        "step": 2,
+        "number": "None"
+    }
+}

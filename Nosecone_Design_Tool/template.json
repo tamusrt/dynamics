@@ -1,0 +1,17 @@
+{
+    "diameter": "FIXED = BODY TUBE DIAMETER",
+    "power_laws": [
+        "power_law_1",
+        "power_law_n"
+    ],
+    "shapes": [
+        "shape_1",
+        "shape_n"
+    ],
+    "length": {
+        "minimum": "inches",
+        "maximum": "inches",
+        "step": "inches",
+        "number": "integer"
+    }
+}
