@@ -1,4 +1,5 @@
 # dynamics_tools
-This will be the repo for dynamics tools such as an aerodynamic design automator (fins, nose cone, and tail cone)
+This repo will house dynamics toolsets with the intent of validating aerodynamic databases and optimizing rocket design
 
 # TO DO
+- flight coefficient reconstruction and comparison with RAS, Datcom
