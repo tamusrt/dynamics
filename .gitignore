@@ -2,3 +2,6 @@
 *.f90
 *.exe
 for*.dat
+*.csv
+
+__pycache__
