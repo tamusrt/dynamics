@@ -1,0 +1,175 @@
+-------------------------------
+//Simulation Setup
+sim
+{
+    name       = "the_iic_sensitivity" 
+    timeStep   = 0.01;              // Time step
+	timeFlight = 48;                // Simulation time
+	numMC = 5;                     // Number of Monte Carlo flights
+    randRepeat = 1;
+    randSeed   = 12;                // Random seed control
+    numThreads = 1;
+}
+-------------------------------
+//Flight Variables
+//Available values:
+//time,alt,vel,accel,mach,Cd,drag,
+//temp,grav,press,rho,spSd,thrust,mass
+flt
+{
+	thrust
+    {
+        dist   = "Half Wiener";
+        mean   = 0;
+        stdDev = 0.025;
+    }
+    temp
+    {
+        dist   = "Wiener";
+        mean   = 0;
+        stdDev = 0.0125;
+    }
+    press
+    {
+        dist   = "Wiener";
+        mean   = 0;
+        stdDev = 0.0125;
+    }
+    rho
+    {
+        dist   = "Wiener";
+        mean   = 0;
+        stdDev = 0.0125;
+    }
+}
+-------------------------------
+//Atmospheric Properties
+atm
+{
+    maxAlt     = 50000;     //Atmosphere modeled up to maxAlt [ft]
+    elev       = 4540;      // [ft]
+    lat        = 33.1284;   
+    tempAmb                 // Ambient temperature [deg F]
+    {
+        dist   = "LHS";
+        upper  = 102;
+		lower  = 64.9;
+    }
+    pressAmb                // Ambient pressure (not sea level) [psi]
+    {
+        dist   = "LHS";
+		upper  = (29.80 - 4.60)  * 0.491;
+		lower  = (29.68 - 4.60) * 0.491;
+    }
+    relHum                  // Ambient humidity [-]
+    {	
+        dist   = "LHS";
+        upper  = 0.539853;
+        lower  = 0.122781;
+    }
+    windAvg                 // Average wind velocity [ft/s]
+    {
+        dist  = "Normal";
+        mean =  11.5869;
+        stdDev =   2.3198;
+        lower = 0;
+        upper = 30;
+    }
+    turbInt   = 2;          // Turbulent intensity, values ~(0-4) [-]
+    windHead                // Incoming wind direction measured CCW from east [deg]
+    {
+        dist = "Normal";
+        mean = -121;
+        stdDev = (38.8137/2);
+    }
+}
+-------------------------------
+//Body (Vehicle) Properties
+bod
+{
+    length     = 124/12;                  // [ft]
+    numFin     = 3;                         // [-]
+    refArea    = (8.42)^2 / 4 * pi / 144;   // [ft^2]
+    finArea    = 57.11 / 144;               // [ft^2]
+    massDry    = 94.4160;                   // [lb_m]
+	ixxDry 	   = (9.2/(95.0813)) * ref(massDry);   //
+    iyyDry     = (737/(95.0813)) * ref(massDry);// [lb_m * ft * s^2]
+	izzDry     = (737/(95.0813)) * ref(massDry);// [lb_m * ft * s^2]
+    posCG                     // Measured from nose [ft]
+    {
+        dist = "Normal";
+        mean = 70.2 /12;
+        stdDev = 0.5/12;
+    }
+    posTank    = (54.385+11.19)/12;                  // Centroid of Ox. tank measured from nose [ft]
+    posFuel    = (98.070+11.19)/12;                 // Centroid of fuel grain measured from nose [ft]
+    posFin     = 96.74/12;                  // Centroid of fins measured from nose [ft]
+    railLength = 30;                        // Launch rail length [ft]
+    railElev                                // Launch rail elevation from horizontal [ft]
+    {
+        dist   = "Normal";
+        mean   = 89.5;
+        stdDev = 0.5;
+    }
+    railHead                                // Launch rail heading measured CCW from east [deg]
+    {
+        dist   = "Normal";
+        mean   = -121;
+        stdDev = 1;
+    }
+    railFrict  = 0.5;                       // Aluminum to Aluminum (dry) dynamic coefficient of friction [-]
+    aeroModel  = "./input/aero/theseus_ii_c_wedge_v4_6mu.dat";   //Filepath to aerodynamic dataset
+
+}
+-------------------------------
+//Propulsion Properties
+prp
+{
+    type      = "hybrid";                   // Solid or hybrid?
+    engModel  = "lib/hem";        // HEM filepath
+    //thrustCrv = ".\input\prp\november_2017_thrust";  
+    timeStep  = 0.01;
+    //engine    = "nova_i_nozzle2_additives"; 
+    engine    = "nova_i_nozzle2";       
+    //engine    = "nova_i_additives";  
+    //engine    = "nova_i";
+    //fuel      = "htpb_additives;
+    fuel      = "htpb;
+    oxidizer  = "Nitrous Oxide";
+    interp    = "makima";
+    extrap    = "makima"
+	fillOx    = 26;                  // Oxidizer fill [lb_m]
+    tempTank  = 75;                         // Run tank temperature [deg F]
+    presTank                                // Run tank pressure    [psi]
+    {
+        dist = "LHS"
+        upper = 750;
+        lower = 700;
+    }
+    initType = "pressure";                  // Run with press. or temp. value?
+    thrustEta = 0.95;                       // Thrust efficiency, multiplicative factor [-]
+    startup                                 // Engine startup time [s]
+    {
+        dist   = "LHS"
+        lower  = 0.8;
+        upper  = 1.2;
+    }
+    forceOptimExp	= true;
+    runVentCalc = false;
+}
+imp
+{
+    runRecov = false;                                 // Simulate recovery? 
+    timeStep = 0.01;                            
+	timeRecov = 240;
+    mainAlt   = 1000;                           // Main deployment altitude
+    {
+        dist = "Uniform";
+        lower = 900;
+        upper = 1100;
+    }
+    cdsDrogue = 0.72 * 12;                      // Coefficient of drag, drogue
+    cdsMain   = 2.2  * 113.1;                   // Coefficient of drag, main
+    cdsLat    = 1.1 * (136.4/12) * (8.42/12);   // Coefficient of drag, vehicle (lateral)
+    cdsLong   = 0.82 * ((8.42^2)*pi/4 / 144);   // Coefficient of drag, vehicle (longitudinal)
+}

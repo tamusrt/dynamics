@@ -1,0 +1,87 @@
+-------------------------------
+//Simulation Setup
+
+sim
+{
+    engine          = "Nova I"              // |string|
+    type            = "Hot Fire"            // |string|
+    fuel            = "HTPB"                // |string|
+    oxidizer        = "Nitrous Oxide"       // |string|
+	additives		= false					// |logical|
+    gen
+    {
+        test        = true                  // |logical|
+        init        = true                  // |logical|
+        stat        = true                  // |logical|
+        plot        = true                  // |logical|
+        time        = true                  // |logical|
+        post        = false                 // |logical|
+    }
+    save
+    {
+        test        = false                 // |logical|
+        init        = false                 // |logical|
+        stat        = false                 // |logical|
+        plot        = false                  // |logical|
+        time        = false                 // |logical|
+        post        = false                  // |logical|
+		vars		= false					// |logical|
+    }	
+    interpMethod    = "makima"              // |string|
+    extrapMethod    = "makima"              // |string|
+    plot
+    {
+        format      = "powerpoint"          // |string| <"powerpoint", "latex", "poster">
+    }
+    time
+    {
+        init        = 0.0E+00               // [sec]
+        final       = 1.0E+02               // [sec]
+        dt          = 1.0E-02               // [sec]
+        startup     = 1.6E+00               // [sec]
+    }
+    gasPhaseUrf     = 0.6                   // [-]
+    thermalEff      = 1.0                   // [-]
+    overrideCfcnvrg = false                 // |logical|
+    includeBlowdown = true                  // |logical|
+    pAmb            = 1.473E+01             // [psia]
+    tAmb            = 7.9E+01               // [deg F]
+    forceOptimExp	= false                 // |logical|
+}
+
+tank
+{
+    m               = 1.80E+01              // [lbm]
+    initType        = "pressure"            // |string| <"pressure", "temperature">     
+    T               = 6.20E+01              // [deg F]
+    p               = 8.50E+02              // [psia]               
+}
+
+tol
+{
+    temp        = 1.0E-01                   // [deg C]
+    mass        = 2.0E-01                   // [lbm]
+    mach        = 1.0E-03                   // [-]
+    cmpr        = 1.0E-05                   // [Pa^-1]
+}
+
+const
+{
+	rhoC			= 452                   // [kg/m^3]
+	gamma
+	{
+		l			= 1.31                  // [-]
+	}
+	R				= 8.3143E+03            // [J/(mol*K)]
+	mw
+	{
+		N2O			= 4.4013E+01            // [kg/mol]
+	}
+	startupConstant	= 10					// [-]
+	cf				= 1.2					// [-]
+}
+
+vars
+{
+	save = "default"                        // |string| <"all", "default", variable names (", " separated)>
+}	
