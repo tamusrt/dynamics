@@ -1,5 +1,5 @@
-# dynamics_tools
-This repo will house dynamics toolsets with the intent of validating aerodynamic databases and optimizing rocket design
+# dynamics
+This repo will house dynamics toolsets for rocket design and analysis
 
-# TO DO
+# In-progress tasks
 - flight coefficient reconstruction and comparison with RAS, Datcom
