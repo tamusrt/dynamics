@@ -1,0 +1,60 @@
+-------------------------------
+//Simulation Setup
+sim
+{
+    name = "fd";
+
+    // Time step
+    timeStep = 0.01;
+
+    // Simulation time
+   timeFlight = 48;
+
+    // Number of Monte Carlo flights
+   numMC = 2;
+    randRepeat = 1;
+
+    // Random seed control
+    randSeed = 12;
+    NumThreads = 2;
+}
+-------------------------------
+//Flight Variables
+//Available values:
+//time,alt,vel,accel,mach,Cd,drag,
+//temp,grav,press,rho,spSd,thrust,mass
+flt
+{
+    thrust
+    {
+        dist = "Half Wiener";
+        mean = 0;
+        stdDev = 0.025;
+    }
+    temp
+    {
+        dist = "Wiener";
+        mean = 0;
+        stdDev = 0.0125;
+    }
+    press
+    {
+        dist = "Wiener";
+        mean = 0;
+        stdDev = 0.0125;
+    }
+    rho
+    {
+        dist = "Wiener";
+        mean = 0;
+        stdDev = 0.0125;
+    }
+}
+-------------------------------
+//Atmospheric Properties
+atm
+{
+    // Atmosphere modeled up to maxAlt [ft]
+    maxAlt = 30000;
+
+    // [ft]

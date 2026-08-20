@@ -1,0 +1,26 @@
+eng
+{
+	aExit		= 6.8628
+	aInj		= 
+	aThroat		= 1.6495
+	cd			= 0.26
+	dExit		= 2.956
+	dThroat		= 1.4492
+	mTank		= 0
+	volTank		= 
+	lTank		= 32.6
+}
+ 
+grain
+{
+	reg
+	{
+		scale   = 1.000E+00
+        a       = 1.876E-04
+        n       = 3.470E-01
+	}
+	rho			= 0.03056
+	l			= 
+	dGrain		= 
+	dPort		= 
+}
