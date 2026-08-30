@@ -34,27 +34,18 @@ def boat_tail(r, length):
 
 
 RAD_GEOMETRY = {
-    "nosecone_vonkarman": von_karman,
-    "nosetip": nosetip,
-    "forward": tube,
-    "aft": tube,
-    "coupler": tube,
-    "payload": tube, 
-    "bay": tube, 
-    "ring": tube,
-    "payload": tube,
-    "boat_tail": boat_tail}
+    "nosecone_vonkarman": tube} 
 
 # defining how to calculated the center of mass of a component, will be called through a later for loop
 def local_cg(component, radius: float = radius) -> float:
-    '''finding the center of a Component, based on the information initialized in the dataclass, assuming equal mass distribution,
-     ∫ x dm /  ∫ dm'''
-    # defining the radius and (internal) refrence points, using the dictionary and dataclass information
+    '''finding the center, information initialized in the dataclass, assuming equal mass distribution,
+     definition ∫ x dm /  ∫ dm'''
+    # defining the radius, using the dictionary and dataclass information
     radius_eq = sp.lambdify(x, RAD_GEOMETRY[component.name](radius, component.length), 'numpy')  
     lo, hi = 0, component.length
-    if component.hollow:
+    if component.hollow: # NEED TO FIX, IMPUT THICKNESS
         r_dot_eq = sp.diff(RAD_GEOMETRY[component.name](radius, component.length), x) 
-        r_dot_func = sp.lambdify(x, r_dot_eq, 'numpy') # lambidfy used here because it took too long otherwise
+        r_dot_func = sp.lambdify(x, r_dot_eq, 'numpy') # lambidfy used here because it took too long otherwise idk it was a fix
         # hollow definition: thin shell, r(x) sqrt(1 + r'**2) dx
         numerator = lambda xi: xi * radius_eq(xi) * np.sqrt(1 + r_dot_func(xi)**2)
         denominator = lambda xi: radius_eq(xi) * np.sqrt(1 + r_dot_func(xi)**2)
@@ -67,7 +58,7 @@ def local_cg(component, radius: float = radius) -> float:
     return float(num / den)
 
 @dataclass
-class Component: # Used for all parts of the rocket that isn't Engine or fins
+class Component: # used for all parts of the rocket that isn't Engine or fins
     '''Component(name, length, mass, offset, hollow, *center of mass), with local_cg being called'''
     name: str
     length: float   # inches
@@ -76,32 +67,90 @@ class Component: # Used for all parts of the rocket that isn't Engine or fins
     local_cg: float # inches 
     radius_: float = radius # inches
     hollow: bool = True
-    #_local_cg: float = field(init=False, repr=False)
-
-    #def __post_init__(self): # finding local cg 
-    #    self._local_cg = local_cg(self)  
 
     @property # going to print cg according to the rest of the rocket 
     def global_cg(self) -> float:
         return self.local_cg + self.offset
 
 @dataclass
+class EngineComponent:
+    name: str
+    dry_mass: float # lbs
+    offset: float  # lbs
+    length: float #inches
+    prop_mass: float = 0.0   # to hold depletion (plumbing has none)
+    radius: float = None
+
+    def cg_offset(self) -> float:
+        # assuming uniform density
+        return self.offset + self.length / 2
+
+@dataclass
 class Engine:
-    '''Engine(total_mass, end_mass, offset, length, flow_rate), lowkey this is assuming constant thrust which is not great'''
-    total_mass: float    # lbm
-    end_mass: float      # lbm 
-    offset: float        # inches, from end of boat tail 
-    length: float        # inches
-    flow_rate: float     # lbm/s
+    tank:      EngineComponent   # oxidizer
+    plumbing:  EngineComponent   # injector, valves, lines
+    grain:     EngineComponent   # fuel grain + casing
+    length: float #inches 
+    offset: float #inches
+    thrusts:   np.ndarray = None
+    times:     np.ndarray = None
 
-    def __post_init__(self): # finding total burn time of the engine
-        self.burn_time = (self.total_mass - self.end_mass) / self.flow_rate
+    def __post_init__(self):
+        self._curve_ready = False
+        if self.thrusts is not None and self.times is not None:
+            self._process_curve()
 
-    def mass_at(self, t: np.ndarray) -> np.ndarray:
-        return np.where(t >= self.burn_time, self.end_mass, self.total_mass - self.flow_rate * t)
+    def set_curve(self, thrusts, times):
+        self.thrusts = thrusts
+        self.times = times
+        self._process_curve()
 
-    def cg_at(self, t: np.ndarray) -> np.ndarray:
-        return np.full_like(t, self.offset + self.length / 2)
+    def _process_curve(self):
+        assert len(self.thrusts) == len(self.times)
+        cumulative = np.zeros(len(self.times))
+        cumulative[1:] = np.cumsum(0.5 * (self.thrusts[:-1] + self.thrusts[1:]) * np.diff(self.times))
+        self.total_impulse = cumulative[-1]
+        self._frac_expended = cumulative / self.total_impulse
+        self.burn_time = self.times[-1]
+        self._curve_ready = True
+
+    def _check_ready(self):
+        if not self._curve_ready:
+            raise RuntimeError("Thrust curve not set — call set_curve(thrusts, times) first")
+
+    def _frac_at(self, t):
+        t = np.asarray(t, dtype=float)
+        frac = np.interp(t, self.times, self._frac_expended, left=0.0, right=1.0)
+        return np.where(t >= self.burn_time, 1.0, frac)
+
+    def thrust_at(self, t):
+        self._check_ready()
+        t = np.asarray(t, dtype=float)
+        return np.interp(t, self.times, self.thrusts, left=0.0, right=0.0)
+
+    def mass_at(self, t):
+        self._check_ready()
+        frac = self._frac_at(t)
+        # oxidizer depletes with the thrust curve; grain regression can use
+        # the same frac, or a separate curve if you're tracking O/F ratio
+        tank_mass = self.tank.dry_mass + self.tank.prop_mass * (1 - frac)
+        grain_mass = self.grain.dry_mass + self.grain.prop_mass * (1 - frac)
+        plumbing_mass = self.plumbing.dry_mass
+        return tank_mass + grain_mass + plumbing_mass
+
+    def cg_at(self, t):
+        self._check_ready()
+        frac = self._frac_at(t)
+
+        tank_mass = self.tank.dry_mass + self.tank.prop_mass * (1 - frac)
+        grain_mass = self.grain.dry_mass + self.grain.prop_mass * (1 - frac)
+        plumbing_mass = self.plumbing.dry_mass
+
+        total = tank_mass + grain_mass + plumbing_mass
+        moment = (tank_mass * self.tank.cg_offset()
+                  + grain_mass * self.grain.cg_offset()
+                  + plumbing_mass * self.plumbing.cg_offset())
+        return moment / total
 
 @dataclass
 class Fins:
@@ -135,7 +184,7 @@ class Fins:
     def iyy_contribution(self, rocket_cg: float) -> float:
         """total iyy of fin, including parallel axis portion"""
         d_axial = self._local_cg_axial - rocket_cg  
-        d_radial = self._local_cg_radial             
+        d_radial = self._local_cg_radial 
         d_squared = d_axial**2 + d_radial**2
         return self.iyy_cm() + self.mass * d_squared    
 
@@ -156,8 +205,10 @@ def total_cg(rocket, t, radius=radius): # calling the cg of each component funct
     return global_cgs, cg_total, total_mass
 
 def iyy_body(component, rocket_cg, radius=radius):
-    r_func = sp.lambdify(x, RAD_GEOMETRY[component.name](radius, component.length), 'numpy')
-
+    if component.name in RAD_GEOMETRY:
+        r_func = sp.lambdify(x, RAD_GEOMETRY[component.name](radius, component.length), 'numpy')
+    else:
+        r_func = sp.lambdify(x, sp.Integer(5), 'numpy')
     lo, hi = component.offset, component.offset + component.length
 
     if component.hollow:
@@ -181,7 +232,7 @@ def total_iyy(rocket_parts, t: np.ndarray, rocket_cg: np.ndarray) -> np.ndarray:
     components = [p for p in rocket_parts if isinstance(p, Component)]
     fins = [p for p in rocket_parts if isinstance(p, Fins)]
     engine = next(p for p in rocket_parts if isinstance(p, Engine))
-    iyy  = sum(iyy_body(c, rocket_cg) for c in components)
+    iyy = sum(iyy_body(c, rocket_cg) for c in components)
     iyy += sum(fin.iyy_contribution(rocket_cg) for fin in fins)
     iyy += iyy_engine(engine, t, rocket_cg)   # pass t separately
 
@@ -195,7 +246,7 @@ def iyy_engine(engine, t: np.ndarray, rocket_cg: np.ndarray, radius=radius) -> n
 
     return engine.mass_at(t) * num / den  
 
-# Math Functions 
+# math Functions 
 
 def angle(v_up, v_dr, v_cr, tilt):
     '''flight angle and angle of attack'''
@@ -219,9 +270,9 @@ def velocity(x, y, z, t):
     return np.insert(magnitude(vx,vy,vz), -1, 0)
 
 def acceleration(v_up, v_dr, v_cr, apogee, t):
-    v_up_smooth = savgol_filter(v_up, window_length=51, polyorder=3)
-    v_dr_smooth = savgol_filter(v_dr, window_length=51, polyorder=3)
-    v_cr_smooth = savgol_filter(v_cr, window_length=51, polyorder=3)
+    v_up_smooth = savgol_filter(v_up, window_length=71, polyorder=3)
+    v_dr_smooth = savgol_filter(v_dr, window_length=71, polyorder=3)
+    v_cr_smooth = savgol_filter(v_cr, window_length=71, polyorder=3)
 
     accelz = np.resize(np.gradient(v_up_smooth[:apogee], t[:apogee]), t.shape)
     accely = np.resize(np.gradient(v_dr_smooth[:apogee], t[:apogee]), t.shape)
@@ -230,6 +281,76 @@ def acceleration(v_up, v_dr, v_cr, apogee, t):
     total = np.resize(magnitude(accelx, accely, accelz), t.shape)
     
     return accelx, accely, accelz, total
+
+def ndcheck_no_gyro(in_a, in_dr, in_cr, t, mass, thrust, apogee, gravity=9.81, eps=1e-8):
+
+    # single derivative for velocity (less noisy than double-diff)
+    
+    vdr = np.gradient(in_dr[:apogee], t[:apogee])
+    vcr = np.gradient(in_cr[:apogee], t[:apogee])
+    va  = np.gradient(in_a[:apogee], t[:apogee])
+    v_vec = np.stack([vdr, vcr, va], axis=-1)          # (N,3)
+    v_mag = np.linalg.norm(v_vec, axis=-1, keepdims=True)
+    x_hat = v_vec / np.maximum(v_mag, eps)              # avoid div by zero at apex/launch
+    print(len(vdr), len(t))
+    # acceleration
+    adr = np.gradient(vdr, t[:apogee])
+    acr = np.gradient(vcr, t[:apogee])
+    aa  = np.gradient(va, t[:apogee])
+    a_vec = np.stack([adr, acr, aa], axis=-1)           # (N,3)
+
+    g_vec = np.array([0, 0, -gravity])
+    fnet_vec = mass[:apogee, None]*a_vec - mass[:apogee, None]*g_vec  # (N,3)
+
+    # normal direction: component of accel perpendicular to velocity
+    a_dot_x = np.sum(a_vec * x_hat, axis=-1, keepdims=True)
+    a_perp = a_vec - a_dot_x * x_hat
+    a_perp_mag = np.linalg.norm(a_perp, axis=-1, keepdims=True)
+    z_hat = a_perp / np.maximum(a_perp_mag, eps)
+
+    faxial = np.sum(fnet_vec * x_hat, axis=-1)
+    fn     = np.sum(fnet_vec * z_hat, axis=-1)
+    fd     = faxial - thrust[:apogee]
+
+    return fn, fd
+
+def ndcheck_with_aoa(in_a, in_dr, in_cr, t, mass, thrust, aoa, gravity=9.81, eps=1e-8):
+    """
+    aoa: array of angle-of-attack values (radians), same length as t
+    """
+    aoa = aoa/180 * np.pi
+    vdr = np.gradient(in_dr, t)
+    vcr = np.gradient(in_cr, t)
+    va  = np.gradient(in_a, t)
+    v_vec = np.stack([vdr, vcr, va], axis=-1)
+    v_mag = np.linalg.norm(v_vec, axis=-1, keepdims=True)
+    x_hat_v = v_vec / np.maximum(v_mag, eps)
+
+    adr = np.gradient(vdr, t)
+    acr = np.gradient(vcr, t)
+    aa  = np.gradient(va, t)
+    a_vec = np.stack([adr, acr, aa], axis=-1)
+
+    g_vec = np.array([0, 0, -gravity])
+    fnet_vec = mass[:, None]*a_vec - mass[:, None]*g_vec
+
+    # perpendicular direction (maneuver-plane normal), as before
+    a_dot_x = np.sum(a_vec * x_hat_v, axis=-1, keepdims=True)
+    a_perp = a_vec - a_dot_x * x_hat_v
+    a_perp_mag = np.linalg.norm(a_perp, axis=-1, keepdims=True)
+    n_hat = a_perp / np.maximum(a_perp_mag, eps)
+
+    # rotate by AoA within the maneuver plane
+    cos_a = np.cos(aoa)[:, None]
+    sin_a = np.sin(aoa)[:, None]
+    x_hat_body =  cos_a * x_hat_v + sin_a * n_hat
+    z_hat_body = -sin_a * x_hat_v + cos_a * n_hat
+
+    faxial = np.sum(fnet_vec * x_hat_body, axis=-1)
+    fn     = np.sum(fnet_vec * z_hat_body, axis=-1)
+    fd     = faxial - thrust
+
+    return fn, fd
 
 def theta(v_dr,v_cr):
     '''finding the angle between the rockets direction and horizon'''
@@ -248,6 +369,7 @@ def thrust(weight, theta, accel_x, accel_y, accel_z, Fdx, Fdy, Fdz):
 
 def fd(thrust, tilt, theta, weight, accelx, accely, accelz):
     '''finding the drag force acting upon the rocket, based on in flight data with thrust being predicted'''
+
     # finding force provided by thrust in respective directions, subtracting total force in that direction 
     fdx = thrust * np.sin(np.radians(tilt)) * np.cos(np.radians(theta)) - weight/32.2 * accelx
     fdy = thrust * np.sin(np.radians(tilt)) * np.sin(np.radians(theta)) - weight/32.2 * accely
@@ -255,27 +377,12 @@ def fd(thrust, tilt, theta, weight, accelx, accely, accelz):
     
     fd = magnitude(fdx, fdy, fdz)
     
-    # clean transitions
-    thrust_clean = np.where(thrust < 10, 0, thrust)
-    burn_start = np.where(np.diff(thrust_clean) > 50)[0]
-    burn_end   = np.where(np.diff(thrust_clean) < -50)[0]
-
-    mask = np.ones(len(fd), dtype=bool)
-    for idx in np.concatenate([burn_start, burn_end]):
-        mask[max(0, idx-5) : idx+5] = False
-
-    fd  = pd.Series(np.where(mask, fd,  np.nan)).interpolate(limit_direction='both').values
-    fdx = pd.Series(np.where(mask, fdx, np.nan)).interpolate(limit_direction='both').values
-    fdy = pd.Series(np.where(mask, fdy, np.nan)).interpolate(limit_direction='both').values
-    fdz = pd.Series(np.where(mask, fdz, np.nan)).interpolate(limit_direction='both').values
     return fdx, fdy, fdz, fd
 
-def fn1(tilt, theta, weight, accelx, accely, accelz):
+def fn1(tilt, theta, weight, ax, ay, az):
     '''finding the normal force acting on the rocket, based on accelerometer data'''
     # removing acceleration due to gravity, subtracting by including the angle 
-    ax = accelx - 32.174 * np.sin(np.radians(tilt)) * np.cos(np.radians(theta))
-    ay = accely - 32.174 * np.sin(np.radians(tilt)) * np.sin(np.radians(theta))
-    az = accelz + 32.174 * np.cos(np.radians(tilt))
+    az = az + 32.174 
     # finding axial unit vector, concerning how force is being distributed 
     axialx = np.sin(np.radians(tilt)) * np.cos(np.radians(theta))
     axialy = np.sin(np.radians(tilt)) * np.sin(np.radians(theta))
@@ -297,8 +404,7 @@ def density(pressure, temperature):
     '''density using ideal gas law, constants used reflect atm and F'''
     return (pressure * 2116.22)/(53.35*((temperature + 459.67)))
 
-def cd(fd,density,velocity,diameter=radius/12):
-    '''drag coefficent'''
+def cd(fd, density, velocity, diameter=radius/12):
     return (fd)/(density*velocity**2*((diameter/2)**2 * np.pi)*0.5)
 
 def cna(fn, density, velocity, aoa, diameter=6):
