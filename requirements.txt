@@ -1,0 +1,14 @@
+# SRT dynamics toolset dependencies
+# Covers: datcom/, design/, postflight_analysis/, tools/
+
+# Core numerics / data
+numpy
+scipy
+pandas
+sympy
+
+# Plotting
+matplotlib
+
+# GUI automation (RASAero + DATCOM wrappers, Fin/Nosecone design tools)
+pyautogui
