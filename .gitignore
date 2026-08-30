@@ -5,3 +5,6 @@ for*.dat
 *.csv
 
 __pycache__
+
+.venv/
+venv/
