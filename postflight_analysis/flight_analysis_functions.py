@@ -4,6 +4,7 @@ import math
 import matplotlib.pyplot as plt
 import numpy as np
 from scipy.signal import savgol_filter, stft
+from scipy.ndimage import uniform_filter1d
 from dataclasses import dataclass, field
 from typing import List, Tuple
 from scipy import integrate as sci_integrate
@@ -16,45 +17,62 @@ import pandas as pd
 
 radius = 3
 
+G_FT = 32.174   # ft/s^2, and the lbm-ft/(lbf-s^2) unit conversion
+IN_PER_FT = 12
+
 x = sp.symbols('x')
 
 # defining the radius of various components so that they can later be caled from the dictionary, same number of arguments
 def nosetip(r, length):
-    return r - r/length * x
+    return r/length * x
 
 def von_karman(r, length):
     theta = sp.acos(1 - 2*x/length)
     return r / sp.sqrt(sp.pi) * sp.sqrt(theta - sp.sin(2*theta)/2)
 
 def tube(r, length):
-    return sp.Integer(r)
+    return sp.Float(r)
 
 def boat_tail(r, length):
     return r - 0.24/length * x
 
 
 RAD_GEOMETRY = {
-    "nosecone_vonkarman": tube} 
+    "nosetip": nosetip,
+    "nose_cone": von_karman,
+    "tail": boat_tail}
+
+def rad_func(component):
+    '''numeric r(xi) for a component, clipped to stay real and non-negative'''
+    expr = RAD_GEOMETRY.get(component.name, tube)(component.radius_, component.length)
+    f = sp.lambdify(x, expr, 'numpy')
+    def r_at(xi):
+        xi = np.clip(np.asarray(xi, float), 0, component.length)
+        if expr.is_number:
+            return np.broadcast_to(float(expr), np.shape(xi)).astype(float)
+        with np.errstate(invalid='ignore'):
+            return np.nan_to_num(np.maximum(np.asarray(f(xi), float), 0))
+    return r_at
 
 # defining how to calculated the center of mass of a component, will be called through a later for loop
 def local_cg(component, radius: float = radius) -> float:
     '''finding the center, information initialized in the dataclass, assuming equal mass distribution,
      definition ∫ x dm /  ∫ dm'''
     # defining the radius, using the dictionary and dataclass information
-    radius_eq = sp.lambdify(x, RAD_GEOMETRY[component.name](radius, component.length), 'numpy')  
+    radius_eq = rad_func(component)
     lo, hi = 0, component.length
     if component.hollow: # NEED TO FIX, IMPUT THICKNESS
-        r_dot_eq = sp.diff(RAD_GEOMETRY[component.name](radius, component.length), x) 
-        r_dot_func = sp.lambdify(x, r_dot_eq, 'numpy') # lambidfy used here because it took too long otherwise idk it was a fix
-        # hollow definition: thin shell, r(x) sqrt(1 + r'**2) dx
-        numerator = lambda xi: xi * radius_eq(xi) * np.sqrt(1 + r_dot_func(xi)**2)
-        denominator = lambda xi: radius_eq(xi) * np.sqrt(1 + r_dot_func(xi)**2)
+        # hollow definition: thin shell, mass per unit length goes as r(x)
+        numerator = lambda xi: xi * float(radius_eq(xi))
+        denominator = lambda xi: float(radius_eq(xi))
     else:
-        numerator = lambda xi: xi * radius_eq(xi)**2
-        denominator = lambda xi: radius_eq(xi)**2
+        numerator = lambda xi: xi * float(radius_eq(xi))**2
+        denominator = lambda xi: float(radius_eq(xi))**2
     # integral(num)/integral(den)
     num, _ = sci_integrate.quad(numerator, lo, hi)
     den, _ = sci_integrate.quad(denominator, lo, hi)
+    if den == 0:
+        return component.length / 2
     return float(num / den)
 
 @dataclass
@@ -63,10 +81,16 @@ class Component: # used for all parts of the rocket that isn't Engine or fins
     name: str
     length: float   # inches
     mass: float     # lbm 
-    offset: float   # inches, from end of boat tail  
-    local_cg: float # inches 
+    offset: float   # inches, station of the forward face, x=0 at the nose tip
+    local_cg: float = None # inches aft of the forward face, None uses the centroid
     radius_: float = radius # inches
     hollow: bool = True
+
+    def __post_init__(self):
+        if self.local_cg is None:
+            self.local_cg = local_cg(self)
+        elif not 0 <= self.local_cg <= self.length:
+            raise ValueError(f'{self.name}: local_cg outside [0, {self.length}]')
 
     @property # going to print cg according to the rest of the rocket 
     def global_cg(self) -> float:
@@ -150,7 +174,8 @@ class Engine:
         moment = (tank_mass * self.tank.cg_offset()
                   + grain_mass * self.grain.cg_offset()
                   + plumbing_mass * self.plumbing.cg_offset())
-        return moment / total
+        # cg_offset() is measured aft of the engine's own forward face
+        return self.offset + moment / total
 
 @dataclass
 class Fins:
@@ -159,16 +184,14 @@ class Fins:
     tip_chord: float   # inches, outer edge
     span: float   # inches, root to tip
     offset: float   # distance from nose to fin root leading edge
+    roll: float = 0.0   # degrees about the roll axis, 0 lies in the pitch plane
 
     def __post_init__(self): # creating the center of mass from the shape instead of radius equation
         # centroid of trapezoid in axial direction
-        self._local_cg_axial = (
-            self.offset + 
-            (self.root_chord/2 + 
-             (self.tip_chord - self.root_chord)/3 *  # trapezoidal centroid
-             (self.root_chord + 2*self.tip_chord) / 
-             (self.root_chord + self.tip_chord))
-        )
+        # chordwise centroid of a trapezoid with an unswept leading edge,
+        # int(c^2/2 ds) / int(c ds) = (r^2 + r t + t^2) / (3 (r + t))
+        r, t = self.root_chord, self.tip_chord
+        self._local_cg_axial = self.offset + (r**2 + r*t + t**2) / (3*(r + t))
         # centroid 
         self._local_cg_radial = radius + self.span * ((2*self.tip_chord + self.root_chord) / (3*(self.root_chord + self.tip_chord)))
 
@@ -177,14 +200,17 @@ class Fins:
         return 0.5 * (self.root_chord + self.tip_chord) * self.span
 
     def iyy_cm(self) -> float:
-        """iyy of shape (approximate because no radius equation was written.... shh)"""
+        """iyy of shape, chordwise spread plus the pitch-plane share of the span"""
         chord_avg = (self.root_chord + self.tip_chord) / 2
-        return (1/12) * self.mass * chord_avg**2
+        axial = (1/12) * self.mass * chord_avg**2
+        spanwise = (1/12) * self.mass * self.span**2
+        return axial + spanwise * np.cos(np.radians(self.roll))**2
 
     def iyy_contribution(self, rocket_cg: float) -> float:
         """total iyy of fin, including parallel axis portion"""
-        d_axial = self._local_cg_axial - rocket_cg  
-        d_radial = self._local_cg_radial 
+        d_axial = self._local_cg_axial - rocket_cg
+        # only the pitch-plane share of the radial offset feeds iyy
+        d_radial = self._local_cg_radial * np.cos(np.radians(self.roll))
         d_squared = d_axial**2 + d_radial**2
         return self.iyy_cm() + self.mass * d_squared    
 
@@ -192,8 +218,10 @@ def total_cg(rocket, t, radius=radius): # calling the cg of each component funct
     components = [c for c in rocket if isinstance(c, Component)] # fins have their own internal function, rather than definig outside
     engine = [p for p in rocket if isinstance(p, Engine)][0]
 
-    masses = np.array([c.mass for c in components])       
-    global_cgs = np.array([c.global_cg for c in components])
+    fins = [f for f in rocket if isinstance(f, Fins)]
+    masses = np.array([c.mass for c in components] + [f.mass for f in fins])
+    global_cgs = np.array([c.global_cg for c in components]
+                          + [f._local_cg_axial for f in fins])
 
     # engine portion 
     m_engine = engine.mass_at(t) # numpy array, of the mass and cg as the engine empties 
@@ -204,29 +232,30 @@ def total_cg(rocket, t, radius=radius): # calling the cg of each component funct
     cg_total = (masses @ global_cgs + m_engine * x_engine) / total_mass
     return global_cgs, cg_total, total_mass
 
-def iyy_body(component, rocket_cg, radius=radius):
-    if component.name in RAD_GEOMETRY:
-        r_func = sp.lambdify(x, RAD_GEOMETRY[component.name](radius, component.length), 'numpy')
-    else:
-        r_func = sp.lambdify(x, sp.Integer(5), 'numpy')
-    lo, hi = component.offset, component.offset + component.length
+def section_moments(component):
+    '''mass weighted moments of a section about the nose datum, where mass per
+    unit length goes as r for a thin shell and r^2 for a solid section:
+    m0 = int w dxi, m1 = int x w dxi, m2 = int x^2 w dxi, mr = int r^2 w dxi'''
+    r_at = rad_func(component)
+    power = 1 if component.hollow else 2
+    w = lambda xi: float(r_at(xi))**power
+    station = lambda xi: component.offset + xi
+    hi = component.length
+    m0, _ = sci_integrate.quad(w, 0, hi)
+    m1, _ = sci_integrate.quad(lambda xi: station(xi) * w(xi), 0, hi)
+    m2, _ = sci_integrate.quad(lambda xi: station(xi)**2 * w(xi), 0, hi)
+    mr, _ = sci_integrate.quad(lambda xi: float(r_at(xi))**2 * w(xi), 0, hi)
+    return m0, m1, m2, mr
 
-    if component.hollow:
-        def num_integrand(xi, cg):
-            return (xi - cg)**2 * r_func(xi - component.offset)
-        def den_integrand(xi, cg):
-            return r_func(xi - component.offset)
-    else:
-        def num_integrand(xi, cg):
-            return (xi - cg)**2 * r_func(xi - component.offset)**2
-        def den_integrand(xi, cg):
-            return r_func(xi - component.offset)**2
-
-    # quad_vec integrates over xi for each value of cg simultaneously
-    num, _ = quad_vec(lambda xi: num_integrand(xi, rocket_cg), lo, hi)  # (100000,)
-    den, _ = quad_vec(lambda xi: den_integrand(xi, rocket_cg), lo, hi)  # (100000,)
-
-    return component.mass * num / den 
+def iyy_body(component, rocket_cg):
+    '''iyy about a pitch axis through rocket_cg, vectorized over rocket_cg.
+    int (x - cg)^2 w dxi expands to m2 - 2 cg m1 + cg^2 m0, so the section is
+    integrated once and every cg after that is pure arithmetic'''
+    m0, m1, m2, mr = section_moments(component)
+    # a section's own transverse term: r^2/2 for a thin shell, r^2/4 for solid
+    k = 0.5 if component.hollow else 0.25
+    cg = np.asarray(rocket_cg, float)
+    return component.mass * ((m2 - 2*cg*m1 + cg**2*m0) + k*mr) / m0
 
 def total_iyy(rocket_parts, t: np.ndarray, rocket_cg: np.ndarray) -> np.ndarray:
     components = [p for p in rocket_parts if isinstance(p, Component)]
@@ -239,18 +268,21 @@ def total_iyy(rocket_parts, t: np.ndarray, rocket_cg: np.ndarray) -> np.ndarray:
     return iyy
 
 def iyy_engine(engine, t: np.ndarray, rocket_cg: np.ndarray, radius=radius) -> np.ndarray:
+    '''constant radius section, so the moments are analytic'''
     lo, hi = engine.offset, engine.offset + engine.length
-
-    num, _ = quad_vec(lambda xi: (xi - rocket_cg)**2 * radius**2, lo, hi)
-    den, _ = quad_vec(lambda xi: radius**2, lo, hi)
-
-    return engine.mass_at(t) * num / den  
+    m0 = hi - lo
+    m1 = (hi**2 - lo**2) / 2
+    m2 = (hi**3 - lo**3) / 3
+    cg = np.asarray(rocket_cg, float)
+    return engine.mass_at(t) * ((m2 - 2*cg*m1 + cg**2*m0) / m0 + 0.25*radius**2)
 
 # math Functions 
 
 def angle(v_up, v_dr, v_cr, tilt):
     '''flight angle and angle of attack'''
-    ang = np.degrees(np.arccos(v_up / np.sqrt(v_up**2 + v_dr**2 + v_cr**2)))
+    speed = np.sqrt(v_up**2 + v_dr**2 + v_cr**2)
+    ratio = np.divide(v_up, speed, out=np.zeros_like(speed, dtype=float), where=speed > 1e-9)
+    ang = np.degrees(np.arccos(np.clip(ratio, -1, 1)))
     aoa = tilt - ang
     return ang, aoa
 
@@ -267,22 +299,25 @@ def velocity(x, y, z, t):
     vx = np.diff(x)/np.diff(t)
     vy = np.diff(y)/np.diff(t)
     vz = np.diff(z)/np.diff(t)
-    return np.insert(magnitude(vx,vy,vz), -1, 0)
+    return np.insert(magnitude(vx,vy,vz), 0, 0)
 
-def acceleration(v_up, v_dr, v_cr, apogee, t):
-    v_up_smooth = savgol_filter(v_up, window_length=71, polyorder=3)
-    v_dr_smooth = savgol_filter(v_dr, window_length=71, polyorder=3)
-    v_cr_smooth = savgol_filter(v_cr, window_length=71, polyorder=3)
+def pad_to(arr, n):
+    '''right-pad with zeros to length n'''
+    arr = np.asarray(arr, float)
+    return arr[:n] if arr.size >= n else np.concatenate([arr, np.zeros(n - arr.size)])
 
-    accelz = np.resize(np.gradient(v_up_smooth[:apogee], t[:apogee]), t.shape)
-    accely = np.resize(np.gradient(v_dr_smooth[:apogee], t[:apogee]), t.shape)
-    accelx = np.resize(np.gradient(v_cr_smooth[:apogee], t[:apogee]), t.shape)
+def acceleration(v_up, v_dr, v_cr, apogee, t, window_length=71):
+    '''accelerations are computed to apogee, samples past it are zero padding'''
+    smooth = savgol_filter(np.stack([v_cr, v_dr, v_up])[:, :apogee],
+                           window_length=window_length, polyorder=3, axis=-1)
+    accelx, accely, accelz = (pad_to(np.gradient(v, t[:apogee]), t.shape[0])
+                              for v in smooth)
 
-    total = np.resize(magnitude(accelx, accely, accelz), t.shape)
+    total = magnitude(accelx, accely, accelz)
     
     return accelx, accely, accelz, total
 
-def ndcheck_no_gyro(in_a, in_dr, in_cr, t, mass, thrust, apogee, gravity=9.81, eps=1e-8):
+def ndcheck_no_gyro(in_a, in_dr, in_cr, t, mass, thrust, apogee, gravity=G_FT, eps=1e-8):
 
     # single derivative for velocity (less noisy than double-diff)
     
@@ -292,7 +327,6 @@ def ndcheck_no_gyro(in_a, in_dr, in_cr, t, mass, thrust, apogee, gravity=9.81, e
     v_vec = np.stack([vdr, vcr, va], axis=-1)          # (N,3)
     v_mag = np.linalg.norm(v_vec, axis=-1, keepdims=True)
     x_hat = v_vec / np.maximum(v_mag, eps)              # avoid div by zero at apex/launch
-    print(len(vdr), len(t))
     # acceleration
     adr = np.gradient(vdr, t[:apogee])
     acr = np.gradient(vcr, t[:apogee])
@@ -310,11 +344,11 @@ def ndcheck_no_gyro(in_a, in_dr, in_cr, t, mass, thrust, apogee, gravity=9.81, e
 
     faxial = np.sum(fnet_vec * x_hat, axis=-1)
     fn     = np.sum(fnet_vec * z_hat, axis=-1)
-    fd     = faxial - thrust[:apogee]
+    fd     = thrust[:apogee] - faxial   # drag opposes the velocity vector
 
     return fn, fd
 
-def ndcheck_with_aoa(in_a, in_dr, in_cr, t, mass, thrust, aoa, gravity=9.81, eps=1e-8):
+def ndcheck_with_aoa(in_a, in_dr, in_cr, t, mass, thrust, aoa, gravity=G_FT, eps=1e-8):
     """
     aoa: array of angle-of-attack values (radians), same length as t
     """
@@ -348,90 +382,152 @@ def ndcheck_with_aoa(in_a, in_dr, in_cr, t, mass, thrust, aoa, gravity=9.81, eps
 
     faxial = np.sum(fnet_vec * x_hat_body, axis=-1)
     fn     = np.sum(fnet_vec * z_hat_body, axis=-1)
-    fd     = faxial - thrust
+    fd     = thrust - faxial            # drag opposes the velocity vector
 
     return fn, fd
 
 def theta(v_dr,v_cr):
-    '''finding the angle between the rockets direction and horizon'''
-    with np.errstate(divide='ignore', invalid='ignore'):
-        result = np.degrees(np.arctan(v_dr/v_cr))
-        result[~np.isfinite(result)] = 0  
-    return result
+    '''azimuth of the velocity vector in the horizontal plane, degrees in (-180, 180]'''
+    return np.nan_to_num(np.degrees(np.arctan2(v_dr, v_cr)))
+
+def axial_unit(tilt, theta):
+    '''body axial unit vector stacked as (..., 3), from tilt off vertical
+    and horizontal azimuth'''
+    st, ct = np.sin(np.radians(tilt)), np.cos(np.radians(tilt))
+    return np.stack([st*np.cos(np.radians(theta)), st*np.sin(np.radians(theta)),
+                     np.broadcast_to(ct, np.shape(st))], axis=-1)
+
+def specific_force(accelx, accely, accelz):
+    '''acceleration stacked as (..., 3) with gravity added back into z'''
+    return np.stack([accelx, accely, accelz + G_FT], axis=-1)
 
 def thrust(weight, theta, accel_x, accel_y, accel_z, Fdx, Fdy, Fdz):
-    '''force delivered by thrust acting upon the rocket, with drag force being compared from ras'''
-    ftx = weight/32.2 * accel_x + Fdx 
-    fty = weight/32.2 * accel_y + Fdy 
-    ftz = weight/32.2 * (accel_z + 32.2) + Fdz 
-    thrust = magnitude(ftx, fty, ftz)
-    return thrust 
+    '''thrust implied by measured acceleration and a known aerodynamic force vector.
+    this is the algebraic inverse of fd(), so it is an independent estimate
+    only when Fd comes from an independent aerodynamic model'''
+    mass = np.asarray(weight, float)/G_FT
+    ft = mass[..., None] * specific_force(accel_x, accel_y, accel_z) \
+         + np.stack([Fdx, Fdy, Fdz], axis=-1)
+    return np.linalg.norm(ft, axis=-1)
 
 def fd(thrust, tilt, theta, weight, accelx, accely, accelz):
-    '''finding the drag force acting upon the rocket, based on in flight data with thrust being predicted'''
+    '''total aerodynamic force acting upon the rocket, based on in flight data with
+    thrust being predicted. the returned vector points opposite the aerodynamic
+    force; resolve it with wind_axes() for drag or with the body axis for axial force'''
 
-    # finding force provided by thrust in respective directions, subtracting total force in that direction 
-    fdx = thrust * np.sin(np.radians(tilt)) * np.cos(np.radians(theta)) - weight/32.2 * accelx
-    fdy = thrust * np.sin(np.radians(tilt)) * np.sin(np.radians(theta)) - weight/32.2 * accely
-    fdz = thrust * np.cos(np.radians(tilt)) - weight/32.2 * (accelz + 32.174) # adding gravity back in
-    
-    fd = magnitude(fdx, fdy, fdz)
-    
-    return fdx, fdy, fdz, fd
+    # finding force provided by thrust in respective directions, subtracting total force in that direction
+    mass = np.asarray(weight, float)/G_FT
+    f = np.asarray(thrust, float)[..., None] * axial_unit(tilt, theta) \
+        - mass[..., None] * specific_force(accelx, accely, accelz)
+
+    return f[..., 0], f[..., 1], f[..., 2], np.linalg.norm(f, axis=-1)
+
+def wind_axes(fdx, fdy, fdz, v_cr, v_dr, v_up, eps=1e-9):
+    '''resolve the aerodynamic force into drag along the relative wind and lift
+    perpendicular to it. still air is assumed, so the relative wind is the
+    vehicle velocity; subtract a measured wind vector from it when one is available'''
+    f = np.stack([fdx, fdy, fdz], axis=-1)
+    v = np.stack([v_cr, v_dr, v_up], axis=-1)
+    vhat = v / np.maximum(np.linalg.norm(v, axis=-1, keepdims=True), eps)
+    drag = np.sum(f * vhat, axis=-1)
+    lift = np.linalg.norm(f - drag[..., None] * vhat, axis=-1)
+    return drag, lift
 
 def fn1(tilt, theta, weight, ax, ay, az):
     '''finding the normal force acting on the rocket, based on accelerometer data'''
     # removing acceleration due to gravity, subtracting by including the angle 
-    az = az + 32.174 
+    accel = specific_force(ax, ay, az)
     # finding axial unit vector, concerning how force is being distributed 
-    axialx = np.sin(np.radians(tilt)) * np.cos(np.radians(theta))
-    axialy = np.sin(np.radians(tilt)) * np.sin(np.radians(theta))
-    axialz = np.cos(np.radians(tilt))
+    axial = axial_unit(tilt, theta)
     # dot product of acceleration for axial acceleration
-    a_axial = ax * axialx + ay * axialy + az * axialz
+    a_axial = np.sum(accel * axial, axis=-1, keepdims=True)
     # subtract component, multuply by mass 
-    Fnx = (ax - a_axial * axialx) * weight/32.174
-    Fny = (ay - a_axial * axialy) * weight/32.174
-    Fnz = (az - a_axial * axialz) * weight/32.174
-    Fn = magnitude(Fnx, Fny, Fnz)
-    return Fnx, Fny, Fnz, Fn
+    Fn = (accel - a_axial * axial) * (np.asarray(weight, float)/G_FT)[..., None]
+    return Fn[..., 0], Fn[..., 1], Fn[..., 2], np.linalg.norm(Fn, axis=-1)
 
 def fn2(weight, g_accelx, g_accelz):
     '''finding the normal force acting on the rocket, assuming that the gyroscope is the acceleration'''
-    return weight/32.2 * magnitude(g_accelx, g_accelz)
+    return weight/G_FT * magnitude(g_accelx, g_accelz)
 
 def density(pressure, temperature):
     '''density using ideal gas law, constants used reflect atm and F'''
     return (pressure * 2116.22)/(53.35*((temperature + 459.67)))
 
-def cd(fd, density, velocity, diameter=radius/12):
-    return (fd)/(density*velocity**2*((diameter/2)**2 * np.pi)*0.5)
+def dynamic_pressure(density, velocity):
+    '''q in lbf/ft^2 from density in lbm/ft^3 and velocity in ft/s'''
+    return 0.5 * density * velocity**2 / G_FT
 
-def cna(fn, density, velocity, aoa, diameter=6):
-    '''normal force coefficent, derivative of the coefficent with respect to angle of attack'''
-    cn = (fn)/(density*velocity**2*(((diameter/2)**2 * np.pi)*0.5))
-    # derivative of normal coefficent 
-    cna = np.gradient(cn, np.radians(aoa))
+def ref_area(diameter):
+    '''diameter in feet'''
+    return np.pi * (diameter/2)**2
+
+def cd(fd, density, velocity, diameter=2*radius/IN_PER_FT):
+    '''diameter in feet'''
+    denom = dynamic_pressure(density, velocity) * ref_area(diameter)
+    return np.divide(fd, denom, out=np.full_like(np.asarray(fd, float), np.nan),
+                     where=np.abs(denom) > 1e-9)
+
+def rolling_slope(xv, yv, window, min_var):
+    '''rolling least squares slope dy/dx, nan safe and valid for a non-monotonic x'''
+    good = np.isfinite(xv) & np.isfinite(yv)
+    xs, ys = np.where(good, xv, 0.0), np.where(good, yv, 0.0)
+    w = good.astype(float)
+    def mean(a):
+        s = uniform_filter1d(a, window, mode='nearest')
+        c = uniform_filter1d(w, window, mode='nearest')
+        return np.divide(s, c, out=np.full_like(s, np.nan), where=c > 0)
+    mx, my = mean(xs), mean(ys)
+    var, cov = mean(xs*xs) - mx*mx, mean(xs*ys) - mx*my
+    ok = var > min_var
+    return np.where(ok, cov / np.where(ok, var, 1.0), np.nan)
+
+def cna(fn, density, velocity, aoa, diameter=2*radius/IN_PER_FT, window=201, min_spread_deg=0.25):
+    '''normal force coefficent, and its slope with respect to angle of attack.
+    aoa oscillates, so the slope is fitted by rolling least squares against a
+    non-monotonic coordinate'''
+    denom = dynamic_pressure(density, velocity) * ref_area(diameter)
+    cn = np.divide(fn, denom, out=np.full_like(np.asarray(fn, float), np.nan),
+                   where=np.abs(denom) > 1e-9)
+    # derivative of normal coefficent, per radian
+    cna = rolling_slope(np.radians(aoa), cn, window, np.radians(min_spread_deg)**2)
     return cn, cna
 
-def frequency(aoa, sample_rate, target_time):
+def frequency(aoa, sample_rate, target_time, f_min=0.2):
     '''natrual frequency, from short fourier transform functions to isolate the atrual frequency of aoa oscillations'''
-    f, t, Zxx = stft(aoa, fs=sample_rate, window='hann', nperseg=256) # finding frequency, time bucket, and array values 
+    sig = np.nan_to_num(np.asarray(aoa, float) - np.nanmean(aoa)) # oscillation about the trim aoa
+    f, t, Zxx = stft(sig, fs=sample_rate, window='hann', nperseg=256) # finding frequency, time bucket, and array values 
+    keep = f >= f_min # the dc bin holds the trim offset, not an oscillation
+    f, Zxx = f[keep], Zxx[keep, :]
     t_index = np.argmin(np.abs(t[:, np.newaxis] - target_time), axis=0) # index, finding what each time value is closest to for bin sorting
     power = np.abs(Zxx[:, t_index]) # powers at that value
     frequency_n = f[np.argmax(power, axis=0)] # dominant frequency
     return frequency_n
 
-def stability1(frequency_n, inertia_yy, velocity, density, aoa, fn, diameter=radius):
-    '''finding stability values at point in time'''
-    m_corrective = frequency_n ** 2 * inertia_yy / (diameter * (diameter/2)**2 * np.pi * density)
-    cn_a = cna(fn, density, velocity, aoa)[1]
-    sm = m_corrective / cn_a
+def stability1(frequency_n, inertia_yy, velocity, density, aoa, fn, diameter=2*radius/IN_PER_FT):
+    '''static margin in calibers from the pitch oscillation frequency, where the
+    corrective moment coefficient C1 = omega^2 Iyy = q A d CNalpha SM'''
+    omega = 2 * np.pi * frequency_n                       # rad/s
+    iyy_slug_ft2 = inertia_yy / (G_FT * IN_PER_FT**2)     # lbm-in^2 -> slug-ft^2
+    m_corrective = omega**2 * iyy_slug_ft2                # lbf-ft
+    cn_a = cna(fn, density, velocity, aoa, diameter=diameter)[1]
+    denom = dynamic_pressure(density, velocity) * ref_area(diameter) * diameter * cn_a
+    sm = np.divide(m_corrective, denom, out=np.full_like(m_corrective, np.nan),
+                   where=np.abs(denom) > 1e-12)
     return sm 
 
-def stability(time, inertia_yy, gyro_y, fn, diameter=radius):
-    q_accel = np.gradient(gyro_y, time)
-    sm = inertia_yy * q_accel / (fn * diameter * 381.6)
+def stability(time, inertia_yy, gyro_y, fn, diameter=2*radius/IN_PER_FT, window=71, regression=1001):
+    '''static margin in calibers from pitch angular acceleration, Iyy qdot = Fn d SM.
+    gyro_y is smoothed before differentiating, and the margin is taken as a rolling
+    regression of the restoring moment on Fn d, which stays defined where both
+    oscillate through zero'''
+    gyro_smooth = savgol_filter(np.radians(gyro_y), window_length=window, polyorder=3)
+    q_accel = np.gradient(gyro_smooth, time)              # rad/s^2
+    iyy_slug_ft2 = inertia_yy / (G_FT * IN_PER_FT**2)     # lbm-in^2 -> slug-ft^2
+    moment = iyy_slug_ft2 * q_accel                       # lbf-ft
+    arm = np.asarray(fn, float) * diameter                # lbf-ft per caliber
+    num = uniform_filter1d(moment * arm, regression, mode='nearest')
+    den = uniform_filter1d(arm * arm, regression, mode='nearest')
+    sm = np.divide(num, den, out=np.full_like(num, np.nan), where=np.abs(den) > 1e-12)
     return sm
 
 ### math functions ^
