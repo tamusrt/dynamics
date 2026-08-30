@@ -4,7 +4,7 @@ import matplotlib.pyplot as plt
 import numpy as np 
 from scipy.interpolate import interp1d
 import pandas as pd
-import srt.dynamics.postflight_analysis.flight_analysis_functions as faa
+import flight_analysis_functions as faa
 from scipy.signal import stft, hilbert
 
 radius = 3
@@ -27,19 +27,22 @@ rocket = [
     faa.Fins(mass=62.7/4/16,root_chord=15, tip_chord=3, span=5.25, offset=204.5-185),
     faa.Component("fin_can", length=18, radius_=6.055/3, mass=15/16, offset=204.5-183, local_cg=0)
 ]
-def load(name):
+def load(name, flight):
     '''intakes the csv files, dropping the title'''
-    with open(f"current_{name}.csv", "r") as new_file: #G:\Shared drives\TAMU-SRT\srt_13\3_Dynamics\5_Post Flight Analysis\input\current_{name}.csv
+    with open(rf"G:\Shared drives\TAMU-SRT\srt_general\9_flight_data\{flight}\{name}.csv", "r") as new_file:
         lines = [line.split(",") for line in new_file.readlines()]
         opened = np.array(lines[1:]) # list of rows as floats
-        if name == "accel":
+        if "accel" in name:
             opened = np.delete(opened, [*range(0,4), 5, 8, *range(10, 15),*range(22, len(lines[0]))], axis=1)
             lines[0] = np.delete(lines[0], [*range(0,4), 5, 8, *range(10, 15), *range(22, len(lines[0]))], axis=0)
+        elif "gyro" in name:
+            opened = np.delete(opened, [*range(0,4), 5, *range(12, len(lines[0]))], axis=1)
+            lines[0] = np.delete(lines[0], [*range(0,4), 5, *range(12, len(lines[0]))], axis=0)
         opened = opened.astype(float)
-        if name == "accel":
+        if "accel" or "gyro" in name:
             index = np.where(opened[:,0]>=0)[0][0]
             opened = opened[index:] 
-    return opened, lines[0] 
+    return opened, lines[0]
 
 def interpolate(data, names):
     '''interpolates the other data sets based on the finest one, need to fix: xtending time values based on longest data collection, filling with zeros (assumes that zero is either appropriate or non-ocurring prior to apogee)'''
@@ -83,16 +86,17 @@ def calculate(data_dict, cutoff_dict):
               "Cn", "Cna", "Thrust","Frequency","Thrust"]
     
     # values from csvs
-    time, temperature, pressure, altitude, v_up, v_dr, v_cr, in_a, in_dr, in_cr, tilt = data_dict["accel"].T 
-    gyro_x, gyro_y, gyro_z, gx_accel, gy_accel, gz_accel = data_dict["gyro"][:,1:].T 
-    assumed_thrust, r_accel, weight = data_dict["ras"][:,1:].T
-    thrust = data_dict["ras"][:,1] 
-    print(thrust)
+
+    time, temperature, pressure, altitude, v_up, v_dr, v_cr, in_a, in_dr, in_cr, tilt = [data_dict[key] for key in data_dict if "accel" in key][0].T 
+    gyro_x, gyro_y, gyro_z, gx_accel, gy_accel, gz_accel = [data_dict[key] for key in data_dict if "gyro" in key][0].T[1:] 
+    assumed_thrust, r_accel, weight = [data_dict[key] for key in data_dict if "ras" in key][0].T[1:]
+    thrust = [data_dict[key] for key in data_dict if "ras" in key][0][:, 1] # would be switched out
+
     # stages of flight
     engine = [p for p in rocket if isinstance(p, faa.Engine)][0]
     engine.set_curve(thrusts=thrust, times=time)
     engine._process_curve()
-    cutoff_dict["apogee"] = apogee = np.where(data_dict["accel"][:,3] >= max(altitude))[0][0]
+    cutoff_dict["apogee"] = apogee = np.where([data_dict[key] for key in data_dict if "accel" in key][0][:,3] >= max(altitude))[0][0]
     cutoff_dict["coast"] = np.where(thrust <= 5)[0][2]
     cutoff_dict["uppies"] = 0
     theta = faa.theta(v_dr,v_cr)
@@ -271,7 +275,7 @@ def graph2(data, areas, build_data_fn=None, windows=(31, 51, 71, 91, 111), mach_
         ('thrust_calc','Thrust (lbf)'), ('fd','Drag (lbf)'), ('fn','Normal Force (lbf)')]):
         plot_to(ax, t, data[ka], band=bands.get(ka), label='Actual')
         if ka == 'thrust_calc':
-            plot_to(ax, t, data['thrust_raw'], label='SET')
+            plot_to(ax, t, data['thrust_raw'], label='Spec')
         ax.set(xlabel='Time (s)', ylabel=lbl, title=lbl)
         shade(ax, x_end=t[apogee])
         fit_ylim(ax, ka)
@@ -318,11 +322,12 @@ def graph2(data, areas, build_data_fn=None, windows=(31, 51, 71, 91, 111), mach_
     return fig1, fig2, fig3
 
 def main():
-    names = ["ras","accel","gyro","thrust"]
+    flight = rf"Morpheus\04232025_lone_star_cup"
+    names = ["CONDITION_ras","BR_accel","BR_gyro","SPEC_thrust"]
     data = []
     titles = {}
     for name in names:
-        array, titles[name] = load(name)
+        array, titles[name] = load(name, flight)
         data.append(array)
     interpolated_data, cutoff_dict = interpolate(data, names) 
     for entry in interpolated_data:
