@@ -31,80 +31,272 @@ rocket = [
     faa.Fins(mass=62.7/4/16,root_chord=15, tip_chord=3, span=5.25, offset=204.5-185),
     faa.Component("fin_can", length=18, radius_=6.055/3, mass=15/16, offset=204.5-183, local_cg=0)
 ]
-def load(name, flight):
-    '''intakes the csv files, dropping the title'''
-    with open(rf"G:\Shared drives\TAMU-SRT\srt_general\9_flight_data\{flight}\{name}.csv", "r") as new_file:
-        lines = [line.split(",") for line in new_file.readlines()]
-        opened = np.array(lines[1:]) # list of rows as floats
-        if "accel" in name:
-            opened = np.delete(opened, [*range(0,4), 5, 8, *range(10, 15),*range(22, len(lines[0]))], axis=1)
-            lines[0] = np.delete(lines[0], [*range(0,4), 5, 8, *range(10, 15), *range(22, len(lines[0]))], axis=0)
-        elif "gyro" in name:
-            opened = np.delete(opened, [*range(0,4), 5, *range(12, len(lines[0]))], axis=1)
-            lines[0] = np.delete(lines[0], [*range(0,4), 5, *range(12, len(lines[0]))], axis=0)
-        opened = opened.astype(float)
-        if "accel" or "gyro" in name:
-            index = np.where(opened[:,0]>=0)[0][0]
-            opened = opened[index:] 
-    return opened, lines[0]
+from pathlib import Path
+import pandas as pd
+import numpy as np
+from scipy.interpolate import interp1d
 
-def interpolate(data, names):
-    '''interpolates the other data sets based on the finest one, need to fix: xtending time values based on longest data collection, filling with zeros (assumes that zero is either appropriate or non-ocurring prior to apogee)'''
-    # taking in pre-existing list of list
-    raw_arrays = data 
-    new_arrays = {}
+# Real, on-disk file "types" -> which raw columns to keep, in order.
+# Note: br_accel and bj_accel share the exact same schema, so they both
+# get mapped to the same ALIASES group ("accel") below.
+COLUMN_MAP = {
+    "br_accel": ["Flight_Time_(s)", "Temperature_(F)", "Baro_Press_(atm)", "Baro_Altitude_ASL_(feet)",
+                 "Velocity_Up", "Velocity_DR", "Velocity_CR", "Inertial_Altitude",
+                 "Inertial_DR_Position", "Inertial_CR_position", "Tilt_Angle_(deg)"],
+    "bj_accel": ["Flight_Time_(s)", "Temperature_(F)", "Baro_Press_(atm)", "Baro_Altitude_ASL_(feet)",
+                 "Velocity_Up", "Velocity_DR", "Velocity_CR", "Inertial_Altitude",
+                 "Inertial_DR_Position", "Inertial_CR_position", "Tilt_Angle_(deg)"],
+    "gyro": ["Flight_Time_(s)", "Gyro_X", "Gyro_Y", "Gyro_Z", "Accel_X", "Accel_Y", "Accel_Z"],
+    "thrust": ["Time", "Thrust (N)"],
+    "ras": ["Flight Time Rounded (s)", "Thrust (lb)", "Accel (ft/sec^2)", "Weight (lb)"],
+}
+
+# Alias groups: canonical short names -> raw column names.
+# Keys here ("accel", "gyro", "thrust", "ras") are deliberately GENERIC —
+# they describe a *category* of file, not a specific filename.
+ALIASES = {
+    "accel": {
+        "time": "Flight_Time_(s)",
+        "temperature": "Temperature_(F)",
+        "pressure": "Baro_Press_(atm)",
+        "altitude": "Baro_Altitude_ASL_(feet)",
+        "v_up": "Velocity_Up",
+        "v_dr": "Velocity_DR",
+        "v_cr": "Velocity_CR",
+        "in_a": "Inertial_Altitude",
+        "in_dr": "Inertial_DR_Position",
+        "in_cr": "Inertial_CR_position",
+        "tilt": "Tilt_Angle_(deg)",
+    },
+    "gyro": {
+        "time": "Flight_Time_(s)",
+        "gx": "Gyro_X",
+        "gy": "Gyro_Y",
+        "gz": "Gyro_Z",
+        "gx_accel": "Accel_X",
+        "gy_accel": "Accel_Y",
+        "gz_accel": "Accel_Z",
+    },
+    "thrust": {
+        "time": "Time",
+        "spec_thrust": "Thrust (N)",
+    },
+    "ras": {
+        "time": "Flight Time Rounded (s)",
+        "ras_thrust": "Thrust (lb)",
+        "accel": "Accel (ft/sec^2)",
+        "weight": "Weight (lb)",
+    },
+}
+
+READ_CONFIG = {
+    "ras": {"sep": ",", "encoding": "utf-8-sig"},
+}
+DEFAULT_READ_CONFIG = {"sep": ",", "encoding": "utf-8"}
+
+# which alias name is "time", per ALIAS GROUP (not raw fmt), used for the t>=0 trim
+TIME_ALIAS = {
+    "accel": "time",
+    "gyro": "time",
+    "thrust": "time",
+    "ras": "time",
+}
+
+
+def _detect_format(stem: str):
+    """Match the filename stem against the REAL file types only
+    (COLUMN_MAP / READ_CONFIG keys) — never against ALIASES keys.
+    This is what was ambiguous before: "br_accel" and "accel" would
+    both match, and since the old code searched a `set` the winner
+    was effectively random.
+    Sorted by length descending so a more specific key (e.g. "br_accel")
+    always wins over a shorter one, if that ever becomes ambiguous.
+    """
+    stem = stem.lower()
+    candidates = set(COLUMN_MAP) | set(READ_CONFIG)
+    for key in sorted(candidates, key=len, reverse=True):
+        if key in stem:
+            return key
+    return None
+
+
+def _alias_group(fmt: str):
+    """Map a raw fmt (e.g. 'br_accel') to its ALIASES group (e.g. 'accel')."""
+    if fmt is None:
+        return None
+    if fmt in ALIASES:
+        return fmt
+    return next((g for g in ALIASES if g in fmt), None)
+
+
+class ArrayBundle:
+    """Holds one file's columns as numpy arrays, accessible by alias name
+    either as an attribute (bundle.time) or a key (bundle['time'])."""
+
+    def __init__(self, df: pd.DataFrame):
+        self._columns = list(df.columns)
+        for col in df.columns:
+            setattr(self, col, df[col].to_numpy())
+
+    def __getitem__(self, key):
+        return getattr(self, key)
+
+    @property
+    def columns(self):
+        return list(self._columns)
+
+    def to_frame(self) -> pd.DataFrame:
+        """Convert this bundle back into a real pandas DataFrame."""
+        return pd.DataFrame({col: getattr(self, col) for col in self._columns})
+
+    def __len__(self):
+        return len(getattr(self, self._columns[0]))
+
+    def __repr__(self):
+        return f"ArrayBundle(columns={self._columns})"
+
+
+def load_file(path: Path) -> ArrayBundle:
+    fmt = _detect_format(path.stem)
+    group = _alias_group(fmt)
+    read_kwargs = READ_CONFIG.get(fmt, DEFAULT_READ_CONFIG)
+
+    df = pd.read_csv(path, **read_kwargs)
+    df.columns = [c.strip().lstrip("\ufeff").lstrip("#").strip() for c in df.columns]
+    if fmt in COLUMN_MAP:
+        wanted = COLUMN_MAP[fmt]
+        missing = [c for c in wanted if c not in df.columns]
+        if missing:
+            raise ValueError(f"{path.name} is missing expected columns: {missing}")
+        df = df[wanted]
+
+    if group in ALIASES:
+        rename_map = {raw: alias for alias, raw in ALIASES[group].items() if raw in df.columns}
+        df = df.rename(columns=rename_map)
+
+    time_col = TIME_ALIAS.get(group)
+    if time_col and time_col in df.columns:
+        df = df[df[time_col] >= 0].reset_index(drop=True)
+
+    return ArrayBundle(df)
+
+
+def load(rocket, flight, base_dir=r"G:\Shared drives\TAMU-SRT\srt_general\9_flight_data"):
+    """Loads every CSV in a flight's folder into a dict of ArrayBundles, keyed by filename stem.
+    Example: data = load("RocketA", "Flight3")
+             data["br_accel_launch"].altitude   -> numpy array
+             data["br_accel_launch"]["altitude"] -> same, dict-style
+    """
+    folder = Path(base_dir) / rocket / flight
+    if not folder.is_dir():
+        raise NotADirectoryError(f"No such folder: {folder}")
+
+    results = {}
+    for csv_path in sorted(folder.glob("*.csv")):
+        try:
+            results[csv_path.stem] = load_file(csv_path)
+        except Exception as e:
+            print(f"Skipping {csv_path.name}: {e}")
+    return results
+
+
+def interpolate(data):
+    '''Interpolates every dataset onto a common, evenly-spaced time base
+    (the finest step found across all datasets), then zero-pads the
+    shorter ones so every ArrayBundle has the same length.
+
+    Accepts a dict of ArrayBundle (the output of `load`/`load_file`) and
+    returns:
+      - new_bundles: dict of ArrayBundle, interpolated + padded
+      - cutoffs: dict of the number of *real* (non-padded) samples in each
+        interpolated bundle, so you can later trim the zero padding back off
+        via e.g. `bundle.time[:cutoffs[key]]`.
+    '''
+    new_bundles = {}
     cutoffs = {}
-    # finding finest dataset  
-    global step
-    step = min([np.diff(raw_arrays[i][:, 0]).tolist() for i in range(len(raw_arrays))])[0]# minimum difference between the rows in the first column
-    for i, dataset in enumerate(raw_arrays):
-        time_val = dataset[:, 0]
-        column_data = []
-        for column in dataset.T[1:]: # flips into rows
-            interp_func = interp1d(time_val, column, kind = "linear")
-            data_pt = interp_func(np.clip(np.arange(time_val[0], time_val[-1] + step, step), time_val[0], time_val[-1])) #  python rounding errors 
-            column_data.append(data_pt) # list of arrays representing each column  
-        if list(time_val) != list(np.arange(time_val[0], time_val[-1] + step, step)): # unless its the finest set  
-            time_val = np.arange(time_val[0], time_val[-1] + step, step)
-        column_data = np.array(column_data) # array again 
-        new_arrays[names[i]] = np.vstack((time_val,column_data)).T # flips 
-        cutoffs[names[i]] = dataset.shape[0] + 2
-        length = max(len(new_arrays[array]) for array in new_arrays)
-    for key, value in new_arrays.items():
-        array_list = []
-        for column in value.T:
-            pad_amount = length - len(column)
-            array_list.append(np.pad(column, (0, pad_amount)))
-        new_arrays[key] = np.array(array_list).T  # restoring original orientation
-    return new_arrays, cutoffs
+
+    # only bundles with a "time" column can be aligned this way
+    timed = {key: bundle for key, bundle in data.items() if "time" in bundle.columns}
+    if not timed:
+        raise ValueError("None of the given datasets have a 'time' column to align on")
+
+    # finest time step across all datasets
+    step = min(np.diff(bundle.time).min() for bundle in timed.values())
+
+    for key, bundle in timed.items():
+        time_val = bundle.time
+        new_time = np.clip(
+            np.arange(time_val[0], time_val[-1] + step, step),
+            time_val[0], time_val[-1]
+        )
+
+        interp_cols = {"time": new_time}
+        for col in bundle.columns:
+            if col == "time":
+                continue
+            interp_func = interp1d(time_val, getattr(bundle, col), kind="linear")
+            interp_cols[col] = interp_func(new_time)
+
+        new_bundles[key] = ArrayBundle(pd.DataFrame(interp_cols))
+        # real (pre-padding) length of the interpolated series
+        cutoffs[key] = len(new_time)
+
+    length = max(len(bundle) for bundle in new_bundles.values())
+
+    for key, bundle in new_bundles.items():
+        pad_amount = length - len(bundle)
+        if pad_amount > 0:
+            df = pd.DataFrame({col: getattr(bundle, col) for col in bundle.columns})
+            padding = pd.DataFrame(0, index=range(pad_amount), columns=df.columns)
+            padded = pd.concat([df, padding], ignore_index=True)
+            new_bundles[key] = ArrayBundle(padded)
+
+    return new_bundles, cutoffs
 
 def calculate(data_dict, cutoff_dict):
     calc_array = []
     calc = {}
-    titles = [f"Time (sec)","Flight Angle (deg)", "AOA (deg)", "Theta (deg)", "Velocity, Accelerometer (ft/s)", "Sound ft/s",
-              "Velocity, Accelerometer (mach)", "X-Acceleration, Accelerometer (ft/s^2)", 
-              "Y-Acceleration, Accelerometer (ft/s^2)", "Z-Acceleration, Accelerometer (ft/s^2)",
-              "Acceleration, Accelerometer (ft/s^2)", 
-              "Acceleration, Gyrometer (ft/s^2)","Discrepancy", "Density (lbs/ft^3)",
-              "Fdx", "Fdy", "Fdz", "Fd", "Cd", "Frequency", "Fnx", "Fny", "Fnz", "Fn", 
-              "Cn", "Cna", "Thrust","Frequency","Thrust"]
-    
-    # values from csvs
+    titles = [...]  # unchanged
 
-    time, temperature, pressure, altitude, v_up, v_dr, v_cr, in_a, in_dr, in_cr, tilt = [data_dict[key] for key in data_dict if "accel" in key][0].T 
-    gyro_x, gyro_y, gyro_z, gx_accel, gy_accel, gz_accel = [data_dict[key] for key in data_dict if "gyro" in key][0].T[1:] 
-    assumed_thrust, r_accel, weight = [data_dict[key] for key in data_dict if "ras" in key][0].T[1:]
-    thrust = [data_dict[key] for key in data_dict if "ras" in key][0][:, 1] # would be switched out
+    def find_bundle(substr):
+        matches = [v for k, v in data_dict.items() if substr in k]
+        if not matches:
+            raise KeyError(f"No dataset found containing '{substr}' in its key")
+        return matches[0]
+
+    accel_bundle = find_bundle("accel")
+    gyro_bundle = find_bundle("gyro")
+    thrust_bundle = find_bundle("thrust")
+    ras_bundle = find_bundle("ras")
+
+    time = accel_bundle.time
+    temperature = accel_bundle.temperature
+    pressure = accel_bundle.pressure
+    altitude = accel_bundle.altitude
+    v_up = accel_bundle.v_up
+    v_dr = accel_bundle.v_dr
+    v_cr = accel_bundle.v_cr
+    tilt = accel_bundle.tilt
+
+    gx_accel = gyro_bundle.gx_accel
+    gy_accel = gyro_bundle.gy_accel
+    gz_accel = gyro_bundle.gz_accel
+    gyro_y = gyro_bundle.gy
+
+    spec_thrust = thrust_bundle.spec_thrust
+
+    thrust = ras_bundle.ras_thrust
+    weight = ras_bundle.weight
 
     # stages of flight
     engine = [p for p in rocket if isinstance(p, faa.Engine)][0]
-    engine.set_curve(thrusts=thrust, times=time)
+    engine.set_curve(thrusts=spec_thrust, times=time)
     engine._process_curve()
-    cutoff_dict["apogee"] = apogee = np.where([data_dict[key] for key in data_dict if "accel" in key][0][:,3] >= max(altitude))[0][0]
-    cutoff_dict["coast"] = np.where(thrust <= 5)[0][2]
+    cutoff_dict["apogee"] = apogee = np.where(altitude >= max(altitude))[0][0]
+    cutoff_dict["coast"] = np.where(spec_thrust <= 5)[0][2]
     cutoff_dict["uppies"] = 0
-    theta = faa.theta(v_dr,v_cr)
-    #sample_rate = 1/step 
+    theta = faa.theta(v_dr, v_cr)
+    #sample_rate = 1 / step
 
     calc["time"] = time
     calc["flight_angle"], calc["aoa"] = faa.angle(v_up, v_dr, v_cr, tilt)
@@ -125,7 +317,7 @@ def calculate(data_dict, cutoff_dict):
     # fd() derived from this same curve returns that curve. the two independent
     # sources are the ras condition file and the motor spec curve.
     calc["thrust_ras"] = thrust
-    calc["thrust_spec"] = thrust_spec
+    calc["thrust_spec"] = spec_thrust
     calc["altitude"] = altitude
     calc["cgs"] = faa.total_cg(rocket, calc["time"])[1]
     calc["iyy"] = faa.total_iyy(rocket, calc["time"], calc["cgs"])
@@ -347,7 +539,6 @@ def main():
     flight = input("Flight date (mm/dd/yyyy): ")
     data = load(rocket, flight)
     df = pd.read_csv(rf"G:\Shared drives\TAMU-SRT\srt_general\9_flight_data\{rocket}\{flight}\CONDITION_ras.csv", sep=",", encoding="utf-8-sig")
-    print(f"hewwo {[repr(c) for c in df.columns]}")
     interpolated_data, cutoff_dict = interpolate(data)
     for entry in interpolated_data:
         bundle = interpolated_data[entry]
