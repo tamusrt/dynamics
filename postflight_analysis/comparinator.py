@@ -6,6 +6,7 @@ from scipy.interpolate import interp1d
 import pandas as pd
 import flight_analysis_functions as faa
 from scipy.signal import stft, hilbert
+from pathlib import Path
 
 radius = 3
 # x = 0 at the nose tip, increasing aft. offset is each part's forward face.
@@ -22,13 +23,13 @@ rocket = [
     faa.Component("forward2", length=18.7, radius_=3, mass=17.4/16, offset=69.8),
     faa.Component("piston", length=6, radius_=3, mass=14.4/16, offset=58.5),
     faa.Engine(faa.EngineComponent(name="ox_tank", dry_mass=0.35, prop_mass=1.2, offset=0.0, length=0.45),faa.EngineComponent(name="plumbing", dry_mass=0.15, offset=0.45, length=0.08),faa.EngineComponent(name="fuel_grain", dry_mass=0.4, prop_mass=0.1, offset=0.53, length=0.30), length=50, offset=130),
-    faa.Component("plumbing", length=7.13, radius_=3, mass=5.43/16, offset=0),
-    faa.Component("tail", length=3, radius_=3, mass=5.43/16, offset=0),
-    faa.Fins(mass=62.7/4/16,root_chord=15, tip_chord=3, span=5.25, offset=185, roll=0),
-    faa.Fins(mass=62.7/4/16,root_chord=15, tip_chord=3, span=5.25, offset=185, roll=90),
-    faa.Fins(mass=62.7/4/16,root_chord=15, tip_chord=3, span=5.25, offset=185, roll=180),
-    faa.Fins(mass=62.7/4/16,root_chord=15, tip_chord=3, span=5.25, offset=185, roll=270),
-    faa.Component("fin_can", length=18, radius_=6.055/3, mass=15/16, offset=183)
+    faa.Component("plumbing", length=7.13, radius_=3, mass=5.43/16, offset=0, local_cg=0),
+    faa.Component("tail", length=3, radius_=3, mass=5.43/16, offset=0, local_cg=0),
+    faa.Fins(mass=62.7/4/16,root_chord=15, tip_chord=3, span=5.25, offset=204.5-185),
+    faa.Fins(mass=62.7/4/16,root_chord=15, tip_chord=3, span=5.25, offset=204.5-185),
+    faa.Fins(mass=62.7/4/16,root_chord=15, tip_chord=3, span=5.25, offset=204.5-185),
+    faa.Fins(mass=62.7/4/16,root_chord=15, tip_chord=3, span=5.25, offset=204.5-185),
+    faa.Component("fin_can", length=18, radius_=6.055/3, mass=15/16, offset=204.5-183, local_cg=0)
 ]
 def load(name, flight):
     '''intakes the csv files, dropping the title'''
@@ -42,7 +43,7 @@ def load(name, flight):
             opened = np.delete(opened, [*range(0,4), 5, *range(12, len(lines[0]))], axis=1)
             lines[0] = np.delete(lines[0], [*range(0,4), 5, *range(12, len(lines[0]))], axis=0)
         opened = opened.astype(float)
-        if "accel" in name or "gyro" in name:
+        if "accel" or "gyro" in name:
             index = np.where(opened[:,0]>=0)[0][0]
             opened = opened[index:] 
     return opened, lines[0]
@@ -55,7 +56,7 @@ def interpolate(data, names):
     cutoffs = {}
     # finding finest dataset  
     global step
-    step = min(float(np.diff(arr[:, 0]).min()) for arr in raw_arrays) # minimum difference between the rows in the first column
+    step = min([np.diff(raw_arrays[i][:, 0]).tolist() for i in range(len(raw_arrays))])[0]# minimum difference between the rows in the first column
     for i, dataset in enumerate(raw_arrays):
         time_val = dataset[:, 0]
         column_data = []
@@ -70,14 +71,11 @@ def interpolate(data, names):
         cutoffs[names[i]] = dataset.shape[0] + 2
         length = max(len(new_arrays[array]) for array in new_arrays)
     for key, value in new_arrays.items():
-        pad_amount = length - len(value)
-        if pad_amount <= 0:
-            continue
-        padded = np.zeros((length, value.shape[1]))
-        padded[:len(value)] = value
-        # value columns pad with zeros, time carries on at the same step
-        padded[len(value):, 0] = value[-1, 0] + step * np.arange(1, pad_amount + 1)
-        new_arrays[key] = padded
+        array_list = []
+        for column in value.T:
+            pad_amount = length - len(column)
+            array_list.append(np.pad(column, (0, pad_amount)))
+        new_arrays[key] = np.array(array_list).T  # restoring original orientation
     return new_arrays, cutoffs
 
 def calculate(data_dict, cutoff_dict):
@@ -97,18 +95,16 @@ def calculate(data_dict, cutoff_dict):
     gyro_x, gyro_y, gyro_z, gx_accel, gy_accel, gz_accel = [data_dict[key] for key in data_dict if "gyro" in key][0].T[1:] 
     assumed_thrust, r_accel, weight = [data_dict[key] for key in data_dict if "ras" in key][0].T[1:]
     thrust = [data_dict[key] for key in data_dict if "ras" in key][0][:, 1] # would be switched out
-    spec = [data_dict[key] for key in data_dict if "SPEC" in key][0]
-    thrust_spec = np.interp(time, spec[:, 0], spec[:, 1]) / 4.4482216152605 # newtons to lbf
 
     # stages of flight
     engine = [p for p in rocket if isinstance(p, faa.Engine)][0]
     engine.set_curve(thrusts=thrust, times=time)
+    engine._process_curve()
     cutoff_dict["apogee"] = apogee = np.where([data_dict[key] for key in data_dict if "accel" in key][0][:,3] >= max(altitude))[0][0]
-    peak = int(np.argmax(thrust)) # burnout is the first sample below threshold after the peak
-    cutoff_dict["coast"] = peak + int(np.where(thrust[peak:] <= 5)[0][0])
+    cutoff_dict["coast"] = np.where(thrust <= 5)[0][2]
     cutoff_dict["uppies"] = 0
     theta = faa.theta(v_dr,v_cr)
-    sample_rate = 1/step 
+    #sample_rate = 1/step 
 
     calc["time"] = time
     calc["flight_angle"], calc["aoa"] = faa.angle(v_up, v_dr, v_cr, tilt)
@@ -134,11 +130,7 @@ def calculate(data_dict, cutoff_dict):
     calc["cgs"] = faa.total_cg(rocket, calc["time"])[1]
     calc["iyy"] = faa.total_iyy(rocket, calc["time"], calc["cgs"])
     calc["sm"] = faa.stability(time, calc["iyy"], gyro_y, calc["fn"])
-    calc["sm2"] = faa.stability1(faa.frequency(calc["aoa"], sample_rate, calc["time"]), calc["iyy"], calc["accel_v"], calc["density"], calc["aoa"], calc["fn"])
-    #calc["check"] = faa.ndcheck_no_gyro(in_a, in_dr, in_cr, calc["time"], weight/32.2, thrust, apogee)
-    #calc["double_check"] = faa.ndcheck_with_aoa(in_a, in_dr, in_cr, time, weight/32.2, thrust, calc["aoa"])
-    #max_len = max(len(v) for v in calc.values())
-    #fixed_data = {k: v[:max_len] for k, v in calc.items()}
+    #calc["sm2"] = faa.stability1(faa.frequency(calc["aoa"], sample_rate, calc["time"]), calc["iyy"], calc["accel_v"], calc["density"], calc["aoa"], calc["fn"])
 
     df = pd.DataFrame.from_dict(calc)   
     df.to_csv(f"calc_data.csv", index=False)
@@ -351,16 +343,15 @@ def graph2(data, areas, build_data_fn=None, windows=(31, 51, 71, 91, 111), mach_
     return fig1, fig2, fig3, fig4
 
 def main():
-    flight = rf"Morpheus\04232025_lone_star_cup"
-    names = ["CONDITION_ras","BR_accel","BR_gyro","SPEC_thrust"]
-    data = []
-    titles = {}
-    for name in names:
-        array, titles[name] = load(name, flight)
-        data.append(array)
-    interpolated_data, cutoff_dict = interpolate(data, names) 
+    rocket = input("Rocket name: ")
+    flight = input("Flight date (mm/dd/yyyy): ")
+    data = load(rocket, flight)
+    df = pd.read_csv(rf"G:\Shared drives\TAMU-SRT\srt_general\9_flight_data\{rocket}\{flight}\CONDITION_ras.csv", sep=",", encoding="utf-8-sig")
+    print(f"hewwo {[repr(c) for c in df.columns]}")
+    interpolated_data, cutoff_dict = interpolate(data)
     for entry in interpolated_data:
-        df = pd.DataFrame(interpolated_data[entry], columns=titles[entry])
+        bundle = interpolated_data[entry]
+        df = pd.DataFrame({col: getattr(bundle, col) for col in bundle.columns})
         df.to_csv(f"interp_{entry}.csv", index=False)
     graph_values, cutoff_dict = calculate(interpolated_data, cutoff_dict)
     graph2(graph_values, cutoff_dict)
