@@ -7,6 +7,8 @@ import pandas as pd
 import flight_analysis_functions as faa
 from scipy.signal import stft, hilbert
 from pathlib import Path
+import pint
+
 
 radius = 3
 # x = 0 at the nose tip, increasing aft. offset is each part's forward face.
@@ -35,6 +37,10 @@ from pathlib import Path
 import pandas as pd
 import numpy as np
 from scipy.interpolate import interp1d
+import pint
+
+ureg = pint.UnitRegistry()
+Q_ = ureg.Quantity
 
 # Real, on-disk file "types" -> which raw columns to keep, in order.
 # Note: br_accel and bj_accel share the exact same schema, so they both
@@ -89,6 +95,42 @@ ALIASES = {
     },
 }
 
+# unit each alias column is stored in, per ALIASES group.
+# "time" is intentionally omitted here since every group uses seconds -
+# handled once via TIME_UNIT instead of repeating it in every group.
+UNITS = {
+    "accel": {
+        "temperature": "degF",
+        "pressure": "atm",
+        "altitude": "ft",
+        "v_up": "ft/s",
+        "v_dr": "ft/s",
+        "v_cr": "ft/s",
+        "in_a": "ft",
+        "in_dr": "ft",
+        "in_cr": "ft",
+        "tilt": "deg",
+    },
+    "gyro": {
+        "gx": "deg/s",
+        "gy": "deg/s",
+        "gz": "deg/s",
+        "gx_accel": "g_0",
+        "gy_accel": "g_0",
+        "gz_accel": "g_0",
+    },
+    "thrust": {
+        "spec_thrust": "N",
+    },
+    "ras": {
+        "ras_thrust": "lbf",
+        "accel": "ft/s**2",
+        "weight": "lbf",
+    },
+}
+TIME_UNIT = "s"
+
+# per-format read settings (delimiter/encoding)
 READ_CONFIG = {
     "ras": {"sep": ",", "encoding": "utf-8-sig"},
 }
@@ -130,13 +172,19 @@ def _alias_group(fmt: str):
 
 
 class ArrayBundle:
-    """Holds one file's columns as numpy arrays, accessible by alias name
-    either as an attribute (bundle.time) or a key (bundle['time'])."""
+    """Holds one file's columns as numpy arrays (or pint Quantities, if a
+    units dict is given), accessible by alias name either as an attribute
+    (bundle.time) or a key (bundle['time'])."""
 
-    def __init__(self, df: pd.DataFrame):
+    def __init__(self, df: pd.DataFrame, units: dict | None = None):
         self._columns = list(df.columns)
+        units = units or {}
         for col in df.columns:
-            setattr(self, col, df[col].to_numpy())
+            arr = df[col].to_numpy()
+            unit = TIME_UNIT if col == "time" else units.get(col)
+            if unit:
+                arr = Q_(arr, unit)
+            setattr(self, col, arr)
 
     def __getitem__(self, key):
         return getattr(self, key)
@@ -146,8 +194,12 @@ class ArrayBundle:
         return list(self._columns)
 
     def to_frame(self) -> pd.DataFrame:
-        """Convert this bundle back into a real pandas DataFrame."""
-        return pd.DataFrame({col: getattr(self, col) for col in self._columns})
+        """Convert this bundle back into a real pandas DataFrame (units stripped)."""
+        plain = {}
+        for col in self._columns:
+            val = getattr(self, col)
+            plain[col] = val.magnitude if isinstance(val, ureg.Quantity) else val
+        return pd.DataFrame(plain)
 
     def __len__(self):
         return len(getattr(self, self._columns[0]))
@@ -163,6 +215,7 @@ def load_file(path: Path) -> ArrayBundle:
 
     df = pd.read_csv(path, **read_kwargs)
     df.columns = [c.strip().lstrip("\ufeff").lstrip("#").strip() for c in df.columns]
+
     if fmt in COLUMN_MAP:
         wanted = COLUMN_MAP[fmt]
         missing = [c for c in wanted if c not in df.columns]
@@ -178,7 +231,7 @@ def load_file(path: Path) -> ArrayBundle:
     if time_col and time_col in df.columns:
         df = df[df[time_col] >= 0].reset_index(drop=True)
 
-    return ArrayBundle(df)
+    return ArrayBundle(df, units=UNITS.get(group))
 
 
 def load(rocket, flight, base_dir=r"G:\Shared drives\TAMU-SRT\srt_general\9_flight_data"):
@@ -200,10 +253,20 @@ def load(rocket, flight, base_dir=r"G:\Shared drives\TAMU-SRT\srt_general\9_flig
     return results
 
 
+def _magnitude(val):
+    """Return the plain numpy array underneath a value, whether or not it's a pint Quantity."""
+    return val.magnitude if isinstance(val, ureg.Quantity) else val
+
+
 def interpolate(data):
     '''Interpolates every dataset onto a common, evenly-spaced time base
     (the finest step found across all datasets), then zero-pads the
     shorter ones so every ArrayBundle has the same length.
+
+    Works whether or not the bundles carry pint units: units (if present)
+    are stripped before interpolation (scipy doesn't understand them) and
+    reattached to the result afterward, so the output bundles keep the
+    same units as the input.
 
     Accepts a dict of ArrayBundle (the output of `load`/`load_file`) and
     returns:
@@ -221,23 +284,28 @@ def interpolate(data):
         raise ValueError("None of the given datasets have a 'time' column to align on")
 
     # finest time step across all datasets
-    step = min(np.diff(bundle.time).min() for bundle in timed.values())
+    step = min(np.diff(_magnitude(bundle.time)).min() for bundle in timed.values())
 
     for key, bundle in timed.items():
-        time_val = bundle.time
+        time_val = _magnitude(bundle.time)
         new_time = np.clip(
             np.arange(time_val[0], time_val[-1] + step, step),
             time_val[0], time_val[-1]
         )
 
         interp_cols = {"time": new_time}
+        units_here = {}
         for col in bundle.columns:
             if col == "time":
                 continue
-            interp_func = interp1d(time_val, getattr(bundle, col), kind="linear")
+            col_val = getattr(bundle, col)
+            if isinstance(col_val, ureg.Quantity):
+                units_here[col] = col_val.units
+                col_val = col_val.magnitude
+            interp_func = interp1d(time_val, col_val, kind="linear")
             interp_cols[col] = interp_func(new_time)
 
-        new_bundles[key] = ArrayBundle(pd.DataFrame(interp_cols))
+        new_bundles[key] = ArrayBundle(pd.DataFrame(interp_cols), units=units_here)
         # real (pre-padding) length of the interpolated series
         cutoffs[key] = len(new_time)
 
@@ -246,17 +314,26 @@ def interpolate(data):
     for key, bundle in new_bundles.items():
         pad_amount = length - len(bundle)
         if pad_amount > 0:
-            df = pd.DataFrame({col: getattr(bundle, col) for col in bundle.columns})
+            cols = {}
+            units_here = {}
+            for col in bundle.columns:
+                val = getattr(bundle, col)
+                if isinstance(val, ureg.Quantity):
+                    units_here[col] = val.units
+                    val = val.magnitude
+                cols[col] = val
+            df = pd.DataFrame(cols)
             padding = pd.DataFrame(0, index=range(pad_amount), columns=df.columns)
             padded = pd.concat([df, padding], ignore_index=True)
-            new_bundles[key] = ArrayBundle(padded)
+            new_bundles[key] = ArrayBundle(padded, units=units_here)
 
     return new_bundles, cutoffs
+
 
 def calculate(data_dict, cutoff_dict):
     calc_array = []
     calc = {}
-    titles = [...]  # unchanged
+    titles = [...]
 
     def find_bundle(substr):
         matches = [v for k, v in data_dict.items() if substr in k]
@@ -269,24 +346,24 @@ def calculate(data_dict, cutoff_dict):
     thrust_bundle = find_bundle("thrust")
     ras_bundle = find_bundle("ras")
 
-    time = accel_bundle.time
-    temperature = accel_bundle.temperature
-    pressure = accel_bundle.pressure
-    altitude = accel_bundle.altitude
-    v_up = accel_bundle.v_up
-    v_dr = accel_bundle.v_dr
-    v_cr = accel_bundle.v_cr
-    tilt = accel_bundle.tilt
+    time = accel_bundle.time.magnitude
+    temperature = accel_bundle.temperature.magnitude
+    pressure = accel_bundle.pressure.magnitude
+    altitude = accel_bundle.altitude.magnitude          # ft
+    v_up = accel_bundle.v_up.magnitude                  # ft/s
+    v_dr = accel_bundle.v_dr.magnitude                  # ft/s
+    v_cr = accel_bundle.v_cr.magnitude                  # ft/s
+    tilt = accel_bundle.tilt.magnitude                  # deg
 
-    gx_accel = gyro_bundle.gx_accel
-    gy_accel = gyro_bundle.gy_accel
-    gz_accel = gyro_bundle.gz_accel
-    gyro_y = gyro_bundle.gy
+    gx_accel = gyro_bundle.gx_accel.magnitude           # g_0
+    gy_accel = gyro_bundle.gy_accel.magnitude           # g_0
+    gz_accel = gyro_bundle.gz_accel.magnitude           # g_0
+    gyro_y = gyro_bundle.gy.magnitude
 
-    spec_thrust = thrust_bundle.spec_thrust
+    spec_thrust = thrust_bundle.spec_thrust.magnitude   # N
 
-    thrust = ras_bundle.ras_thrust
-    weight = ras_bundle.weight
+    thrust = ras_bundle.ras_thrust.magnitude            # lbf
+    weight = ras_bundle.weight.magnitude                # lbf
 
     # stages of flight
     engine = [p for p in rocket if isinstance(p, faa.Engine)][0]
@@ -329,76 +406,6 @@ def calculate(data_dict, cutoff_dict):
 
     return calc, cutoff_dict
 
-def graph(data, areas):
-    coast, apogee = areas["coast"], areas["apogee"]
-    t = data['time']
-    print(t[:apogee])
-    def shade(ax, x_end=None):
-        ax.axvspan(0, t[coast], alpha=0.15, color='lightblue')
-        ax.axvspan(t[coast], t[apogee], alpha=0.15, color='pink')
-        if x_end is not None:
-            ax.set_xlim(0, x_end)
-
-    def plot_to(ax, xarr, yarr, **kwargs):
-        ax.plot(xarr[:apogee], yarr[:apogee], **kwargs)
-
-    def scatter_to(ax, xarr, yarr):
-        x, y = xarr[:apogee], yarr[:apogee]
-        ax.scatter(x, y, s=4)
-        pad_x = (max(x) - min(x)) * 0.05 or 1
-        ax.set_xlim(min(x) - pad_x, max(x) + pad_x)
-
-    def fit_ylim(ax, key):
-        y = data[key][:apogee]; pad = (max(y) - min(y)) * 0.05 or 1
-        ax.set_ylim(min(y) - pad, max(y) + pad)
-
-    # page 1
-    fig1, axs = plt.subplots(3, 2, figsize=(12, 10))
-    fig1.suptitle('Basics', fontweight='bold')
-    for ax, (k, lbl) in zip(axs.flat, [
-        ('altitude','Altitude (ft)'), ('accel_v','Velocity (ft/s)'), ('accel_total','Acceleration (ft/s²)'),
-        ('aoa','AoA (°)'), ('theta','Pitch (°)'), ('flight_angle','Flight Angle (°)')
-    ]):
-        plot_to(ax, t, data[k]); ax.set(xlabel='Time (s)', ylabel=lbl, title=lbl)
-        shade(ax, x_end=t[apogee]); fit_ylim(ax, k)
-    fig1.tight_layout()
-
-    # page 2
-    fig2, axs = plt.subplots(1, 3, figsize=(14, 4))
-    fig2.suptitle('Forces', fontweight='bold')
-    for ax, (ka, lbl) in zip(axs, [
-        ('thrust_ras','Thrust (lbf)'), ('fd','Drag (lbf)'), ('fn','Normal Force (lbf)')]):
-        plot_to(ax, t, data[ka], label='RAS' if ka == 'thrust_ras' else 'Flight')
-        if ka == 'thrust_ras':
-            plot_to(ax, t, data['thrust_spec'], label='Motor spec') 
-        ax.set(xlabel='Time (s)', ylabel=lbl, title=lbl)
-        fit_ylim(ax, ka); shade(ax, x_end=t[apogee]); ax.legend()
-    fig2.tight_layout()
-
-    # page 3
-    fig3, axs = plt.subplots(1, 3, figsize=(14, 4))
-    fig3.suptitle('Drag Coefficient Studies', fontweight='bold')
-    for ax, (xk, xl, ttl) in zip(axs, [
-        ('time','Time (s)','CD vs Time'), ('aoa','AoA (°)','CD vs AoA'), ('vel_mach','Mach','CD vs Mach')
-    ]):
-        scatter_to(ax, data[xk], data['cd'])
-        ax.set(xlabel=xl, ylabel='CD', title=ttl)
-        if xk == 'time': shade(ax)
-    fig3.tight_layout()
-
-    # page 4
-    fig4, axs = plt.subplots(1, 3, figsize=(14, 4))
-    fig4.suptitle('Stability Studies', fontweight='bold')
-    for ax, (xk, xl, ttl) in zip(axs, [
-        ('time','Time (s)','SM vs Time'), ('cna','CNα','SM vs CNα'), ('vel_mach','Mach','SM vs Mach')
-    ]):
-        scatter_to(ax, data[xk], data['sm'])
-        ax.set(xlabel=xl, ylabel='SM (cal)', title=ttl)
-        if xk == 'time': shade(ax)
-    fig4.tight_layout()
-
-    plt.show()
-    return fig1, fig2, fig3, fig4
 
 def compute_sensitivity_bands(build_data_fn, windows, keys, apogee_key="apogee"):
     """
@@ -533,7 +540,9 @@ def graph2(data, areas, build_data_fn=None, windows=(31, 51, 71, 91, 111), mach_
 
     plt.show()
     return fig1, fig2, fig3, fig4
-
+import inspect
+print(inspect.getfile(load_file))
+print(inspect.getsource(load_file))
 def main():
     rocket = input("Rocket name: ")
     flight = input("Flight date (mm/dd/yyyy): ")
