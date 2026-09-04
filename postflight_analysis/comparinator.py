@@ -453,6 +453,13 @@ def calculate(data_dict, cutoff_dict, rocket):
     calc["sm"] = faa.stability(time, calc["iyy"], gyro_y, calc["fn"])
 
     #calc["sm2"] = faa.stability1(faa.frequency(calc["aoa"], sample_rate, calc["time"]), calc["iyy"], calc["accel_v"], calc["density"], calc["aoa"], calc["fn"])
+    ork_bundle = find_bundle("ork")
+
+    calc["ork_accel_total"] = ork_accel_total
+    calc["ork_aoa"]         = ork_aoa
+    calc["ork_fd"]          = ork_fd
+    calc["ork_cd"]          = ork_cd
+    calc["ork_sm"]          = ork_sm
 
     df = pd.DataFrame.from_dict(calc)   
     df.to_csv(f"calc_data.csv", index=False)
@@ -495,20 +502,20 @@ def graph2(data, areas, build_data_fn=None, windows=(31, 51, 71, 91, 111), mach_
     bands = {}
     if build_data_fn is not None:
         bands, band_apogee = compute_sensitivity_bands(build_data_fn, windows, band_keys)
-
+ 
     def shade(ax, x_end=None):
         ax.axvspan(0, t[coast], alpha=0.15, color='lightblue')
         ax.axvspan(t[coast], t[apogee], alpha=0.15, color='pink')
         if x_end is not None:
             ax.set_xlim(0, x_end)
-
+ 
     def fit_ylim(ax, key):
         y = np.asarray(data[key][:apogee], float); y = y[np.isfinite(y)]
         if y.size == 0:
             return
         pad = (y.max() - y.min()) * 0.05 or 1
         ax.set_ylim(y.min() - pad, y.max() + pad)
-
+ 
     def plot_to(ax, xarr, yarr, band=None, **kwargs):
         ax.plot(xarr[:apogee], yarr[:apogee], **kwargs)
         if band is not None:
@@ -516,19 +523,24 @@ def graph2(data, areas, build_data_fn=None, windows=(31, 51, 71, 91, 111), mach_
             n = min(apogee, len(lower))
             ax.fill_between(xarr[:n], lower[:n], upper[:n], alpha=0.2,
                              color=kwargs.get('color', 'C0'), label='_nolegend_')
-
+ 
     # page 1
+    ork_overlay_1 = {'accel_total': 'ork_accel_total', 'aoa': 'ork_aoa'}
     fig1, axs = plt.subplots(3, 2, figsize=(12, 10))
     fig1.suptitle('Basics', fontweight='bold')
     for ax, (k, lbl) in zip(axs.flat, [
         ('altitude','Altitude (ft)'), ('accel_v','Velocity (ft/s)'), ('accel_total','Acceleration (ft/s²)'),
         ('aoa','AoA (°)'), ('theta','Pitch (°)'), ('flight_angle','Flight Angle (°)')
     ]):
-        plot_to(ax, t, data[k], band=bands.get(k))
+        has_overlay = k in ork_overlay_1 and ork_overlay_1[k] in data
+        plot_to(ax, t, data[k], band=bands.get(k), label='Flight' if has_overlay else None)
+        if has_overlay:
+            plot_to(ax, t, data[ork_overlay_1[k]], label='OpenRocket')
+            ax.legend()
         ax.set(xlabel='Time (s)', ylabel=lbl, title=lbl)
         shade(ax, x_end=t[apogee]); fit_ylim(ax, k)
     fig1.tight_layout()
-
+ 
     # page 2 — thrust and drag limited to apogee on x-axis
     fig2, axs = plt.subplots(1, 3, figsize=(14, 4))
     fig2.suptitle('Forces', fontweight='bold')
@@ -537,12 +549,14 @@ def graph2(data, areas, build_data_fn=None, windows=(31, 51, 71, 91, 111), mach_
         plot_to(ax, t, data[ka], band=bands.get(ka), label='RAS' if ka == 'thrust_ras' else 'Flight')
         if ka == 'thrust_ras':
             plot_to(ax, t, data['thrust_spec'], label='Motor spec')
+        if ka == 'fd' and 'ork_fd' in data:
+            plot_to(ax, t, data['ork_fd'], label='OpenRocket')
         ax.set(xlabel='Time (s)', ylabel=lbl, title=lbl)
         shade(ax, x_end=t[apogee])
         fit_ylim(ax, ka)
         ax.legend()
     fig2.tight_layout()
-
+ 
     # page 3 — CD plots exclude low-velocity (low-Mach) points
     def scatter_with_band(ax, xarr, ykey, bands, apogee, mask, bins=40):
         x = xarr[:apogee][mask]
@@ -567,19 +581,29 @@ def graph2(data, areas, build_data_fn=None, windows=(31, 51, 71, 91, 111), mach_
                 hi_med.append(np.nanmedian(upper[bmask]))
             ax.fill_between(centers, lo_med, hi_med, alpha=0.25, color='orange', label='Window sensitivity')
         ax.legend(fontsize=7)
-
+ 
     vel_mask = data['vel_mach'][:apogee] >= mach_min
-
+ 
+    def overlay_ork(ax, xarr, ork_key, apogee, mask, color='green'):
+        if ork_key not in data:
+            return
+        x = xarr[:apogee][mask]
+        y = data[ork_key][:apogee][mask]
+        ok = np.isfinite(x) & np.isfinite(y)
+        ax.scatter(x[ok], y[ok], s=4, alpha=0.5, color=color, label='OpenRocket')
+        ax.legend(fontsize=7)
+ 
     fig3, axs = plt.subplots(1, 3, figsize=(14, 4))
     fig3.suptitle('Drag Coefficient Studies', fontweight='bold')
     for ax, (xk, xl, ttl) in zip(axs, [
         ('time','Time (s)','CD vs Time'), ('aoa','AoA (°)','CD vs AoA'), ('vel_mach','Mach','CD vs Mach')
     ]):
         scatter_with_band(ax, data[xk], 'cd', bands, apogee, vel_mask)
+        overlay_ork(ax, data[xk], 'ork_cd', apogee, vel_mask)
         ax.set(xlabel=xl, ylabel='CD', title=ttl)
         if xk == 'time': shade(ax)
     fig3.tight_layout()
-
+ 
     # page 4
     fig4, axs = plt.subplots(1, 3, figsize=(14, 4))
     fig4.suptitle('Stability Studies', fontweight='bold')
@@ -587,10 +611,11 @@ def graph2(data, areas, build_data_fn=None, windows=(31, 51, 71, 91, 111), mach_
         ('time','Time (s)','SM vs Time'), ('cna','CN\u03b1','SM vs CN\u03b1'), ('vel_mach','Mach','SM vs Mach')
     ]):
         scatter_with_band(ax, data[xk], 'sm', bands, apogee, vel_mask)
+        overlay_ork(ax, data[xk], 'ork_sm', apogee, vel_mask)
         ax.set(xlabel=xl, ylabel='SM (cal)', title=ttl)
         if xk == 'time': shade(ax)
     fig4.tight_layout()
-
+ 
     plt.show()
     return fig1, fig2, fig3, fig4
 
