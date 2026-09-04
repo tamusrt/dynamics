@@ -48,7 +48,7 @@ COLUMN_MAP = {
     "gyro": ["Flight_Time_(s)", "Gyro_X", "Gyro_Y", "Gyro_Z", "Accel_X", "Accel_Y", "Accel_Z"],
     "thrust": ["Time", "Thrust (N)"],
     "ras": ["Flight Time Rounded (s)", "Thrust (lb)", "Accel (ft/sec^2)", "Weight (lb)"],
-    "ork": ["Total acceleration (m/s²)", "Angle of attack (°)"]
+    "ork": ["Time (s)","Total acceleration (m/s²)", "Angle of attack (°)", "Pitch rate (°/s)", "Yaw rate (°/s)","Stability margin calibers (​)", "Drag force (N)", "Drag coefficient (​)"]
 }
 
 # Alias groups: canonical short names -> raw column names.
@@ -87,6 +87,16 @@ ALIASES = {
         "accel": "Accel (ft/sec^2)",
         "weight": "Weight (lb)",
     },
+    "ork": {
+        "time": "Time (s)",
+        "ork_accel_total":"Total acceleration (m/s²)",
+        "ork_aoa": "Angle of attack (°)", 
+        "ork_pitch":"Pitch rate (°/s)", 
+        "ork_flight_angle":"Yaw rate (°/s)",
+        "ork_sm": "Stability margin calibers (​)", 
+        "ork_fd":"Drag force (N)", 
+        "ork_cd":"Drag coefficient (​)"
+    }
 }
 
 # unit each alias column is stored in, per ALIASES group.
@@ -121,6 +131,15 @@ UNITS = {
         "accel": "ft/s**2",
         "weight": "lbf",
     },
+    "ork":{
+        "ork_accel_total":"m/s**2",
+        "ork_aoa": "deg", 
+        "ork_pitch":"deg/s", 
+        "ork_flight_angle":"deg/s",
+        "ork_sm": "dimensionless", 
+        "ork_fd":"N", 
+        "ork_cd":"dimensionless"
+    }
 }
 TIME_UNIT = "s"
 
@@ -137,6 +156,7 @@ TIME_ALIAS = {
     "gyro": "time",
     "thrust": "time",
     "ras": "time",
+    "ork":"time"
 }
 
 def _detect_format(stem: str, format: str | None = None):
@@ -361,6 +381,7 @@ def calculate(data_dict, cutoff_dict, rocket):
     gyro_bundle = find_bundle("gyro")
     thrust_bundle = find_bundle("thrust")
     ras_bundle = find_bundle("ras")
+    ork_bundle = find_bundle("ork")
 
     time = accel_bundle.time.magnitude
     temperature = accel_bundle.temperature.magnitude
@@ -380,6 +401,14 @@ def calculate(data_dict, cutoff_dict, rocket):
 
     thrust = ras_bundle.ras_thrust.magnitude            # lbf
     weight = ras_bundle.weight.magnitude                # lbf
+
+    ork_accel_total = ork_bundle.ork_accel_total.magnitude
+    ork_aoa = ork_bundle.ork_aoa.magnitude
+    ork_pitch = ork_bundle.ork_pitch.magnitude
+    ork_flight_angle = ork_bundle.ork_flight_angle.magnitude
+    ork_sm = ork_bundle.ork_sm.magnitude
+    ork_fd = ork_bundle.ork_fd.magnitude
+    ork_cd = ork_bundle.ork_cd.magnitude
 
     stride = 50  # tune this — e.g. 120,000/50 ≈ 2,400 points, plenty for a smooth CG/Iyy curve
     coarse_time = time[::stride]
@@ -419,9 +448,10 @@ def calculate(data_dict, cutoff_dict, rocket):
     calc["thrust_ras"] = thrust
     calc["thrust_spec"] = spec_thrust
     calc["altitude"] = altitude
-    calc["cgs"] = faa.total_cg(rocket, calc["time"])[1]
-    calc["iyy"] = faa.total_iyy(rocket, calc["time"], calc["cgs"])
+    #calc["cgs"] = faa.total_cg(rocket, calc["time"])[1]
+    #calc["iyy"] = faa.total_iyy(rocket, calc["time"], calc["cgs"])
     calc["sm"] = faa.stability(time, calc["iyy"], gyro_y, calc["fn"])
+
     #calc["sm2"] = faa.stability1(faa.frequency(calc["aoa"], sample_rate, calc["time"]), calc["iyy"], calc["accel_v"], calc["density"], calc["aoa"], calc["fn"])
 
     df = pd.DataFrame.from_dict(calc)   
@@ -576,7 +606,7 @@ def main():
     rocket_name = input("Rocket name: ")
     flight = input("Flight date (mm/dd/yyyy): ")
     correct_blue = input("BlueRaven or BlueJay?: ")
-    engine_name = input("Engine name: ")
+    engine_name = rocket_name
 
 
     key = rocket_name.strip().lower()
