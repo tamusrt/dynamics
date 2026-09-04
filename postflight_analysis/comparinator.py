@@ -8,31 +8,6 @@ import flight_analysis_functions as faa
 from scipy.signal import stft, hilbert
 from pathlib import Path
 import pint
-
-
-radius = 3
-# x = 0 at the nose tip, increasing aft. offset is each part's forward face.
-# plumbing and tail are still at station 0 and the engine internals total 0.83 in
-# against a 50 in Engine.length; both need real measurements.
-rocket = [
-    faa.Component("nosetip", length=3.72, radius_= 0.5, mass=6.7/16, offset=0),
-    faa.Component("nose_cone", length=30, radius_=3, mass=30.2/16, offset=3.72),
-    faa.Component("payload", length=15.748, radius_=5.568/2, mass=70.4/16, offset=26),
-    faa.Component("bulkhead", length=3, radius_=5.843/16, mass=0, offset=41.8), 
-    faa.Component("straight", length=6, radius_=3, mass=9.4/16, offset=30),
-    faa.Component("shoulder", length=8, radius_=5.845/2, mass=9.59/16, offset=34),
-    faa.Component("forward", length=33.8, radius_=3, mass=50.9/16, offset=36),
-    faa.Component("forward2", length=18.7, radius_=3, mass=17.4/16, offset=69.8),
-    faa.Component("piston", length=6, radius_=3, mass=14.4/16, offset=58.5),
-    faa.Engine(faa.EngineComponent(name="ox_tank", dry_mass=0.35, prop_mass=1.2, offset=0.0, length=0.45),faa.EngineComponent(name="plumbing", dry_mass=0.15, offset=0.45, length=0.08),faa.EngineComponent(name="fuel_grain", dry_mass=0.4, prop_mass=0.1, offset=0.53, length=0.30), length=50, offset=130),
-    faa.Component("plumbing", length=7.13, radius_=3, mass=5.43/16, offset=0, local_cg=0),
-    faa.Component("tail", length=3, radius_=3, mass=5.43/16, offset=0, local_cg=0),
-    faa.Fins(mass=62.7/4/16,root_chord=15, tip_chord=3, span=5.25, offset=204.5-185),
-    faa.Fins(mass=62.7/4/16,root_chord=15, tip_chord=3, span=5.25, offset=204.5-185),
-    faa.Fins(mass=62.7/4/16,root_chord=15, tip_chord=3, span=5.25, offset=204.5-185),
-    faa.Fins(mass=62.7/4/16,root_chord=15, tip_chord=3, span=5.25, offset=204.5-185),
-    faa.Component("fin_can", length=18, radius_=6.055/3, mass=15/16, offset=204.5-183, local_cg=0)
-]
 from pathlib import Path
 import pandas as pd
 import numpy as np
@@ -42,6 +17,25 @@ import pint
 ureg = pint.UnitRegistry()
 Q_ = ureg.Quantity
 
+radius = 3
+# x = 0 at the nose tip, increasing aft. offset is each part's forward face.
+# plumbing and tail are still at station 0 and the engine internals total 0.83 in
+# against a 50 in Engine.length; both need real measurements.
+sol_ignis = faa.Engine(faa.EngineComponent(name="ox_tank", dry_mass=0.35, prop_mass=1.2, offset=0.0, length=0.45),
+    faa.EngineComponent(name="plumbing", dry_mass=0.15, offset=0.45, length=0.08),
+    faa.EngineComponent(name="fuel_grain", dry_mass=0.4, prop_mass=0.1, offset=0.53, length=0.30), length=50, offset=130)
+
+
+ROCKET_PATHS = {
+    "morpheus": r"G:\Shared drives\TAMU-SRT\srt_general\9_flight_data\Morpheus\04232025\morph.xml",
+    # add other rockets here as needed
+}
+
+ROCKET_ENGINES = {
+    "morpheus": sol_ignis,  
+    "sol_invictus": sol_ignis # the faa.Engine instance built at module scope
+    # add other rockets' engines here
+}
 # Real, on-disk file "types" -> which raw columns to keep, in order.
 # Note: br_accel and bj_accel share the exact same schema, so they both
 # get mapped to the same ALIASES group ("accel") below.
@@ -55,6 +49,7 @@ COLUMN_MAP = {
     "gyro": ["Flight_Time_(s)", "Gyro_X", "Gyro_Y", "Gyro_Z", "Accel_X", "Accel_Y", "Accel_Z"],
     "thrust": ["Time", "Thrust (N)"],
     "ras": ["Flight Time Rounded (s)", "Thrust (lb)", "Accel (ft/sec^2)", "Weight (lb)"],
+    "ork": ["Total acceleration (m/sÂ²)", "Angle of attack (Â°)"]
 }
 
 # Alias groups: canonical short names -> raw column names.
@@ -96,7 +91,7 @@ ALIASES = {
 }
 
 # unit each alias column is stored in, per ALIASES group.
-# "time" is intentionally omitted here since every group uses seconds -
+# "time" is not included since every group uses seconds -
 # handled once via TIME_UNIT instead of repeating it in every group.
 UNITS = {
     "accel": {
@@ -131,6 +126,7 @@ UNITS = {
 TIME_UNIT = "s"
 
 # per-format read settings (delimiter/encoding)
+# most of the csvs use comma separated, however, ras aero data defaults to
 READ_CONFIG = {
     "ras": {"sep": ",", "encoding": "utf-8-sig"},
 }
@@ -144,23 +140,34 @@ TIME_ALIAS = {
     "ras": "time",
 }
 
-
-def _detect_format(stem: str):
+def _detect_format(stem: str, format: str | None = None):
     """Match the filename stem against the REAL file types only
     (COLUMN_MAP / READ_CONFIG keys) — never against ALIASES keys.
-    This is what was ambiguous before: "br_accel" and "accel" would
-    both match, and since the old code searched a `set` the winner
-    was effectively random.
-    Sorted by length descending so a more specific key (e.g. "br_accel")
-    always wins over a shorter one, if that ever becomes ambiguous.
+
+    If `format` is given, it's used directly (after validation) instead
+    of guessing from the filename. This lets callers resolve ambiguous
+    cases (e.g. "br_accel" vs "accel") manually rather than relying on
+    auto-detection.
+
+    Auto-detection is sorted by length descending so a more specific key
+    (e.g. "br_accel") always wins over a shorter one, if that ever
+    becomes ambiguous.
     """
-    stem = stem.lower()
     candidates = set(COLUMN_MAP) | set(READ_CONFIG)
+
+    if format is not None:
+        format = format.lower()
+        if format not in candidates:
+            raise ValueError(
+                f"Unknown format {format!r}. Valid options: {sorted(candidates)}"
+            )
+        return format
+
+    stem = stem.lower()
     for key in sorted(candidates, key=len, reverse=True):
         if key in stem:
             return key
     return None
-
 
 def _alias_group(fmt: str):
     """Map a raw fmt (e.g. 'br_accel') to its ALIASES group (e.g. 'accel')."""
@@ -208,8 +215,13 @@ class ArrayBundle:
         return f"ArrayBundle(columns={self._columns})"
 
 
-def load_file(path: Path) -> ArrayBundle:
-    fmt = _detect_format(path.stem)
+def load_file(path: Path, format: str | None = None) -> ArrayBundle:
+    fmt = _detect_format(path.stem, format=format)
+    if fmt is None:
+        raise ValueError(
+            f"Could not detect a format for {path.name} from its filename. "
+            f"Pass format='br_accel' or format='bj_accel' explicitly."
+        )
     group = _alias_group(fmt)
     read_kwargs = READ_CONFIG.get(fmt, DEFAULT_READ_CONFIG)
 
@@ -234,9 +246,12 @@ def load_file(path: Path) -> ArrayBundle:
     return ArrayBundle(df, units=UNITS.get(group))
 
 
-def load(rocket, flight, base_dir=r"G:\Shared drives\TAMU-SRT\srt_general\9_flight_data"):
+def load(rocket, flight, format=None, base_dir=r"G:\Shared drives\TAMU-SRT\srt_general\9_flight_data"):
     """Loads every CSV in a flight's folder into a dict of ArrayBundles, keyed by filename stem.
-    Example: data = load("RocketA", "Flight3")
+    `format`, if given (e.g. "br_accel" or "bj_accel"), is only applied to files whose
+    filename alone doesn't already unambiguously indicate a type - it's a fallback,
+    not an override, so gyro/thrust/ras files still auto-detect normally.
+    Example: data = load("RocketA", "Flight3", format="br_accel")
              data["br_accel_launch"].altitude   -> numpy array
              data["br_accel_launch"]["altitude"] -> same, dict-style
     """
@@ -247,7 +262,9 @@ def load(rocket, flight, base_dir=r"G:\Shared drives\TAMU-SRT\srt_general\9_flig
     results = {}
     for csv_path in sorted(folder.glob("*.csv")):
         try:
-            results[csv_path.stem] = load_file(csv_path)
+            detected = _detect_format(csv_path.stem)
+            chosen_format = detected if detected is not None else format
+            results[csv_path.stem] = load_file(csv_path, format=chosen_format)
         except Exception as e:
             print(f"Skipping {csv_path.name}: {e}")
     return results
@@ -330,7 +347,7 @@ def interpolate(data):
     return new_bundles, cutoffs
 
 
-def calculate(data_dict, cutoff_dict):
+def calculate(data_dict, cutoff_dict, rocket):
     calc_array = []
     calc = {}
     titles = [...]
@@ -366,9 +383,9 @@ def calculate(data_dict, cutoff_dict):
     weight = ras_bundle.weight.magnitude                # lbf
 
     # stages of flight
-    engine = [p for p in rocket if isinstance(p, faa.Engine)][0]
-    engine.set_curve(thrusts=spec_thrust, times=time)
-    engine._process_curve()
+    #engine = [p for p in rocket if isinstance(p, faa.Engine)][0]
+    #engine.set_curve(thrusts=spec_thrust, times=time)
+    #engine._process_curve()
     cutoff_dict["apogee"] = apogee = np.where(altitude >= max(altitude))[0][0]
     cutoff_dict["coast"] = np.where(spec_thrust <= 5)[0][2]
     cutoff_dict["uppies"] = 0
@@ -540,20 +557,58 @@ def graph2(data, areas, build_data_fn=None, windows=(31, 51, 71, 91, 111), mach_
 
     plt.show()
     return fig1, fig2, fig3, fig4
-import inspect
-print(inspect.getfile(load_file))
-print(inspect.getsource(load_file))
+
+BLUE_FORMAT_MAP = {
+    "blueraven": "br_accel", "br": "br_accel",
+    "bluejay": "bj_accel", "bj": "bj_accel",
+}
+
+
 def main():
-    rocket = input("Rocket name: ")
+    rocket_name = input("Rocket name: ")
     flight = input("Flight date (mm/dd/yyyy): ")
-    data = load(rocket, flight)
-    df = pd.read_csv(rf"G:\Shared drives\TAMU-SRT\srt_general\9_flight_data\{rocket}\{flight}\CONDITION_ras.csv", sep=",", encoding="utf-8-sig")
+    correct_blue = input("BlueRaven or BlueJay?: ")
+    engine_name = input("Engine name: ")
+ 
+    key = rocket_name.strip().lower()
+    if key not in ROCKET_PATHS:
+        raise ValueError(f"Unknown rocket '{rocket_name}'. Known: {list(ROCKET_PATHS)}")
+ 
+    blue_key = correct_blue.strip().lower().replace(" ", "")
+    accel_format = BLUE_FORMAT_MAP.get(blue_key)
+    if accel_format is None:
+        raise ValueError(
+            f"Unknown BlueRaven/BlueJay answer '{correct_blue}'. "
+            f"Expected one of: {sorted(set(BLUE_FORMAT_MAP.values()))}"
+        )
+ 
+    engine_key = engine_name.strip().lower()
+    if engine_key not in ROCKET_ENGINES:
+        raise ValueError(f"Unknown engine '{engine_name}'. Known: {list(ROCKET_ENGINES)}")
+ 
+    def find_bundle(data, substr):
+        matches = [v for k, v in data.items() if substr in k.lower()]
+        if not matches:
+            raise KeyError(f"No dataset found containing '{substr}' in its key")
+        return matches[0]
+ 
+    data = load(rocket_name, flight, format=accel_format)
+ 
+    thrust_bundle = find_bundle(data, "thrust")
+ 
+    thrusts_array = thrust_bundle.spec_thrust.magnitude
+    times_array = thrust_bundle.time.magnitude
+ 
+    print(len(thrusts_array), len(times_array))
+    rocket = faa.Rocket.from_file(ROCKET_PATHS[key], engine=ROCKET_ENGINES[engine_key])
+    rocket.engine.set_curve(thrusts_array, times_array)
+ 
     interpolated_data, cutoff_dict = interpolate(data)
     for entry in interpolated_data:
         bundle = interpolated_data[entry]
         df = pd.DataFrame({col: getattr(bundle, col) for col in bundle.columns})
         df.to_csv(f"interp_{entry}.csv", index=False)
-    graph_values, cutoff_dict = calculate(interpolated_data, cutoff_dict)
+    graph_values, cutoff_dict = calculate(interpolated_data, cutoff_dict, rocket)
     graph2(graph_values, cutoff_dict)
 
 
