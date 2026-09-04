@@ -314,9 +314,14 @@ class BodyPart:
     mass: float            # kg
     r_outer: Callable = field(repr=False)
     r_inner: Callable = field(repr=False)
+    _moments_cache: tuple | None = field(default=None, repr=False, compare=False, init=False)
 
     def moments(self):
-        return _section_moments(self.length, self.r_outer, self.r_inner, self.mass, self.offset)
+        if self._moments_cache is None:
+            self._moments_cache = _section_moments(
+                self.length, self.r_outer, self.r_inner, self.mass, self.offset
+            )
+        return self._moments_cache
 
     @property
     def cg(self) -> float:
@@ -450,11 +455,12 @@ class Rocket:
             total_mass, total_moment = structural_mass, structural_moment
         return total_moment / total_mass if total_mass else 0.0
 
-    def iyy_at(self, t: float = 0.0) -> float:
+    def iyy_at(self, t: float = 0.0, cg: float | None = None) -> float:
         """Pitch-axis Iyy (kg*m^2) about the instantaneous cg, engine included."""
-        cg = self.cg_at(t)
+        if cg is None:
+            cg = self.cg_at(t)
         iyy = (sum(p.iyy_about(cg) for p in self.parts)
-               + sum(f.iyy_about(cg) for f in self.fins))
+            + sum(f.iyy_about(cg) for f in self.fins))
         if self.engine is not None:
             iyy += self.engine.iyy_at(t, cg)
         return iyy

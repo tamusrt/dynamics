@@ -34,7 +34,6 @@ ROCKET_PATHS = {
 ROCKET_ENGINES = {
     "morpheus": sol_ignis,  
     "sol_invictus": sol_ignis # the faa.Engine instance built at module scope
-    # add other rockets' engines here
 }
 # Real, on-disk file "types" -> which raw columns to keep, in order.
 # Note: br_accel and bj_accel share the exact same schema, so they both
@@ -49,7 +48,7 @@ COLUMN_MAP = {
     "gyro": ["Flight_Time_(s)", "Gyro_X", "Gyro_Y", "Gyro_Z", "Accel_X", "Accel_Y", "Accel_Z"],
     "thrust": ["Time", "Thrust (N)"],
     "ras": ["Flight Time Rounded (s)", "Thrust (lb)", "Accel (ft/sec^2)", "Weight (lb)"],
-    "ork": ["Total acceleration (m/sÂ²)", "Angle of attack (Â°)"]
+    "ork": ["Total acceleration (m/s²)", "Angle of attack (°)"]
 }
 
 # Alias groups: canonical short names -> raw column names.
@@ -382,6 +381,13 @@ def calculate(data_dict, cutoff_dict, rocket):
     thrust = ras_bundle.ras_thrust.magnitude            # lbf
     weight = ras_bundle.weight.magnitude                # lbf
 
+    stride = 50  # tune this — e.g. 120,000/50 ≈ 2,400 points, plenty for a smooth CG/Iyy curve
+    coarse_time = time[::stride]
+    coarse_cgs = faa.total_cg(rocket, coarse_time)[1]
+    coarse_iyy = faa.total_iyy(rocket, coarse_time, coarse_cgs)
+
+    calc["cgs"] = np.interp(time, coarse_time, coarse_cgs)
+    calc["iyy"] = np.interp(time, coarse_time, coarse_iyy)
     # stages of flight
     #engine = [p for p in rocket if isinstance(p, faa.Engine)][0]
     #engine.set_curve(thrusts=spec_thrust, times=time)
@@ -562,14 +568,17 @@ BLUE_FORMAT_MAP = {
     "blueraven": "br_accel", "br": "br_accel",
     "bluejay": "bj_accel", "bj": "bj_accel",
 }
-
+with open(r"G:\Shared drives\TAMU-SRT\srt_general\9_flight_data\Morpheus\04232025\CONDITION_ork.csv", "rb") as f:
+    print(f.readline())
 
 def main():
+    print(f"    .\n   .'.\n   |o|   Welcome to Comparinator!™\n  .'o'.  \033[3mFor all your comparing needs\033[0m\n  |.-.|\n  '   '\n   ( )\n    )\n   ( )")
     rocket_name = input("Rocket name: ")
     flight = input("Flight date (mm/dd/yyyy): ")
     correct_blue = input("BlueRaven or BlueJay?: ")
     engine_name = input("Engine name: ")
- 
+
+
     key = rocket_name.strip().lower()
     if key not in ROCKET_PATHS:
         raise ValueError(f"Unknown rocket '{rocket_name}'. Known: {list(ROCKET_PATHS)}")
@@ -598,8 +607,7 @@ def main():
  
     thrusts_array = thrust_bundle.spec_thrust.magnitude
     times_array = thrust_bundle.time.magnitude
- 
-    print(len(thrusts_array), len(times_array))
+
     rocket = faa.Rocket.from_file(ROCKET_PATHS[key], engine=ROCKET_ENGINES[engine_key])
     rocket.engine.set_curve(thrusts_array, times_array)
  
