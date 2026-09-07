@@ -830,7 +830,7 @@ def fd(thrust, tilt, theta, weight, accelx, accely, accelz):
     mass = np.asarray(weight, float)/G_FT
     f = np.asarray(thrust, float)[..., None] * axial_unit(tilt, theta) \
         - mass[..., None] * specific_force(accelx, accely, accelz)
-
+    
     return f[..., 0], f[..., 1], f[..., 2], np.linalg.norm(f, axis=-1)
 
 def wind_axes(fdx, fdy, fdz, v_cr, v_dr, v_up, eps=1e-9):
