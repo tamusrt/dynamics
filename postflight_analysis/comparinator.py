@@ -663,6 +663,71 @@ BLUE_FORMAT_MAP = {
     "bluejay": "bj_accel", "bj": "bj_accel",
 }
 
+def graph_diff(data, areas, mach_min=0.08, start=15):
+    '''plots flight-minus-OpenRocket residuals for every available overlay pair.
+    Positive = flight measured higher than OpenRocket predicted.'''
+    coast, apogee = areas["coast"], areas["apogee"]
+    t = data['time']
+
+    def shade(ax):
+        ax.axvspan(0, t[coast], alpha=0.15, color='lightblue')
+        ax.axvspan(t[coast], t[apogee], alpha=0.15, color='pink')
+        ax.axhline(0, color='black', linewidth=0.8, alpha=0.6)
+
+    # (data key, ork key, label, needs_mach_mask)
+    pairs = [
+        ('altitude', 'ork_altitude', 'Altitude (ft)', False),
+        ('accel_v', 'ork_vel_total', 'Velocity (ft/s)', False),
+        ('accel_total', 'ork_accel_total', 'Acceleration (ft/s²)', False),
+        ('aoa', 'ork_aoa', 'AoA (°)', False),
+        ('fd', 'ork_fd', 'Drag (lbf)', False),
+        ('cd', 'ork_cd', 'CD', True),
+        ('sm', 'ork_sm', 'SM (cal)', True),
+    ]
+    available = [(k, ok, lbl, mm) for k, ok, lbl, mm in pairs if k in data and ok in data]
+
+    if not available:
+        print("No overlay pairs found in data — check key names.")
+        return None
+
+    vel_mask_full = data['vel_mach'][start:apogee] >= mach_min if 'vel_mach' in data else None
+
+    n = len(available)
+    ncols = 2
+    nrows = -(-n // ncols)  # ceil
+    fig, axs = plt.subplots(nrows, ncols, figsize=(12, 4 * nrows))
+    axs = np.atleast_1d(axs).flatten()
+
+    for ax, (k, ok, lbl, needs_mask) in zip(axs, available):
+        flight = np.asarray(data[k][start:apogee], float)
+        ork = np.asarray(data[ok][start:apogee], float)
+        x = t[start:apogee]
+
+        if needs_mask and vel_mask_full is not None:
+            m = vel_mask_full
+            x, flight, ork = x[m], flight[m], ork[m]
+
+        diff = flight - ork
+        ok_mask = np.isfinite(diff)
+
+        if needs_mask:
+            ax.scatter(x[ok_mask], diff[ok_mask], s=4, alpha=0.5, color='C3')
+        else:
+            ax.plot(x[ok_mask], diff[ok_mask], color='C3')
+            shade(ax)
+
+        ax.axhline(0, color='black', linewidth=0.8, alpha=0.6)
+        ax.set(xlabel='Time (s)', ylabel=f'Δ {lbl}', title=f'{lbl}: Flight − OpenRocket')
+
+    # hide any unused axes if odd number of pairs
+    for ax in axs[len(available):]:
+        ax.set_visible(False)
+
+    fig.suptitle('Flight vs OpenRocket Residuals', fontweight='bold')
+    fig.tight_layout()
+    plt.show()
+    return fig
+
 def main():
     print(f"    .\n   .'.\n   |o|   Welcome to Comparinator!™\n  .'o'.  \033[3mFor all your comparing needs\033[0m\n  |.-.|\n  '   '\n   ( )\n    )\n   ( )")
     rocket_name = input("Rocket name: ")
@@ -710,6 +775,7 @@ def main():
         df.to_csv(f"interp_{entry}.csv", index=False)
     graph_values, cutoff_dict = calculate(interpolated_data, cutoff_dict, rocket)
     graph2(graph_values, cutoff_dict)
+    graph_diff(graph_values, cutoff_dict)
 
 
 if __name__ == "__main__":
