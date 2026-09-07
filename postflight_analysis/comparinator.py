@@ -25,7 +25,6 @@ sol_ignis = faa.Engine(faa.EngineComponent(name="ox_tank", dry_mass=0.35, prop_m
     faa.EngineComponent(name="plumbing", dry_mass=0.15, offset=0.45, length=0.08),
     faa.EngineComponent(name="fuel_grain", dry_mass=0.4, prop_mass=0.1, offset=0.53, length=0.30), length=50, offset=130)
 
-
 BASE_DIR = r"G:\Shared drives\TAMU-SRT\srt_general\9_flight_data"
 
 ROCKET_PATHS = {
@@ -292,7 +291,7 @@ def load_file(path: Path, format: str | None = None) -> ArrayBundle:
     return ArrayBundle(df, units=UNITS.get(group))
 
 
-def load(rocket, flight, format=None, base_dir=BASE_DIR):
+def load(rocket, flight, format=None, base_dir=r"G:\Shared drives\TAMU-SRT\srt_general\9_flight_data"):
     """Loads every CSV in a flight's folder into a dict of ArrayBundles, keyed by filename stem.
     `format`, if given (e.g. "br_accel" or "bj_accel"), is only applied to files whose
     filename alone doesn't already unambiguously indicate a type - it's a fallback,
@@ -523,6 +522,46 @@ def plot_to(ax, xarr, yarr, band=None, apogee=None, **kwargs):
         ax.fill_between(xarr[:len(lower)], lower, upper, alpha=0.2,
                          color=kwargs.get('color', 'C0'), label='_nolegend_')
 
+def diagnostic_grid(column_specs, row_builders, row_labels=None, suptitle=None,
+                     col_width=4.5, row_height=3.8, wspace=0.35, hspace=0.55,
+                     top_margin=0.90, left_margin=0.07):
+    '''Generic N-row x M-column diagnostic figure builder.
+
+    column_specs: list of per-column identifying info (e.g. tuples of
+        (data_key, ork_key, label)) — one entry per column.
+    row_builders: list of functions, each with signature
+        fn(ax, col_spec) -> None, called once per (row, column) to draw
+        that cell. len(row_builders) determines the number of rows.
+    row_labels: optional list of strings, one per row, drawn as a bold
+        annotation to the left of each row's first axis instead of a
+        per-axis title — avoids "Parity"/"Parity"/"Parity" clutter
+        repeating across columns.
+    suptitle: optional figure-level title.
+    top_margin: fraction of figure height left below the suptitle for
+        the actual plot grid (e.g. 0.90 means the top 10% is reserved).
+    '''
+    ncols = len(column_specs)
+    nrows = len(row_builders)
+    fig, axs = plt.subplots(nrows, ncols,
+                             figsize=(col_width * ncols, row_height * nrows),
+                             squeeze=False)
+
+    if suptitle:
+        fig.suptitle(suptitle, fontweight='bold')
+
+    if row_labels:
+        for row, label in enumerate(row_labels):
+            axs[row, 0].annotate(label, xy=(-0.32, 0.5), xycoords='axes fraction',
+                                  fontsize=11, fontweight='bold',
+                                  ha='right', va='center', rotation=90)
+
+    for row, builder in enumerate(row_builders):
+        for col, spec in enumerate(column_specs):
+            builder(axs[row, col], spec)
+
+    fig.subplots_adjust(hspace=hspace, wspace=wspace, top=top_margin, left=left_margin)
+    return fig, axs
+
 def graph2(data, areas, build_data_fn=None, windows=(31, 51, 71, 91, 111), mach_min=0.08, start=15):
     '''graphs values across a couple different figures.
     mach_min gates the coefficient plots, where q sits in the denominator and
@@ -578,6 +617,56 @@ def graph2(data, areas, build_data_fn=None, windows=(31, 51, 71, 91, 111), mach_
         shade(ax, x_end=t[apogee])
         fit_ylim(ax, k, overlay_key=ork_overlay_1.get(k))
     fig1.tight_layout()
+
+    # page 1b — parity + percent error beneath each overlaid quantity from page 1
+    overlay_present = [(k, ork_overlay_1[k], lbl) for k, lbl in [
+        ('altitude', 'Altitude (ft)'), ('accel_v', 'Velocity (ft/s)'),
+        ('accel_total', 'Acceleration (ft/s²)'), ('aoa', 'AoA (°)')
+    ] if k in ork_overlay_1 and ork_overlay_1[k] in data]
+
+    fig1b = None
+    if overlay_present:
+        ncols = len(overlay_present)
+        fig1b, axs1b = plt.subplots(3, ncols, figsize=(4.5 * ncols, 13), squeeze=False)
+        fig1b.suptitle('Overlay Diagnostics: Raw / Parity / % Error', fontweight='bold')
+
+        row_labels = ['Raw', 'Parity', '% Error']
+        for row, label in enumerate(row_labels):
+            axs1b[row, 0].annotate(label, xy=(-0.35, 0.5), xycoords='axes fraction',
+                                    fontsize=11, fontweight='bold', ha='right', va='center')
+
+        for col, (k, ok, lbl) in enumerate(overlay_present):
+            flight = np.asarray(data[k][start:apogee], float)
+            ork = np.asarray(data[ok][start:apogee], float)
+            tt = t[start:apogee]
+            valid = np.isfinite(flight) & np.isfinite(ork)
+
+            ax_raw = axs1b[0, col]
+            ax_raw.plot(tt, flight, label='Flight', alpha=0.85)
+            ax_raw.plot(tt, ork, label='OpenRocket', alpha=0.85)
+            ax_raw.set(xlabel='Time (s)', ylabel=lbl, title=lbl)
+            shade(ax_raw, x_end=t[apogee])
+            ax_raw.legend(fontsize=7)
+
+            ax_par = axs1b[1, col]
+            ax_par.scatter(ork[valid], flight[valid], s=4, alpha=0.4)
+            if valid.any():
+                lims = [np.nanmin(ork[valid]), np.nanmax(ork[valid])]
+                ax_par.plot(lims, lims, 'k--', linewidth=1, label='y = x')
+            ax_par.set(xlabel=f'OpenRocket {lbl}', ylabel=f'Flight {lbl}')
+            ax_par.legend(fontsize=7)
+
+            ax_pct = axs1b[2, col]
+            denom = ork
+            pct_err = np.divide(flight - ork, denom,
+                                 out=np.full_like(denom, np.nan),
+                                 where=np.abs(denom) > 1e-6) * 100
+            ax_pct.plot(tt, pct_err, color='C3')
+            ax_pct.axhline(0, color='black', linewidth=0.8)
+            ax_pct.set(xlabel='Time (s)', ylabel='% error')
+            shade(ax_pct, x_end=t[apogee])
+
+        fig1b.subplots_adjust(hspace=0.5, wspace=0.35, top=0.92, left=0.08)
 
     # page 2 — thrust and drag limited to apogee on x-axis
     page2_items = [
@@ -658,77 +747,7 @@ def graph2(data, areas, build_data_fn=None, windows=(31, 51, 71, 91, 111), mach_
     fig4.tight_layout()
 
     plt.show()
-    return fig1, fig2, fig3, fig4
-
-BLUE_FORMAT_MAP = {
-    "blueraven": "br_accel", "br": "br_accel",
-    "bluejay": "bj_accel", "bj": "bj_accel",
-}
-
-def graph_diff(data, areas, mach_min=0.08, start=15):
-    '''plots flight-minus-OpenRocket residuals for every available overlay pair.
-    Positive = flight measured higher than OpenRocket predicted.'''
-    coast, apogee = areas["coast"], areas["apogee"]
-    t = data['time']
-
-    def shade(ax):
-        ax.axvspan(0, t[coast], alpha=0.15, color='lightblue')
-        ax.axvspan(t[coast], t[apogee], alpha=0.15, color='pink')
-        ax.axhline(0, color='black', linewidth=0.8, alpha=0.6)
-
-    # (data key, ork key, label, needs_mach_mask)
-    pairs = [
-        ('altitude', 'ork_altitude', 'Altitude (ft)', False),
-        ('accel_v', 'ork_vel_total', 'Velocity (ft/s)', False),
-        ('accel_total', 'ork_accel_total', 'Acceleration (ft/s²)', False),
-        ('aoa', 'ork_aoa', 'AoA (°)', False),
-        ('fd', 'ork_fd', 'Drag (lbf)', False),
-        ('cd', 'ork_cd', 'CD', True),
-        ('sm', 'ork_sm', 'SM (cal)', True),
-    ]
-    available = [(k, ok, lbl, mm) for k, ok, lbl, mm in pairs if k in data and ok in data]
-
-    if not available:
-        print("No overlay pairs found in data — check key names.")
-        return None
-
-    vel_mask_full = data['vel_mach'][start:apogee] >= mach_min if 'vel_mach' in data else None
-
-    n = len(available)
-    ncols = 2
-    nrows = -(-n // ncols)  # ceil
-    fig, axs = plt.subplots(nrows, ncols, figsize=(12, 4 * nrows))
-    axs = np.atleast_1d(axs).flatten()
-
-    for ax, (k, ok, lbl, needs_mask) in zip(axs, available):
-        flight = np.asarray(data[k][start:apogee], float)
-        ork = np.asarray(data[ok][start:apogee], float)
-        x = t[start:apogee]
-
-        if needs_mask and vel_mask_full is not None:
-            m = vel_mask_full
-            x, flight, ork = x[m], flight[m], ork[m]
-
-        diff = flight - ork
-        ok_mask = np.isfinite(diff)
-
-        if needs_mask:
-            ax.scatter(x[ok_mask], diff[ok_mask], s=4, alpha=0.5, color='C3')
-        else:
-            ax.plot(x[ok_mask], diff[ok_mask], color='C3')
-            shade(ax)
-
-        ax.axhline(0, color='black', linewidth=0.8, alpha=0.6)
-        ax.set(xlabel='Time (s)', ylabel=f'Δ {lbl}', title=f'{lbl}: Flight − OpenRocket')
-
-    # hide any unused axes if odd number of pairs
-    for ax in axs[len(available):]:
-        ax.set_visible(False)
-
-    fig.suptitle('Flight vs OpenRocket Residuals', fontweight='bold')
-    fig.tight_layout()
-    plt.show()
-    return fig
+    return fig1, fig1b, fig2, fig3, fig4
 
 def available_rockets(base_dir=BASE_DIR):
     """Rocket folders present under base_dir, alphabetically.
@@ -782,10 +801,9 @@ def _choose(label, options, notes=None):
                 return opt
         print("Not one of the listed options - try again.")
 
-
 def main():
     print(f"    .\n   .'.\n   |o|   Welcome to Comparinator!™\n  .'o'.  \033[3mFor all your comparing needs\033[0m\n  |.-.|\n  '   '\n   ( )\n    )\n   ( )")
-
+    
     rockets = available_rockets()
     if not rockets:
         raise SystemExit(f"No rocket folders found under {BASE_DIR}")
@@ -803,37 +821,27 @@ def main():
     labels = {f: _flight_label(f) for f in flights}
     flight = _choose(f"Flights on record for {rocket_name}:", flights, labels)
 
-    correct_blue = input("\nBlueRaven or BlueJay?: ")
     engine_name = rocket_name
-
-    blue_key = correct_blue.strip().lower().replace(" ", "")
-    accel_format = BLUE_FORMAT_MAP.get(blue_key)
-    if accel_format is None:
-        raise ValueError(
-            f"Unknown BlueRaven/BlueJay answer '{correct_blue}'. "
-            f"Expected one of: {sorted(set(BLUE_FORMAT_MAP.values()))}"
-        )
- 
     engine_key = engine_name.strip().lower()
     if engine_key not in ROCKET_ENGINES:
         raise ValueError(f"Unknown engine '{engine_name}'. Known: {list(ROCKET_ENGINES)}")
- 
+
     def find_bundle(data, substr):
         matches = [v for k, v in data.items() if substr in k.lower()]
         if not matches:
             raise KeyError(f"No dataset found containing '{substr}' in its key")
         return matches[0]
- 
-    data = load(rocket_name, flight, format=accel_format)
- 
+
+    data = load(rocket_name, flight)
+
     thrust_bundle = find_bundle(data, "thrust")
- 
+
     thrusts_array = thrust_bundle.spec_thrust.magnitude
     times_array = thrust_bundle.time.magnitude
 
     rocket = faa.Rocket.from_file(ROCKET_PATHS[key], engine=ROCKET_ENGINES[engine_key])
     rocket.engine.set_curve(thrusts_array, times_array)
- 
+
     interpolated_data, cutoff_dict = interpolate(data)
     for entry in interpolated_data:
         bundle = interpolated_data[entry]
@@ -841,7 +849,6 @@ def main():
         df.to_csv(f"interp_{entry}.csv", index=False)
     graph_values, cutoff_dict = calculate(interpolated_data, cutoff_dict, rocket)
     graph2(graph_values, cutoff_dict)
-    graph_diff(graph_values, cutoff_dict)
 
 
 if __name__ == "__main__":
