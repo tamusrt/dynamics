@@ -26,8 +26,10 @@ sol_ignis = faa.Engine(faa.EngineComponent(name="ox_tank", dry_mass=0.35, prop_m
     faa.EngineComponent(name="fuel_grain", dry_mass=0.4, prop_mass=0.1, offset=0.53, length=0.30), length=50, offset=130)
 
 
+BASE_DIR = r"G:\Shared drives\TAMU-SRT\srt_general\9_flight_data"
+
 ROCKET_PATHS = {
-    "morpheus": r"G:\Shared drives\TAMU-SRT\srt_general\9_flight_data\Morpheus\04232025\morph.xml",
+    "morpheus": r"G:\Shared drives\TAMU-SRT\srt_general\9_flight_data\Morpheus\04232025_lone_star_cup\morph.xml",
     # add other rockets here as needed
 }
 
@@ -290,7 +292,7 @@ def load_file(path: Path, format: str | None = None) -> ArrayBundle:
     return ArrayBundle(df, units=UNITS.get(group))
 
 
-def load(rocket, flight, format=None, base_dir=r"G:\Shared drives\TAMU-SRT\srt_general\9_flight_data"):
+def load(rocket, flight, format=None, base_dir=BASE_DIR):
     """Loads every CSV in a flight's folder into a dict of ArrayBundles, keyed by filename stem.
     `format`, if given (e.g. "br_accel" or "bj_accel"), is only applied to files whose
     filename alone doesn't already unambiguously indicate a type - it's a fallback,
@@ -728,18 +730,82 @@ def graph_diff(data, areas, mach_min=0.08, start=15):
     plt.show()
     return fig
 
+def available_rockets(base_dir=BASE_DIR):
+    """Rocket folders present under base_dir, alphabetically.
+    Falls back to the configured ROCKET_PATHS keys if the drive isn't reachable."""
+    root = Path(base_dir)
+    if not root.is_dir():
+        return sorted(ROCKET_PATHS)
+    return sorted(p.name for p in root.iterdir() if p.is_dir() and not p.name.startswith("."))
+
+
+def _flight_sort_key(name):
+    """Sort flight folders newest-first. Folder names lead with an mmddyyyy stamp
+    (e.g. '06132025_irec'); anything that doesn't gets sorted by name at the end."""
+    stamp = name[:8]
+    if stamp.isdigit():
+        return (1, stamp[4:8] + stamp[0:2] + stamp[2:4], name)
+    return (0, "", name)
+
+
+def _flight_label(name):
+    """Human-readable gloss for a flight folder: '06132025_irec' -> '06/13/2025 irec'."""
+    stamp, rest = name[:8], name[8:].strip("_").replace("_", " ")
+    if not stamp.isdigit():
+        return ""
+    date = f"{stamp[0:2]}/{stamp[2:4]}/{stamp[4:8]}"
+    return f"{date} {rest}".strip()
+
+
+def available_flights(rocket, base_dir=BASE_DIR):
+    """Flight folders for one rocket, newest first."""
+    folder = Path(base_dir) / rocket
+    if not folder.is_dir():
+        return []
+    names = [p.name for p in folder.iterdir() if p.is_dir() and not p.name.startswith(".")]
+    return sorted(names, key=_flight_sort_key, reverse=True)
+
+
+def _choose(label, options, notes=None):
+    """Print a numbered menu and return the chosen option. Accepts either the
+    number or the name (case-insensitive), and reprompts until one matches."""
+    print(f"\n{label}")
+    for i, opt in enumerate(options, 1):
+        note = notes.get(opt, "") if notes else ""
+        print(f"  [{i}] {opt}" + (f"   {note}" if note else ""))
+    while True:
+        answer = input("Select (number or name): ").strip()
+        if answer.isdigit() and 1 <= int(answer) <= len(options):
+            return options[int(answer) - 1]
+        for opt in options:
+            if answer.lower() == opt.lower():
+                return opt
+        print("Not one of the listed options - try again.")
+
+
 def main():
     print(f"    .\n   .'.\n   |o|   Welcome to Comparinator!™\n  .'o'.  \033[3mFor all your comparing needs\033[0m\n  |.-.|\n  '   '\n   ( )\n    )\n   ( )")
-    rocket_name = input("Rocket name: ")
-    flight = input("Flight date (mm/dd/yyyy): ")
-    correct_blue = input("BlueRaven or BlueJay?: ")
-    engine_name = rocket_name
 
+    rockets = available_rockets()
+    if not rockets:
+        raise SystemExit(f"No rocket folders found under {BASE_DIR}")
+    notes = {r: "" if r.strip().lower() in ROCKET_PATHS else "(no airframe XML configured)"
+             for r in rockets}
+    rocket_name = _choose("Available rockets:", rockets, notes)
 
     key = rocket_name.strip().lower()
     if key not in ROCKET_PATHS:
         raise ValueError(f"Unknown rocket '{rocket_name}'. Known: {list(ROCKET_PATHS)}")
- 
+
+    flights = available_flights(rocket_name)
+    if not flights:
+        raise SystemExit(f"No flight folders found for {rocket_name} under {BASE_DIR}")
+    labels = {f: _flight_label(f) for f in flights}
+    flight = _choose(f"Flights on record for {rocket_name}:", flights, labels)
+
+    correct_blue = input("\nBlueRaven or BlueJay?: ")
+    engine_name = rocket_name
+
     blue_key = correct_blue.strip().lower().replace(" ", "")
     accel_format = BLUE_FORMAT_MAP.get(blue_key)
     if accel_format is None:
