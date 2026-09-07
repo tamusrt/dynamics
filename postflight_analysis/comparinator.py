@@ -158,6 +158,30 @@ TIME_ALIAS = {
     "ras": "time",
     "ork":"time"
 }
+ureg.define("psf = lbf / foot ** 2")
+# Define your target imperial unit for each physical dimension you expect to see.
+# Add/remove entries as needed for your dataset.
+IMPERIAL_UNITS = {
+    ureg.lbf.dimensionality: ureg.lbf,           # force
+    ureg.foot.dimensionality: ureg.foot,         # length
+    (ureg.foot / ureg.second).dimensionality: ureg.foot / ureg.second,       # velocity
+    (ureg.foot / ureg.second**2).dimensionality: ureg.foot / ureg.second**2, # acceleration
+    ureg.pound.dimensionality: ureg.pound,       # mass/weight 
+    ureg.degF.dimensionality: ureg.degF,         # temperature
+    ureg.second.dimensionality: ureg.second,     # time
+    ureg.atm.dimensionality: ureg.atm,  # density in lbm/ft³
+}
+
+def to_imperial(qty):
+    '''Given a pint Quantity, convert it to the preferred imperial unit
+    for its dimensionality. Returns it unchanged if its dimensionality
+    isn't in the table (so unknown types don't silently break).'''
+    if not isinstance(qty, ureg.Quantity):
+        return qty
+    target = IMPERIAL_UNITS.get(qty.dimensionality)
+    if target is None:
+        return qty  # unrecognized dimensionality — leave as-is, don't guess
+    return qty.to(target)
 
 def _detect_format(stem: str, format: str | None = None):
     """Match the filename stem against the REAL file types only
@@ -168,9 +192,6 @@ def _detect_format(stem: str, format: str | None = None):
     cases (e.g. "br_accel" vs "accel") manually rather than relying on
     auto-detection.
 
-    Auto-detection is sorted by length descending so a more specific key
-    (e.g. "br_accel") always wins over a shorter one, if that ever
-    becomes ambiguous.
     """
     candidates = set(COLUMN_MAP) | set(READ_CONFIG)
 
@@ -336,6 +357,7 @@ def interpolate(data):
                 continue
             col_val = getattr(bundle, col)
             if isinstance(col_val, ureg.Quantity):
+                col_val = to_imperial(col_val)
                 units_here[col] = col_val.units
                 col_val = col_val.magnitude
             interp_func = interp1d(time_val, col_val, kind="linear")
@@ -492,7 +514,7 @@ def plot_to(ax, xarr, yarr, band=None, apogee=None, **kwargs):
         ax.fill_between(xarr[:len(lower)], lower, upper, alpha=0.2,
                          color=kwargs.get('color', 'C0'), label='_nolegend_')
 
-def graph2(data, areas, build_data_fn=None, windows=(31, 51, 71, 91, 111), mach_min=0.3):
+def graph2(data, areas, build_data_fn=None, windows=(31, 51, 71, 91, 111), mach_min=0.08):
     '''graphs values across a couple different figures.
     mach_min gates the coefficient plots, where q sits in the denominator and
     goes to zero near apogee'''
@@ -623,8 +645,6 @@ BLUE_FORMAT_MAP = {
     "blueraven": "br_accel", "br": "br_accel",
     "bluejay": "bj_accel", "bj": "bj_accel",
 }
-with open(r"G:\Shared drives\TAMU-SRT\srt_general\9_flight_data\Morpheus\04232025\CONDITION_ork.csv", "rb") as f:
-    print(f.readline())
 
 def main():
     print(f"    .\n   .'.\n   |o|   Welcome to Comparinator!™\n  .'o'.  \033[3mFor all your comparing needs\033[0m\n  |.-.|\n  '   '\n   ( )\n    )\n   ( )")

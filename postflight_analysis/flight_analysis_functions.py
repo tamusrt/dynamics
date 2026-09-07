@@ -872,11 +872,14 @@ def ref_area(diameter):
     '''diameter in feet'''
     return np.pi * (diameter/2)**2
 
-def cd(fd, density, velocity, diameter=2*radius/IN_PER_FT):
-    '''diameter in feet'''
-    denom = dynamic_pressure(density, velocity) * ref_area(diameter)
+def cd(fd, density, velocity, diameter=2*radius/IN_PER_FT, v_min=200):
+    '''diameter in feet. v_min: minimum velocity (ft/s) below which Cd is
+    considered unreliable due to vanishing dynamic pressure.'''
+    q = dynamic_pressure(density, velocity)
+    denom = q * ref_area(diameter)
+    valid = np.abs(velocity) > v_min
     return np.divide(fd, denom, out=np.full_like(np.asarray(fd, float), np.nan),
-                     where=np.abs(denom) > 1e-9)
+                     where=valid)
 
 def rolling_slope(xv, yv, window, min_var):
     '''rolling least squares slope dy/dx, nan safe and valid for a non-monotonic x'''
