@@ -675,7 +675,7 @@ engine1 = Engine(EngineComponent(name="ox_tank", dry_mass=0.35, prop_mass=1.2, o
 if __name__ == "__main__":
     import sys
     print("HELLO?")
-    path = rf"G:\Shared drives\TAMU-SRT\srt_general\9_flight_data\Morpheus\04232025\morph.xml"
+    path = rf"G:\Shared drives\TAMU-SRT\srt_general\9_flight_data\Morpheus\04232025_lone_star_cup\morph.xml"
     rocket = Rocket.from_file(path)
     print(rocket.summary())
     print()

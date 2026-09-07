@@ -12,3 +12,5 @@ matplotlib
 
 # GUI automation (RASAero + DATCOM wrappers, Fin/Nosecone design tools)
 pyautogui
+
+pint
