@@ -11,6 +11,9 @@ from typing import List, Tuple
 from scipy import integrate as sci_integrate
 from scipy.integrate import quad_vec
 import pandas as pd
+from filterpy.kalman import KalmanFilter
+
+
 radius = 3
 
 G_FT = 32.174   # ft/s^2, and the lbm-ft/(lbf-s^2) unit conversion
@@ -672,20 +675,6 @@ engine1 = Engine(EngineComponent(name="ox_tank", dry_mass=0.35, prop_mass=1.2, o
     EngineComponent(name="fuel_grain", dry_mass=0.4, prop_mass=0.1, offset=0.53, length=0.30), length=50, offset=130)
 
 # --------------------------------------------------------------------------
-if __name__ == "__main__":
-    import sys
-    print("HELLO?")
-    path = rf"G:\Shared drives\TAMU-SRT\srt_general\9_flight_data\Morpheus\04232025_lone_star_cup\morph.xml"
-    rocket = Rocket.from_file(path)
-    print(rocket.summary())
-    print()
-    print(f"{'component':35s}{'mass (kg)':>12s}{'cg (m)':>12s}{'Iyy@cg (kg*m^2)':>18s}")
-    cg = rocket.cg
-    rows = [(p.name, p.mass, p.cg, p.iyy_about(cg)) for p in rocket.parts if p.mass > 1e-9]
-    rows += [(f.name + " (fins)", f.mass, f.cg, f.iyy_about(cg)) for f in rocket.fins]
-    rows.sort(key=lambda r: r[2])
-    for n, m, c, i in rows:
-        print(f"{n[:34]:35s}{m:12.4f}{c:12.4f}{i:18.5f}")
 
 # math Functions 
 
@@ -717,15 +706,71 @@ def pad_to(arr, n):
     arr = np.asarray(arr, float)
     return arr[:n] if arr.size >= n else np.concatenate([arr, np.zeros(n - arr.size)])
 
-def acceleration(v_up, v_dr, v_cr, apogee, t, window_length=71):
-    '''accelerations are computed to apogee, samples past it are zero padding'''
-    smooth = savgol_filter(np.stack([v_cr, v_dr, v_up])[:, :apogee],
-                           window_length=window_length, polyorder=3, axis=-1)
-    accelx, accely, accelz = (pad_to(np.gradient(v, t[:apogee]), t.shape[0])
-                              for v in smooth)
+def _kalman_smooth_velocity(v, t):
+    '''Run a constant-acceleration KF + RTS smoother on a single velocity
+    component. Returns smoothed acceleration (state index 1) for the
+    same-length input v, t.'''
+    n = len(v)
+    dt = np.diff(t)
+    dt = np.append(dt, dt[-1])  # pad so len(dt) == n, for step k -> k+1
+
+    kf = KalmanFilter(dim_x=2, dim_z=1)  # state: [velocity, acceleration]
+    kf.x = np.array([[v[0]], [0.0]])
+    kf.P *= 100.0                         # initial state uncertainty
+
+    kf.H = np.array([[1.0, 0.0]])         # we observe velocity directly
+
+    # measurement noise: how noisy is your velocity estimate (units: (ft/s)^2)
+    r_var = 1.0
+    kf.R = np.array([[r_var]])
+
+    # process noise: how much acceleration is "allowed" to change per step
+    # (units: (ft/s^2)^2 per unit time) -- this is your main tuning knob
+    q_accel_var = 400.0
+
+    xs, covs = [], []
+    for k in range(n):
+        step_dt = dt[k]
+        kf.F = np.array([[1.0, step_dt],
+                          [0.0, 1.0]])
+        # discretized white-noise-acceleration process noise model
+        kf.Q = q_accel_var * np.array([
+            [step_dt**4 / 4, step_dt**3 / 2],
+            [step_dt**3 / 2, step_dt**2]
+        ])
+
+        kf.predict()
+        kf.update(np.array([[v[k]]]))
+
+        xs.append(kf.x.copy())
+        covs.append(kf.P.copy())
+
+    xs, covs = np.array(xs), np.array(covs)
+
+    # backward RTS pass -- uses future data too, removes forward-pass lag
+    Fs = [np.array([[1.0, dt[k]], [0.0, 1.0]]) for k in range(n)]
+    Qs = [q_accel_var * np.array([
+            [dt[k]**4 / 4, dt[k]**3 / 2],
+            [dt[k]**3 / 2, dt[k]**2]
+          ]) for k in range(n)]
+
+    xs_smooth, _, _, _ = kf.rts_smoother(xs, covs, Fs=Fs, Qs=Qs)
+
+    velocity_smoothed = xs_smooth[:, 0, 0]
+    accel_smoothed = xs_smooth[:, 1, 0]
+    return accel_smoothed
+
+
+def acceleration(v_up, v_dr, v_cr, apogee, t):
+    '''accelerations are computed to apogee via a constant-acceleration
+    Kalman filter + RTS smoother; samples past apogee are zero padding'''
+    accelx, accely, accelz = (
+        pad_to(_kalman_smooth_velocity(v[:apogee], t[:apogee]), t.shape[0])
+        for v in (v_cr, v_dr, v_up)
+    )
 
     total = magnitude(accelx, accely, accelz)
-    
+
     return accelx, accely, accelz, total
 
 def ndcheck_no_gyro(in_a, in_dr, in_cr, t, mass, thrust, apogee, gravity=G_FT, eps=1e-8):
