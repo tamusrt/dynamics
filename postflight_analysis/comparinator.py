@@ -562,17 +562,78 @@ def diagnostic_grid(column_specs, row_builders, row_labels=None, suptitle=None,
     fig.subplots_adjust(hspace=hspace, wspace=wspace, top=top_margin, left=left_margin)
     return fig, axs
 
-def graph2(data, areas, build_data_fn=None, windows=(31, 51, 71, 91, 111), mach_min=0.08, start=15):
+def graph2(data, areas, build_data_fn=None, windows=(31, 51, 71, 91, 111),
+           mach_min=0.08, start=15, ork_vel_min=20, flight_vel_min=20,
+           hold=10, pct_err_denom_min=None):
     '''graphs values across a couple different figures.
     mach_min gates the coefficient plots, where q sits in the denominator and
     goes to zero near apogee.
-    start: number of leading samples to exclude from all plots (e.g. pad/startup transient)'''
+    start: number of leading samples to exclude from all plots (e.g. pad/startup transient)
+    ork_vel_min / flight_vel_min: velocity (ft/s) below which OpenRocket / flight
+        derived angle quantities are masked out near liftoff (numerically unstable
+        near v=0, same root cause as the near-zero-denominator issue in cd()).
+    hold: number of consecutive samples velocity must stay above threshold before
+        being considered "real" liftoff — filters out brief noise blips that would
+        otherwise poke a single valid point through the mask and look like a spike.
+    pct_err_denom_min: dict mapping overlay key -> minimum |ork| value below which
+        percent error is masked to NaN (dividing by a near-zero denominator produces
+        meaningless huge percentages regardless of how close flight and ork actually
+        are in absolute terms).'''
+    if pct_err_denom_min is None:
+        pct_err_denom_min = {
+            'ork_altitude': 200,     # ft — ignore % error while altitude is tiny
+            'ork_accel_total': 20,   # ft/s^2
+            'ork_aoa': 1.0,          # degrees — AoA near 0 is expected/fine, not an error
+            'ork_vel_total': 20,     # ft/s
+        }
+
     coast, apogee = areas["coast"], areas["apogee"]
     t = data['time']
     band_keys = ['accel_v', 'accel_total', 'fd', 'cd', 'fn']
     bands = {}
     if build_data_fn is not None:
         bands, band_apogee = compute_sensitivity_bands(build_data_fn, windows, band_keys)
+
+    def first_sustained_index(arr, threshold, hold=10):
+        '''Index of the first sample after which `arr` stays >= threshold for at
+        least `hold` consecutive samples. Ignores brief noise spikes that cross
+        threshold only momentarily. Returns 0 if never found (no masking applied).'''
+        arr = np.asarray(arr, float)
+        above = np.abs(arr) >= threshold
+        for i in range(len(above) - hold):
+            if above[i:i + hold].all():
+                return i
+        return 0
+
+    # OpenRocket-side liftoff index: mask everything before sustained ork velocity.
+    if 'ork_vel_total' in data:
+        ork_liftoff_idx = first_sustained_index(data['ork_vel_total'], ork_vel_min, hold=hold)
+    else:
+        ork_liftoff_idx = 0
+
+    def ork_masked(key):
+        '''Return data[key] with NaN before the sustained-liftoff index.'''
+        arr = np.asarray(data[key], float).copy()
+        arr[:ork_liftoff_idx] = np.nan
+        return arr
+
+    # Flight-side liftoff index: mask velocity-DERIVED ANGLE quantities (aoa,
+    # flight_angle, theta) before sustained flight velocity — these are ill-defined
+    # near v=0 since they're computed from velocity direction.
+    if 'accel_v' in data:
+        flight_liftoff_idx = first_sustained_index(data['accel_v'], flight_vel_min, hold=hold)
+    else:
+        flight_liftoff_idx = 0
+
+    VELOCITY_DEPENDENT_KEYS = {'aoa', 'flight_angle', 'theta'}
+
+    def flight_masked(key):
+        '''Return data[key] with NaN before the sustained-liftoff index, for
+        quantities that are only meaningful once real flight velocity exists.'''
+        arr = np.asarray(data[key], float).copy()
+        if key in VELOCITY_DEPENDENT_KEYS:
+            arr[:flight_liftoff_idx] = np.nan
+        return arr
 
     def shade(ax, x_end=None):
         ax.axvspan(0, t[coast], alpha=0.15, color='lightblue')
@@ -581,9 +642,12 @@ def graph2(data, areas, build_data_fn=None, windows=(31, 51, 71, 91, 111), mach_
             ax.set_xlim(0, x_end)
 
     def fit_ylim(ax, key, overlay_key=None):
-        ys = [np.asarray(data[key][start:apogee], float)]
+        base = flight_masked(key) if key in VELOCITY_DEPENDENT_KEYS else np.asarray(data[key], float)
+        ys = [base[start:apogee]]
         if overlay_key is not None and overlay_key in data:
-            ys.append(np.asarray(data[overlay_key][start:apogee], float))
+            ov = ork_masked(overlay_key)[start:apogee] if overlay_key.startswith('ork_') else \
+                 np.asarray(data[overlay_key][start:apogee], float)
+            ys.append(ov)
         y = np.concatenate(ys)
         y = y[np.isfinite(y)]
         if y.size == 0:
@@ -609,9 +673,10 @@ def graph2(data, areas, build_data_fn=None, windows=(31, 51, 71, 91, 111), mach_
         ('aoa', 'AoA (°)'), ('theta', 'Pitch (°)'), ('flight_angle', 'Flight Angle (°)')
     ]):
         has_overlay = k in ork_overlay_1 and ork_overlay_1[k] in data
-        plot_to(ax, t, data[k], band=bands.get(k), label='Flight' if has_overlay else None)
+        plot_to(ax, t, flight_masked(k), band=bands.get(k), label='Flight' if has_overlay else None)
         if has_overlay:
-            plot_to(ax, t, data[ork_overlay_1[k]], label='OpenRocket')
+            ok = ork_overlay_1[k]
+            plot_to(ax, t, ork_masked(ok), label='OpenRocket')
             ax.legend()
         ax.set(xlabel='Time (s)', ylabel=lbl, title=lbl)
         shade(ax, x_end=t[apogee])
@@ -636,8 +701,8 @@ def graph2(data, areas, build_data_fn=None, windows=(31, 51, 71, 91, 111), mach_
                                     fontsize=11, fontweight='bold', ha='right', va='center')
 
         for col, (k, ok, lbl) in enumerate(overlay_present):
-            flight = np.asarray(data[k][start:apogee], float)
-            ork = np.asarray(data[ok][start:apogee], float)
+            flight = flight_masked(k)[start:apogee]
+            ork = ork_masked(ok)[start:apogee]
             tt = t[start:apogee]
             valid = np.isfinite(flight) & np.isfinite(ork)
 
@@ -657,10 +722,12 @@ def graph2(data, areas, build_data_fn=None, windows=(31, 51, 71, 91, 111), mach_
             ax_par.legend(fontsize=7)
 
             ax_pct = axs1b[2, col]
-            denom = ork
+            denom = ork.copy()
+            denom_min = pct_err_denom_min.get(ok, 1e-6)
             pct_err = np.divide(flight - ork, denom,
                                  out=np.full_like(denom, np.nan),
-                                 where=np.abs(denom) > 1e-6) * 100
+                                 where=np.abs(denom) > denom_min)
+            pct_err = pct_err * 100
             ax_pct.plot(tt, pct_err, color='C3')
             ax_pct.axhline(0, color='black', linewidth=0.8)
             ax_pct.set(xlabel='Time (s)', ylabel='% error')
@@ -680,7 +747,7 @@ def graph2(data, areas, build_data_fn=None, windows=(31, 51, 71, 91, 111), mach_
         if ka == 'thrust_ras':
             plot_to(ax, t, data['thrust_spec'], label='Motor spec')
         if ka == 'fd' and 'ork_fd' in data:
-            plot_to(ax, t, data['ork_fd'], label='OpenRocket')
+            plot_to(ax, t, ork_masked('ork_fd'), label='OpenRocket')
         ax.set(xlabel='Time (s)', ylabel=lbl, title=lbl)
         shade(ax, x_end=t[apogee])
         fit_ylim(ax, ka)
@@ -718,7 +785,7 @@ def graph2(data, areas, build_data_fn=None, windows=(31, 51, 71, 91, 111), mach_
         if ork_key not in data:
             return
         x = xarr[start:apogee][mask]
-        y = data[ork_key][start:apogee][mask]
+        y = ork_masked(ork_key)[start:apogee][mask]
         ok = np.isfinite(x) & np.isfinite(y)
         ax.scatter(x[ok], y[ok], s=4, alpha=0.5, color=color, label='OpenRocket')
         ax.legend(fontsize=7)
