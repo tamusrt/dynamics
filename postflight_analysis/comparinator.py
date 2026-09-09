@@ -28,10 +28,10 @@ sol_ignis = faa.Engine(faa.EngineComponent(name="ox_tank", dry_mass=0.35, prop_m
 
 BASE_DIR = r"G:\Shared drives\TAMU-SRT\srt_general\9_flight_data"
 
-ROCKET_PATHS = {
-    "morpheus": r"G:\Shared drives\TAMU-SRT\srt_general\9_flight_data\Morpheus\04232025_lone_star_cup\morph.xml",
+#ROCKET_PATHS = {
+#    "morpheus": r"G:\Shared drives\TAMU-SRT\srt_general\9_flight_data\Morpheus\04232025_lone_star_cup\morph.xml",
     # add other rockets here as needed
-}
+#}
 
 ROCKET_ENGINES = {
     "morpheus": sol_ignis,  
@@ -44,9 +44,9 @@ COLUMN_MAP = {
     "br_accel": ["Flight_Time_(s)", "Temperature_(F)", "Baro_Press_(atm)", "Baro_Altitude_ASL_(feet)",
                  "Velocity_Up", "Velocity_DR", "Velocity_CR", "Inertial_Altitude",
                  "Inertial_DR_Position", "Inertial_CR_position", "Tilt_Angle_(deg)"],
-    #"bj_accel": ["Flight_Time_(s)", "Temperature_(F)", "Baro_Press_(atm)", "Baro_Altitude_ASL_(feet)",
-    #             "Velocity_Up", "Velocity_DR", "Velocity_CR", "Inertial_Altitude",
-    #             "Inertial_DR_Position", "Inertial_CR_position", "Tilt_Angle_(deg)"],
+    "bj_accel": ["Flight_Time_(s)", "Temperature_(F)", "Baro_Press_(atm)", "Baro_Altitude_ASL_(feet)",
+                 "Velocity_Up", "Velocity_DR", "Velocity_CR", "Inertial_Altitude",
+                 "Inertial_DR_Position", "Inertial_CR_position", "Tilt_Angle_(deg)"],
     "gyro": ["Flight_Time_(s)", "Gyro_X", "Gyro_Y", "Gyro_Z", "Accel_X", "Accel_Y", "Accel_Z"],
     "thrust": ["Time", "Thrust (N)"],
     "ras": ["Flight Time Rounded (s)", "Thrust (lb)", "Accel (ft/sec^2)", "Weight (lb)"],
@@ -190,15 +190,6 @@ def to_imperial(qty):
     return qty.to(target)
 
 def _detect_format(stem: str, format: str | None = None):
-    """Match the filename stem against the REAL file types only
-    (COLUMN_MAP / READ_CONFIG keys) — never against ALIASES keys.
-
-    If `format` is given, it's used directly (after validation) instead
-    of guessing from the filename. This lets callers resolve ambiguous
-    cases (e.g. "br_accel" vs "accel") manually rather than relying on
-    auto-detection.
-
-    """
     candidates = set(COLUMN_MAP) | set(READ_CONFIG)
 
     if format is not None:
@@ -210,10 +201,35 @@ def _detect_format(stem: str, format: str | None = None):
         return format
 
     stem = stem.lower()
+
+    # Pass 1: strict match against real format keys
     for key in sorted(candidates, key=len, reverse=True):
         if key in stem:
             return key
+
+    # Pass 3: fallback to alias group names themselves (e.g. "accel", "gyro")
+    for group in ALIASES:
+        if group in stem:
+            return group
+
     return None
+
+def _detect_format_by_columns(path: Path):
+    """Fallback: peek at the header row and find which COLUMN_MAP format's
+    wanted columns are all present. Used when filename detection fails."""
+    try:
+        header_df = pd.read_csv(path, nrows=0)
+    except Exception:
+        return None
+
+    header_cols = {c.strip().lstrip("\ufeff").lstrip("#").strip() for c in header_df.columns}
+
+    best_fmt, best_score = None, 0
+    for fmt, wanted in COLUMN_MAP.items():
+        if set(wanted).issubset(header_cols) and len(wanted) > best_score:
+            best_fmt, best_score = fmt, len(wanted)
+
+    return best_fmt
 
 def _alias_group(fmt: str):
     """Map a raw fmt (e.g. 'br_accel') to its ALIASES group (e.g. 'accel')."""
@@ -264,8 +280,10 @@ class ArrayBundle:
 def load_file(path: Path, format: str | None = None) -> ArrayBundle:
     fmt = _detect_format(path.stem, format=format)
     if fmt is None:
+        fmt = _detect_format_by_columns(path)
+    if fmt is None:
         raise ValueError(
-            f"Could not detect a format for {path.name} from its filename. "
+            f"Could not detect a format for {path.name} from filename or columns. "
             f"Pass format='br_accel' or format='bj_accel' explicitly."
         )
     group = _alias_group(fmt)
@@ -393,6 +411,31 @@ def interpolate(data):
 
     return new_bundles, cutoffs
 
+from collections import defaultdict
+
+def resolve_duplicates(data, folder):
+    groups = defaultdict(list)
+    for key in data:
+        path = folder / f"{key}.csv"
+        fmt = _detect_format(key)
+        if fmt is None:
+            fmt = _detect_format_by_columns(path)
+        group = _alias_group(fmt) or fmt or key
+        groups[group].append(key)
+
+    for group, keys in groups.items():
+        if len(keys) <= 1:
+            continue
+
+        keys = sorted(keys)
+        notes = {k: "" for k in keys}
+        chosen = _choose(f"Multiple '{group}' files found — choose one:", keys, notes)
+
+        for k in keys:
+            if k != chosen:
+                del data[k]
+
+    return data
 
 def calculate(data_dict, cutoff_dict, rocket):
     calc_array = []
@@ -900,8 +943,10 @@ def main():
         if not matches:
             raise KeyError(f"No dataset found containing '{substr}' in its key")
         return matches[0]
-
+    
+    folder = Path(BASE_DIR) / rocket_name / flight   # match load()'s own folder construction
     data = load(rocket_name, flight)
+    data = resolve_duplicates(data, folder)
 
     thrust_bundle = find_bundle(data, "thrust") # repetitive, but the intention is to initialize the engine component
 
@@ -911,7 +956,6 @@ def main():
     flight_dir = Path(BASE_DIR) / rocket_name / flight
     candidates = [f for f in flight_dir.iterdir() if f.name.lower().endswith('.xml')]
 
-
     if not candidates:
         raise FileNotFoundError(f"No suitable XML files found in {flight_dir}")
     if len(candidates) > 1:
@@ -919,7 +963,14 @@ def main():
     
     rocket = faa.Rocket.from_file(candidates[0], engine=ROCKET_ENGINES[engine_key])
 
-    rocket.engine.set_curve(thrusts_array, times_array)
+    rocket.engine.set_curve(thrusts_array, times_array) # check if this matches up
+    
+    for key, bundle in data.items():
+        for col in bundle.columns:
+            val = getattr(bundle, col)
+            raw = val.magnitude if hasattr(val, "magnitude") else val
+            if raw.dtype == object:
+                print(f"{key}.{col}: non-numeric, sample = {raw[0]!r}")
 
     interpolated_data, cutoff_dict = interpolate(data)
     for entry in interpolated_data:
