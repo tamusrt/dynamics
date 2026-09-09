@@ -875,13 +875,14 @@ def main():
     rockets = available_rockets()
     if not rockets:
         raise SystemExit(f"No rocket folders found under {BASE_DIR}")
-    notes = {r: "" if r.strip().lower() in ROCKET_PATHS else "(no airframe XML configured)"
-             for r in rockets}
+    notes = {r: "" for r in rockets}
+    #in ROCKET_PATHS else "(no airframe XML configured)"
+    #if r.strip().lower()
     rocket_name = _choose("Available rockets:", rockets, notes)
 
     key = rocket_name.strip().lower()
-    if key not in ROCKET_PATHS:
-        raise ValueError(f"Unknown rocket '{rocket_name}'. Known: {list(ROCKET_PATHS)}")
+    #if key not in ROCKET_PATHS:
+    #    raise ValueError(f"Unknown rocket '{rocket_name}'. Known: {list(ROCKET_PATHS)}")
 
     flights = available_flights(rocket_name)
     if not flights:
