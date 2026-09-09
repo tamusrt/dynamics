@@ -13,6 +13,7 @@ import pandas as pd
 import numpy as np
 from scipy.interpolate import interp1d
 import pint
+import os
 
 ureg = pint.UnitRegistry()
 Q_ = ureg.Quantity
@@ -901,12 +902,22 @@ def main():
 
     data = load(rocket_name, flight)
 
-    thrust_bundle = find_bundle(data, "thrust")
+    thrust_bundle = find_bundle(data, "thrust") # repetitive, but the intention is to initialize the engine component
 
     thrusts_array = thrust_bundle.spec_thrust.magnitude
     times_array = thrust_bundle.time.magnitude
 
-    rocket = faa.Rocket.from_file(ROCKET_PATHS[key], engine=ROCKET_ENGINES[engine_key])
+    flight_dir = Path(BASE_DIR) / rocket_name / flight
+    candidates = [f for f in flight_dir.iterdir() if f.name.lower().endswith('.xml')]
+
+
+    if not candidates:
+        raise FileNotFoundError(f"No suitable XML files found in {flight_dir}")
+    if len(candidates) > 1:
+        raise ValueError(f"Multiple suitable XML files found in {flight_dir}: {candidates}")
+    
+    rocket = faa.Rocket.from_file(candidates[0], engine=ROCKET_ENGINES[engine_key])
+
     rocket.engine.set_curve(thrusts_array, times_array)
 
     interpolated_data, cutoff_dict = interpolate(data)
