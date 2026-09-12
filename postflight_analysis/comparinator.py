@@ -51,7 +51,8 @@ COLUMN_MAP = {
     "gyro": ["Flight_Time_(s)", "Gyro_X", "Gyro_Y", "Gyro_Z", "Accel_X", "Accel_Y", "Accel_Z"],
     "thrust": ["Time", "Thrust (N)"],
     "ras": ["Flight Time Rounded (s)", "Thrust (lb)", "Accel (ft/sec^2)", "Weight (lb)"],
-    "ork": ["Time (s)","Altitude (m)","Total acceleration (m/s²)", "Angle of attack (°)", "Total velocity (m/s)","Pitch rate (°/s)", "Yaw rate (°/s)","Stability margin calibers (​)", "Drag force (N)", "Drag coefficient (​)"]
+    "ork": ["Time (s)","Altitude (m)","Total acceleration (m/s²)", "Angle of attack (°)", "Total velocity (m/s)","Pitch rate (°/s)", "Yaw rate (°/s)","Stability margin calibers (​)", "Drag force (N)", "Drag coefficient (​)"],
+    "set": ["timestamp (ns)", "sensors/thrust.value", "sensors/chamber_pressure.value", "sensors/injector_pressure.value", "sensors/run_tank_pressure.value"]
 }
 
 # Alias groups: canonical short names -> raw column names.
@@ -101,6 +102,13 @@ ALIASES = {
         "ork_sm": "Stability margin calibers (​)", 
         "ork_fd":"Drag force (N)", 
         "ork_cd":"Drag coefficient (​)"
+    },
+    "set": {
+        "time": "timestamp (ns)",
+        "thrust": "sensors/thrust.value",
+        "chamber_pressure": "sensors/chamber_pressure.value",
+        "injector_pressure": "sensors/injector_pressure.value",
+        "run_tank_pressure": "sensors/run_tank_pressure.value"
     }
 }
 
@@ -146,6 +154,13 @@ UNITS = {
         "ork_sm": "dimensionless", 
         "ork_fd":"N", 
         "ork_cd":"dimensionless"
+    },
+    "set": {
+        "time": "ns",
+        "thrust": "sensors/thrust.value",
+        "chamber_pressure": "sensors/chamber_pressure.value",
+        "injector_pressure": "sensors/injector_pressure.value",
+        "run_tank_pressure": "sensors/run_tank_pressure.value"
     }
 }
 TIME_UNIT = "s"
@@ -163,7 +178,8 @@ TIME_ALIAS = {
     "gyro": "time",
     "thrust": "time",
     "ras": "time",
-    "ork":"time"
+    "ork":"time",
+    "set": "time"
 }
 ureg.define("psf = lbf / foot ** 2")
 # Define your target imperial unit for each physical dimension you expect to see.
@@ -343,7 +359,7 @@ def _magnitude(val):
 def interpolate(data):
     '''Interpolates every dataset onto a common, evenly-spaced time base
     (the finest step found across all datasets), then zero-pads the
-    shorter ones so every ArrayBundle has the same length.
+    shorter ones so every ArrayBundle has the same length. 
 
     Works whether or not the bundles carry pint units: units (if present)
     are stripped before interpolation (scipy doesn't understand them) and
@@ -366,7 +382,8 @@ def interpolate(data):
         raise ValueError("None of the given datasets have a 'time' column to align on")
 
     # finest time step across all datasets
-    step = min(np.diff(_magnitude(bundle.time)).min() for bundle in timed.values())
+    exclude = ["set"] # high frequency pieces not being used 
+    step = min(np.diff(_magnitude(bundle.time)).min() for bundle in timed.values() if bundle not in exclude)
 
     for key, bundle in timed.items():
         time_val = _magnitude(bundle.time)
