@@ -56,10 +56,17 @@ class EngineComponent:
     length: float #inches
     prop_mass: float = 0.0   # to hold depletion (plumbing has none)
     radius: float = None
+    volume: float = None 
+    mass_flow_rate = float = None
 
     def cg_offset(self) -> float:
         # assuming uniform density
         return self.offset + self.length / 2
+    def set_mass_flow_rate(self, mass_flow_rate: float):
+        self.mass_flow_rate = mass_flow_rate
+    def mass(self):
+        if self.mass_flow_rate is not None and self.length is not None:
+            return (self.dry_mass + self.prop_mass) - sp.integrate(self.mass_flow_rate, (self.length, 0, self.length), 0, time)
 
 @dataclass
 class Engine:
@@ -70,6 +77,16 @@ class Engine:
     offset: float #inches
     thrusts:   np.ndarray = None
     times:     np.ndarray = None
+    pressure_tank: np.ndarray = None
+    pressure_grain: np.ndarray = None
+
+    def specific_volume(self):
+        if self.pressure_tank is not None and self.mass_at is not None:
+            self.specific_volume = self.tank.volume / self.mass_at
+            return self.specific_volume
+        # If volume is not set, calculate it based on other parameters
+
+
 
     def __post_init__(self):
         self._curve_ready = False
