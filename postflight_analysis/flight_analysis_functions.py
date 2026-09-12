@@ -19,37 +19,6 @@ radius = 3
 G_FT = 32.174   # ft/s^2, and the lbm-ft/(lbf-s^2) unit conversion
 IN_PER_FT = 12
 
-"""
-rocket_iyy.py
-=============
-Parse an OpenRocket design file (.ork XML, e.g. exported/renamed as .xml)
-and compute the rocket's pitch-axis mass moment of inertia (Iyy) about its
-own center of gravity, plus total mass and CG station.
-
-This intentionally IGNORES the motor/engine: no thrust curve, no propellant
-mass depletion. Everything is computed as one static "loaded, motor-less"
-configuration built entirely from the geometry, materials, and mass
-overrides recorded in the file. If you want burn-time-varying Iyy back,
-you'd re-introduce something like the original `Engine` class and add its
-mass/cg contribution on top of `Rocket.iyy` / `Rocket.cg` below.
-
-Usage
------
-    from rocket_iyy import Rocket
-
-    rocket = Rocket.from_file("morph.xml")
-    print(rocket.mass)        # kg
-    print(rocket.cg)          # m from nose tip
-    print(rocket.iyy)         # kg*m^2, about the pitch axis through rocket.cg
-
-    for c in rocket.components:
-        print(c.name, c.mass, c.cg, c.iyy_about(rocket.cg))
-
-All units are whatever the file uses -- OpenRocket stores geometry in SI
-(meters, kg) internally regardless of the display unit configured in the
-app, so this module works entirely in meters / kilograms.
-"""
-
 
 
 import math
@@ -148,7 +117,6 @@ class Engine:
     def cg_at(self, t):
         self._check_ready()
         frac = self._frac_at(t)
-
         tank_mass = self.tank.dry_mass + self.tank.prop_mass * (1 - frac)
         grain_mass = self.grain.dry_mass + self.grain.prop_mass * (1 - frac)
         plumbing_mass = self.plumbing.dry_mass
@@ -180,9 +148,6 @@ class Engine:
             d = cg_local - rocket_cg
             total += self._rod_iyy(m, comp.length) + m * d ** 2
         return total
-# --------------------------------------------------------------------------
-# small parsing helpers
-# --------------------------------------------------------------------------
 
 def _num(text: Optional[str], default: float = 0.0) -> float:
     """Parse a numeric field that may be prefixed with OpenRocket's 'auto'

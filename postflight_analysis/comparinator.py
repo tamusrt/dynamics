@@ -1,3 +1,4 @@
+# man how i love python and importing 27 million programs
 import sympy as sp
 import math
 import matplotlib.pyplot as plt
@@ -13,7 +14,7 @@ import pandas as pd
 import numpy as np
 from scipy.interpolate import interp1d
 import pint
-import os
+from collections import defaultdict
 
 ureg = pint.UnitRegistry()
 Q_ = ureg.Quantity
@@ -411,7 +412,6 @@ def interpolate(data):
 
     return new_bundles, cutoffs
 
-from collections import defaultdict
 
 def resolve_duplicates(data, folder):
     groups = defaultdict(list)
