@@ -382,7 +382,7 @@ def interpolate(data):
         raise ValueError("None of the given datasets have a 'time' column to align on")
 
     # finest time step across all datasets
-    exclude = ["set"] # high frequency pieces not being used 
+    exclude = [] # problematic high frequency pieces not being used 
     step = min(np.diff(_magnitude(bundle.time)).min() for bundle in timed.values() if bundle not in exclude)
 
     for key, bundle in timed.items():
