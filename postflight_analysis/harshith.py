@@ -23,7 +23,9 @@ class Engine:
     length: float #inches 
     offset: float #inches
     thrusts:   np.ndarray = None
+    pressures: np.ndarray = None
     times:     np.ndarray = None
+
 
     def __post_init__(self):
         self._curve_ready = False
