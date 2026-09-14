@@ -1,0 +1,7 @@
+# Try orlab first (actively maintained as of 2026, tested against recent
+# OpenRocket releases). If installing this fails on your system, comment it
+# out and uncomment orhelper instead -- the script auto-detects whichever
+# one is installed.
+orlab
+
+# orhelper==0.1.3
