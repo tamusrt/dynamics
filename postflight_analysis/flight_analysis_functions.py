@@ -62,11 +62,6 @@ class EngineComponent:
     def cg_offset(self) -> float:
         # assuming uniform density
         return self.offset + self.length / 2
-    def set_mass_flow_rate(self, mass_flow_rate: float):
-        self.mass_flow_rate = mass_flow_rate
-    def mass(self):
-        if self.mass_flow_rate is not None and self.length is not None:
-            return (self.dry_mass + self.prop_mass) - sp.integrate(self.mass_flow_rate, (self.length, 0, self.length), 0, time)
 
 @dataclass
 class Engine:
@@ -79,14 +74,23 @@ class Engine:
     times:     np.ndarray = None
     pressure_tank: np.ndarray = None
     pressure_grain: np.ndarray = None
+    mass_flow_rate = float = None
+
+
+
+    def set_mass_flow_rate(self, mass_flow_rate: float):
+        self.mass_flow_rate = mass_flow_rate
+
+    def mass(self):
+        if self.mass_flow_rate is not None and self.length is not None:
+            return (self.tank.dry_mass + self.tank.prop_mass) - self.mass_flow_rate * self.times
 
     def specific_volume(self):
         if self.pressure_tank is not None and self.mass_at is not None:
             self.specific_volume = self.tank.volume / self.mass_at
             return self.specific_volume
         # If volume is not set, calculate it based on other parameters
-
-
+        return self.length * self.radius**2 * math.pi
 
     def __post_init__(self):
         self._curve_ready = False
