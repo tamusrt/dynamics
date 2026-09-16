@@ -351,17 +351,29 @@ def resolve_motor(cfg: Config, snap: Snapshot, root: Path, ork_rel: str, fcfg: d
     if file_resolved:
         return "file", None, None
     if file_desig:
-        folder = PurePosixPath(ork_rel).parent.as_posix()
-        folder = "" if folder == "." else folder
-        # the .ork's folder and its subfolders (e.g. "Thrust Curves/"), skipping ignored ones
-        for rel in snap.walk(folder):
-            if not rel.lower().endswith((".rse", ".eng")):
-                continue
-            if cfg.is_ignored(rel_posix(root / rel, cfg.dir)):
-                continue
-            p = snap.path(rel)
-            if p and any(d.strip().lower() == file_desig.lower() for d in motor_file_designations(p)):
-                return "auto", rel, file_desig
+        # Search the .ork's own folder (and subfolders such as "Thrust Curves/") first, then the
+        # project folder above it (for layouts like LUMINA/OpenRocket/x.ork + LUMINA/Engine Files/),
+        # never above the config folder; ignored paths are skipped.
+        cfg_root_rel = rel_posix(cfg.dir, root)
+        cfg_root_rel = "" if cfg_root_rel == "." else cfg_root_rel
+        folder = PurePosixPath(ork_rel).parent
+        search = []
+        for _ in range(2):
+            f = folder.as_posix()
+            f = "" if f == "." else f
+            if f == cfg_root_rel or not f.startswith(cfg_root_rel):
+                break
+            search.append(f)
+            folder = folder.parent
+        for f in search:
+            for rel in snap.walk(f):
+                if not rel.lower().endswith((".rse", ".eng")):
+                    continue
+                if cfg.is_ignored(rel_posix(root / rel, cfg.dir)):
+                    continue
+                p = snap.path(rel)
+                if p and any(d.strip().lower() == file_desig.lower() for d in motor_file_designations(p)):
+                    return "auto", rel, file_desig
     return "unresolved", None, file_desig or None
 
 
@@ -441,67 +453,83 @@ def run_ork(helper, cfg: Config, snap: Snapshot, root: Path, ork_rel: str, seed:
                  "notes": "no simulation saved in the file; add one in the GUI"}]
     cfg_rel = cfg_key or rel_posix(root / ork_rel, cfg.dir)
     fcfg = cfg.file_cfg(cfg_rel)
+    # motor_variants: {"label": <motor path> | {"<mount>": <motor path>}} at file or simulation
+    # level -> every simulation runs once per variant, reported as "<sim> [label]"
     for i in range(n):
         sim = doc.getSimulation(i)
         sim_name = str(sim.getName())
         configid = info["sims"][i][1] if i < len(info["sims"]) else ""
-        rec = {**base_rec, "sim_index": i, "sim_name": sim_name, "status": "OK", "metrics": {}, "notes": "",
-               "motor_source": "", "motor_file": "", "motor": "", "motors": [], "warnings": "", "violations": []}
-        try:
-            scfg = cfg.sim_cfg(fcfg, sim_name)
-            mounts = mounts_for(info, configid) or [(None, "")]
-            notes = []
-            for mount, file_desig in mounts:
-                mount_obj = find_mount(helper, sim.getRocket(), mount) if mount else None
-                try:
-                    own = helper.get_motor(sim, mount=mount_obj)
-                except Exception:
-                    own = None
+        scfg = cfg.sim_cfg(fcfg, sim_name)
+        variants = scfg.get("motor_variants") or fcfg.get("motor_variants") or {None: None}
+        for vlabel, voverride in variants.items():
+            records.append(_run_one(helper, cfg, snap, root, ork_rel, base_rec, info, fcfg, scfg, sim, i,
+                                    sim_name, configid, vlabel, voverride, seed, log, fallback))
+    return records
+
+
+def _run_one(helper, cfg, snap, root, ork_rel, base_rec, info, fcfg, scfg, sim, i, sim_name, configid,
+             vlabel, voverride, seed, log, fallback):
+    """Resolve motors, run one simulation (one motor variant), return its record."""
+    label = sim_name if vlabel is None else f"{sim_name} [{vlabel}]"
+    rec = {**base_rec, "sim_index": i, "sim_name": label, "status": "OK", "metrics": {}, "notes": "",
+           "motor_source": "", "motor_file": "", "motor": "", "motors": [], "warnings": "", "violations": []}
+    try:
+        mounts = mounts_for(info, configid) or [(None, "")]
+        notes = []
+        for mount, file_desig in mounts:
+            mount_obj = find_mount(helper, sim.getRocket(), mount) if mount else None
+            try:
+                own = helper.get_motor(sim, mount=mount_obj)
+            except Exception:
+                own = None
+            override = _mount_lookup(voverride, mount or "") if isinstance(voverride, dict) else voverride
+            if override:
+                source, motor_rel, desig = f"variant {vlabel}", cfg.to_repo_rel(override, root), None
+            else:
                 source, motor_rel, desig = resolve_motor(cfg, snap, root, ork_rel, fcfg, scfg, mount or "",
                                                          len(mounts), file_desig, own is not None)
-                entry = {"mount": mount or "", "source": source, "file": motor_rel or "", "designation": own or ""}
-                if motor_rel:
-                    mpath = snap.path(motor_rel)
-                    if mpath is None and fallback is not None and fallback.path(motor_rel) is not None:
-                        mpath = fallback.path(motor_rel)
-                        notes.append(f"motor {motor_rel} absent in {snap.label}; used {fallback.label} copy")
-                    if mpath is None:
-                        raise FileNotFoundError(f"motor file {motor_rel} not found in {snap.label}")
-                    if desig is None and len(motor_file_designations(mpath)) > 1:
-                        desig = file_desig or None
-                    helper.set_motor(sim, str(mpath), mount=mount_obj, designation=desig)
-                    entry["designation"] = helper.get_motor(sim, mount=mount_obj) or ""
-                if source == "unresolved":
-                    notes.append(f"MOTOR UNRESOLVED on mount {mount or '(default)'!r} "
-                                 f"(file wants {file_desig or '?'}): add it to sim_config.json; results are meaningless")
-                rec["motors"].append(entry)
-            rec["motor"] = " + ".join(m["designation"] or "none" for m in rec["motors"])
-            rec["motor_source"] = ", ".join(sorted({m["source"] for m in rec["motors"]}))
-            rec["motor_file"] = ", ".join(m["file"] for m in rec["motors"] if m["file"])
-            rec["notes"] = "; ".join(notes)
-            if cfg.deterministic_wind:
-                # OpenRocket 24.12 draws turbulence entropy outside the seed: two loads of the
-                # same file differ by ~0.1-0.5 cal in stability off the rod. Zero turbulence
-                # (average wind kept) makes before/after bit-identical for an unchanged design.
-                sim.getOptions().setWindTurbulenceIntensity(0.0)
-            sim.getOptions().setRandomSeed(int(seed))
-            t0 = time.time()
-            helper.run_simulation(sim, randomize_seed=False)
-            summary = helper.get_summary(sim).to_dict()
-            summary["min_stability_cal_raw"] = summary.get("min_stability_cal")
-            summary["max_stability_cal_raw"] = summary.get("max_stability_cal")
-            summary.update(derived_metrics(helper, sim, summary))
-            rec["metrics"] = {k: _num(summary.get(k)) for k in METRIC_KEYS}
-            rec["warnings"] = "; ".join(str(w) for w in (summary.get("warnings") or ()))[:400]
-            rec["violations"] = check_limits(rec["metrics"], cfg.limits_for(fcfg, scfg))
-            log(f"  [{snap.label}] {ork_rel} :: {sim_name} ({rec['motor'] or 'no motor'}, {source}) "
-                f"apogee={rec['metrics']['apogee']:.0f} m  {time.time()-t0:.1f}s")
-        except Exception as e:
-            rec["status"] = "SIM_ERROR"
-            rec["notes"] = f"{type(e).__name__}: {str(e)[:300]}"
-            log(f"  [{snap.label}] {ork_rel} :: {sim_name} FAILED: {rec['notes']}")
-        records.append(rec)
-    return records
+            entry = {"mount": mount or "", "source": source, "file": motor_rel or "", "designation": own or ""}
+            if motor_rel:
+                mpath = snap.path(motor_rel)
+                if mpath is None and fallback is not None and fallback.path(motor_rel) is not None:
+                    mpath = fallback.path(motor_rel)
+                    notes.append(f"motor {motor_rel} absent in {snap.label}; used {fallback.label} copy")
+                if mpath is None:
+                    raise FileNotFoundError(f"motor file {motor_rel} not found in {snap.label}")
+                if desig is None and len(motor_file_designations(mpath)) > 1:
+                    desig = file_desig or None
+                helper.set_motor(sim, str(mpath), mount=mount_obj, designation=desig)
+                entry["designation"] = helper.get_motor(sim, mount=mount_obj) or ""
+            if source == "unresolved":
+                notes.append(f"MOTOR UNRESOLVED on mount {mount or '(default)'!r} "
+                             f"(file wants {file_desig or '?'}): add it to sim_config.json; results are meaningless")
+            rec["motors"].append(entry)
+        rec["motor"] = " + ".join(m["designation"] or "none" for m in rec["motors"])
+        rec["motor_source"] = ", ".join(sorted({m["source"] for m in rec["motors"]}))
+        rec["motor_file"] = ", ".join(m["file"] for m in rec["motors"] if m["file"])
+        rec["notes"] = "; ".join(notes)
+        if cfg.deterministic_wind:
+            # OpenRocket 24.12 draws turbulence entropy outside the seed: two loads of the
+            # same file differ by ~0.1-0.5 cal in stability off the rod. Zero turbulence
+            # (average wind kept) makes before/after bit-identical for an unchanged design.
+            sim.getOptions().setWindTurbulenceIntensity(0.0)
+        sim.getOptions().setRandomSeed(int(seed))
+        t0 = time.time()
+        helper.run_simulation(sim, randomize_seed=False)
+        summary = helper.get_summary(sim).to_dict()
+        summary["min_stability_cal_raw"] = summary.get("min_stability_cal")
+        summary["max_stability_cal_raw"] = summary.get("max_stability_cal")
+        summary.update(derived_metrics(helper, sim, summary))
+        rec["metrics"] = {k: _num(summary.get(k)) for k in METRIC_KEYS}
+        rec["warnings"] = "; ".join(str(w) for w in (summary.get("warnings") or ()))[:400]
+        rec["violations"] = check_limits(rec["metrics"], cfg.limits_for(fcfg, scfg))
+        log(f"  [{snap.label}] {ork_rel} :: {label} ({rec['motor'] or 'no motor'}, {rec['motor_source']}) "
+            f"apogee={rec['metrics']['apogee']:.0f} m  {time.time()-t0:.1f}s")
+    except Exception as e:
+        rec["status"] = "SIM_ERROR"
+        rec["notes"] = f"{type(e).__name__}: {str(e)[:300]}"
+        log(f"  [{snap.label}] {ork_rel} :: {label} FAILED: {rec['notes']}")
+    return rec
 
 
 def open_jvm(jar):
@@ -547,16 +575,10 @@ def render_report(head_recs, base_recs, base_label, head_label, changed_motor_fi
                   deterministic_wind=True) -> tuple:
     """-> (markdown, n_violations, n_unresolved)"""
     lines = [f"## OpenRocket simulation check", ""]
-    wind = ("wind turbulence set to 0 for reproducibility (average wind kept)" if deterministic_wind
-            else "wind turbulence as saved in the file (results vary run to run)")
     if base_label:
-        lines.append(f"Comparing **{base_label}** (before) → **{head_label}** (after); same random seed, {wind}.")
+        lines.append(f"**{base_label}** → **{head_label}**")
     else:
-        lines.append(f"Simulated **{head_label}** (no base commit to compare against); {wind}.")
-    if changed_motor_files:
-        lines.append(f"Motor files changed in this range: {', '.join(f'`{m}`' for m in changed_motor_files)}.")
-    for d in deleted:
-        lines.append(f"Deleted: `{d}`")
+        lines.append(f"**{head_label}** (no base commit to compare against)")
     lines.append("")
 
     base_by = {pair_key(r): r for r in (base_recs or [])}
@@ -608,10 +630,44 @@ def render_report(head_recs, base_recs, base_label, head_label, changed_motor_fi
         detail.append("</details>")
         detail.append("")
 
+    # Digest first: one short line per simulation. Chat integrations (the Discord GitHub bot)
+    # show only the first few hundred characters of a commit comment and cannot draw tables.
+    for r in head_recs:
+        b = base_by.get(pair_key(r))
+        m = r["metrics"] or {}
+        sim = r["sim_name"] or f"#{r['sim_index']}"
+        ap = m.get("apogee", math.nan)
+        ap_b = b["metrics"].get("apogee", math.nan) if b and b.get("metrics") else None
+        if r["status"] != "OK":
+            status = f"❌ {r['status']}"
+        elif "unresolved" in (r.get("motor_source") or ""):
+            status = "⚠️ motor unresolved"
+        elif r.get("violations"):
+            status = "❌ " + "; ".join(r["violations"])
+        else:
+            status = "✅"
+        if ap_b is None:
+            d = ", new" if base_label else ""
+        elif not (math.isnan(ap) or math.isnan(ap_b)) and abs(ap - ap_b) < 0.5:
+            d = ", unchanged"
+        else:
+            d = f", Δ {fmt_delta(ap_b, ap, 0)}"
+        lines.append(f"- **{PurePosixPath(r['file']).name}** · {sim} · {status} · apogee {fmt(ap, 0)} m{d}"
+                     + f" · Mach {fmt(m.get('max_mach', math.nan), 2)}"
+                     + f" · rail {fmt(m.get('stability_off_rod_cal', math.nan), 2)} cal")
+    lines.append("")
     heads = [f"{label} ({unit})" if unit else label for _, label, unit, _ in PRIMARY_METRICS[1:]]
     lines.append("| File | Simulation | Motor | Apogee (m) | Δ apogee | " + " | ".join(heads) + " | Status |")
     lines.append("|---|---|---|---:|---:|" + "---:|" * len(heads) + "---|")
     lines.extend(summary_rows)
+    lines.append("")
+    wind = ("wind turbulence set to 0 for reproducibility (average wind kept)" if deterministic_wind
+            else "wind turbulence as saved in the file (results vary run to run)")
+    lines.append(f"Same random seed before and after; {wind}.")
+    if changed_motor_files:
+        lines.append(f"Motor files changed in this range: {', '.join(f'`{m}`' for m in changed_motor_files)}.")
+    for d in deleted:
+        lines.append(f"Deleted: `{d}`")
     lines.append("")
     lines.extend(detail)
     if n_viol or n_unres:
@@ -872,6 +928,11 @@ def cmd_history(args):
         cache_dir.mkdir(parents=True, exist_ok=True)
     cache_salt = f"s{cfg.seed}-w{int(cfg.deterministic_wind)}-m2"  # bump the suffix when metrics change
 
+    def salt_for(f):  # the file's config entry (motors, variants) changes the results too
+        import hashlib
+        entry = json.dumps(cfg.file_cfg(rel_posix(root / f, cfg.dir)), sort_keys=True)
+        return cache_salt + "-" + hashlib.sha1(entry.encode()).hexdigest()[:8]
+
     # plan: (file, version entry, blob) for every version; look up the cache first
     plan, cached, files_versions = [], {}, {}
     for f in files:
@@ -887,7 +948,7 @@ def cmd_history(args):
                                  "message": "(uncommitted working tree)", "path": f, "blob": wt_blob})
         for v in versions:
             key = (f, v["blob"])
-            hit = cache_dir / f"{v['blob']}-{cache_salt}.json" if (cache_dir and v["blob"]) else None
+            hit = cache_dir / f"{v['blob']}-{salt_for(f)}.json" if (cache_dir and v["blob"]) else None
             if hit and hit.is_file():
                 try:
                     cached[key] = json.loads(hit.read_text(encoding="utf-8"))
@@ -911,7 +972,7 @@ def cmd_history(args):
                 recs = run_ork(helper, cfg, snap, root, v["path"], cfg.seed, fallback=head, cfg_key=cfg_key)
                 results[(f, v["blob"])] = recs
                 if cache_dir and v["blob"]:
-                    (cache_dir / f"{v['blob']}-{cache_salt}.json").write_text(json.dumps(recs), encoding="utf-8")
+                    (cache_dir / f"{v['blob']}-{salt_for(f)}.json").write_text(json.dumps(recs), encoding="utf-8")
 
     # assemble series per (file, sim name)
     series, csv_rows = {}, []
