@@ -9,6 +9,14 @@ the flight performance before and after a commit. Built for GitHub Actions
     python or_ci.py run     --config aero_modeling/sim_config.json [files...]
     python or_ci.py compare --config aero_modeling/sim_config.json --base HEAD~1 [files...]
     python or_ci.py compare --config aero_modeling/sim_config.json --base origin/main --all
+    python or_ci.py history --config aero_modeling/sim_config.json --cache .or_ci_cache [files...]
+
+WHAT "HISTORY" MEANS
+    Every committed version of each .ork (first-parent history, renames
+    followed) is simulated the same way, cached by git blob id so only
+    versions never seen before cost anything, and rendered as Mermaid bar
+    charts (apogee and stability per commit) that GitHub draws inline in
+    commit comments and job summaries. No branch is written to.
 
 WHAT "RUN" MEANS
     For each .ork file, every simulation saved in it is run with its own
@@ -75,22 +83,39 @@ from pathlib import Path, PurePosixPath
 
 DEFAULT_SEED = 20260915
 
-# (metric key in orlab FlightSummary, label, unit, decimals)
-METRICS = [
+# The six TRACKED metrics: summary table columns, history charts, limits by default.
+# (metric key, label, unit, decimals)
+PRIMARY_METRICS = [
     ("apogee", "Apogee", "m", 0),
-    ("max_velocity", "Max velocity", "m/s", 1),
     ("max_mach", "Max Mach", "", 2),
+    ("max_dynamic_pressure_kpa", "Max dynamic pressure", "kPa", 1),
+    ("stability_off_rod_cal", "Stability off rod", "cal", 2),
+    ("min_stability_cal", "Min stability", "cal", 2),
+    ("max_stability_cal", "Max stability", "cal", 2),
+]
+# Secondary metrics: kept in the detail tables, CSV and JSON.
+SECONDARY_METRICS = [
+    ("max_velocity", "Max velocity", "m/s", 1),
     ("max_acceleration", "Max acceleration", "m/s²", 1),
     ("velocity_off_rod", "Rod exit speed", "m/s", 1),
-    ("stability_off_rod_cal", "Stability off rod", "cal", 2),
-    ("min_stability_cal", "Min stability (rod→apogee)", "cal", 2),
     ("time_to_apogee", "Time to apogee", "s", 1),
     ("velocity_at_deployment", "Deployment speed", "m/s", 1),
     ("descent_rate", "Descent rate", "m/s", 1),
     ("flight_time", "Flight time", "s", 0),
     ("landing_distance", "Landing distance", "m", 0),
+    ("min_stability_cal_raw", "Min stability, orlab raw (to apogee)", "cal", 2),
+    ("max_stability_cal_raw", "Max stability, orlab raw (to apogee)", "cal", 2),
 ]
+METRICS = PRIMARY_METRICS + SECONDARY_METRICS
 METRIC_KEYS = [m[0] for m in METRICS]
+PRIMARY_KEYS = [m[0] for m in PRIMARY_METRICS]
+
+# Stability window: from launch-rod departure to apogee, but only while the rocket is
+# moving faster than this. OpenRocket's margin diverges as airspeed -> 0 near apogee
+# (orlab's raw min comes out at -20 cal on the IREC design), which is not a real
+# stability event.
+STABILITY_MIN_SPEED_MS = 30.0
+R_AIR = 287.05  # J/(kg K)
 
 
 # ----------------------------------------------------------------------------
@@ -339,6 +364,39 @@ def _num(v):
     return float(v) if isinstance(v, (int, float)) and not isinstance(v, bool) else math.nan
 
 
+def derived_metrics(helper, sim, summary: dict) -> dict:
+    """Max dynamic pressure (kPa) and a speed-windowed min/max stability, from the time series."""
+    import numpy as np
+    from orlab import FlightDataType as F
+    out = {"max_dynamic_pressure_kpa": math.nan, "min_stability_cal": math.nan, "max_stability_cal": math.nan}
+    try:
+        ts = helper.get_timeseries(sim, [F.TYPE_TIME, F.TYPE_AIR_PRESSURE, F.TYPE_AIR_TEMPERATURE,
+                                         F.TYPE_VELOCITY_TOTAL, F.TYPE_STABILITY])
+        t = np.asarray(ts[F.TYPE_TIME], float)
+        p = np.asarray(ts[F.TYPE_AIR_PRESSURE], float)
+        T = np.asarray(ts[F.TYPE_AIR_TEMPERATURE], float)
+        v = np.asarray(ts[F.TYPE_VELOCITY_TOTAL], float)
+        stab = np.asarray(ts[F.TYPE_STABILITY], float)
+        with np.errstate(invalid="ignore", divide="ignore"):
+            q = 0.5 * (p / (R_AIR * T)) * v * v
+        if q.size and not np.isnan(q).all():
+            out["max_dynamic_pressure_kpa"] = float(np.nanmax(q)) / 1000.0
+        events = helper.get_events(sim)
+        from orlab import FlightEvent as E
+        t_rod = events.get(E.LAUNCHROD, [None])[0]
+        t_apo = events.get(E.APOGEE, [None])[0]
+        if t_apo is None and t.size:
+            t_apo = float(t[-1])
+        if t_rod is not None and t_apo is not None:
+            mask = (t >= t_rod) & (t <= t_apo) & (v >= STABILITY_MIN_SPEED_MS) & ~np.isnan(stab)
+            if mask.any():
+                out["min_stability_cal"] = float(stab[mask].min())
+                out["max_stability_cal"] = float(stab[mask].max())
+    except Exception:
+        pass
+    return out
+
+
 def check_limits(metrics: dict, limits: dict):
     out = []
     for metric, spec in limits.items():
@@ -352,10 +410,12 @@ def check_limits(metrics: dict, limits: dict):
     return out
 
 
-def run_ork(helper, cfg: Config, snap: Snapshot, root: Path, ork_rel: str, seed: int, log=print, fallback=None):
+def run_ork(helper, cfg: Config, snap: Snapshot, root: Path, ork_rel: str, seed: int, log=print, fallback=None,
+            cfg_key: str = None):
     """Run every simulation in one .ork (as found in `snap`). Returns a list of record dicts.
     `fallback` is a Snapshot to take motor files from when `snap` lacks them (a base commit
-    that predates the thrust-curve file)."""
+    that predates the thrust-curve file). `cfg_key` overrides the config-relative path used
+    to look the file up in sim_config.json (a historical version under an older filename)."""
     records = []
     path = snap.path(ork_rel)
     base_rec = {"file": ork_rel, "snapshot": snap.label}
@@ -371,7 +431,7 @@ def run_ork(helper, cfg: Config, snap: Snapshot, root: Path, ork_rel: str, seed:
     if n == 0:
         return [{**base_rec, "status": "NO_SIMULATIONS", "sim_name": "", "sim_index": -1, "metrics": {},
                  "notes": "no simulation saved in the file; add one in the GUI"}]
-    cfg_rel = rel_posix(root / ork_rel, cfg.dir)
+    cfg_rel = cfg_key or rel_posix(root / ork_rel, cfg.dir)
     fcfg = cfg.file_cfg(cfg_rel)
     for i in range(n):
         sim = doc.getSimulation(i)
@@ -420,6 +480,9 @@ def run_ork(helper, cfg: Config, snap: Snapshot, root: Path, ork_rel: str, seed:
             t0 = time.time()
             helper.run_simulation(sim, randomize_seed=False)
             summary = helper.get_summary(sim).to_dict()
+            summary["min_stability_cal_raw"] = summary.get("min_stability_cal")
+            summary["max_stability_cal_raw"] = summary.get("max_stability_cal")
+            summary.update(derived_metrics(helper, sim, summary))
             rec["metrics"] = {k: _num(summary.get(k)) for k in METRIC_KEYS}
             rec["warnings"] = "; ".join(str(w) for w in (summary.get("warnings") or ()))[:400]
             rec["violations"] = check_limits(rec["metrics"], cfg.limits_for(fcfg, scfg))
@@ -506,13 +569,14 @@ def render_report(head_recs, base_recs, base_label, head_label, changed_motor_fi
         if r.get("violations"):
             n_viol += len(r["violations"])
             flags.extend("❌ " + v for v in r["violations"])
-        ap = r["metrics"].get("apogee", math.nan) if r["metrics"] else math.nan
+        m = r["metrics"] or {}
+        ap = m.get("apogee", math.nan)
         ap_b = b["metrics"].get("apogee", math.nan) if b and b.get("metrics") else None
-        stab = r["metrics"].get("stability_off_rod_cal", math.nan) if r["metrics"] else math.nan
+        cells = [fmt(m.get(k, math.nan), dec) for k, _, _, dec in PRIMARY_METRICS[1:]]
         summary_rows.append(
             f"| `{r['file']}` | {sim} | {r.get('motor') or '–'} ({r.get('motor_source', '')}) | "
             f"{fmt(ap, 0)} | {fmt_delta(ap_b, ap, 0) if ap_b is not None else ('new' if base_label else '–')} | "
-            f"{fmt(stab, 2)} | {'; '.join(flags) if flags else '✅'} |")
+            + " | ".join(cells) + f" | {'; '.join(flags) if flags else '✅'} |")
         # detail table
         detail.append(f"<details><summary><code>{r['file']}</code> · {sim} · motor {r.get('motor') or '–'}"
                       f" ({r.get('motor_source', '')}{', ' + r['motor_file'] if r.get('motor_file') else ''})</summary>")
@@ -536,8 +600,9 @@ def render_report(head_recs, base_recs, base_label, head_label, changed_motor_fi
         detail.append("</details>")
         detail.append("")
 
-    lines.append("| File | Simulation | Motor | Apogee (m) | Δ apogee | Stability off rod (cal) | Status |")
-    lines.append("|---|---|---|---:|---:|---:|---|")
+    heads = [f"{label} ({unit})" if unit else label for _, label, unit, _ in PRIMARY_METRICS[1:]]
+    lines.append("| File | Simulation | Motor | Apogee (m) | Δ apogee | " + " | ".join(heads) + " | Status |")
+    lines.append("|---|---|---|---:|---:|" + "---:|" * len(heads) + "---|")
     lines.extend(summary_rows)
     lines.append("")
     lines.extend(detail)
@@ -644,11 +709,12 @@ def cmd_compare(args):
         if cfg_rel in changed:
             changed_orks |= set(all_orks)
         targets = sorted(changed_orks)
+    Path(args.results).mkdir(parents=True, exist_ok=True)
+    (Path(args.results) / "targets.txt").write_text("\n".join(targets) + ("\n" if targets else ""), encoding="utf-8")
     if not targets and not deleted:
         msg = "No .ork files changed in this range; nothing to simulate."
         print(msg)
         _emit(f"## OpenRocket simulation check\n\n{msg}\n", args)
-        Path(args.results).mkdir(parents=True, exist_ok=True)
         (Path(args.results) / "report.md").write_text(msg + "\n", encoding="utf-8")
         return 0
 
@@ -686,6 +752,193 @@ def _emit(report: str, args):
         print("\n" + report)
 
 
+# ----------------------------------------------------------------------------
+# history: every committed version of a design, as Mermaid bar charts
+# ----------------------------------------------------------------------------
+def git_file_history(root: Path, rel: str, max_commits: int):
+    """Commits (oldest first) that touched `rel`, following renames along the first-parent line.
+    Each entry: sha, short, time, author, message, path (the file's name AT that commit)."""
+    r = _git(root, "log", "--first-parent", "--follow", f"--max-count={max_commits}",
+             "--format=__C__%H%x1f%ct%x1f%h%x1f%an%x1f%s", "--name-only", "--", rel, check=False)
+    entries, cur = [], None
+    for line in r.stdout.splitlines():
+        if line.startswith("__C__"):
+            sha, ct, short, author, msg = line[5:].split("\x1f", 4)
+            cur = {"sha": sha, "short": short, "time": int(ct), "author": author, "message": msg, "path": None}
+            entries.append(cur)
+        elif line.strip() and cur is not None and cur["path"] is None:
+            cur["path"] = line.strip()
+    return [e for e in entries if e["path"]][::-1]
+
+
+def _blob(root: Path, sha: str, rel: str):
+    r = _git(root, "rev-parse", f"{sha}:{rel}", check=False)
+    return r.stdout.strip() if r.returncode == 0 else None
+
+
+def _hash_file(path: Path) -> str:
+    import hashlib
+    h = hashlib.sha1(b"blob %d\0" % path.stat().st_size)
+    h.update(path.read_bytes())
+    return h.hexdigest()  # == git's blob id for the working-tree content
+
+
+def _mermaid_label(s: str) -> str:
+    return '"' + s.replace('"', "'") + '"'
+
+
+def render_history_md(series: dict, max_points: int) -> str:
+    """series: {(file, sim): [{'label', 'short', 'date', 'author', 'message', 'status', 'metrics', 'note'} ...]}"""
+    out = ["## Performance history", "",
+           f"Every committed version of each design (first-parent history, renames followed), simulated with "
+           f"the same settings as the check above. Last {max_points} versions shown per chart; the full table "
+           f"is in the run artifacts (`history.csv`).", ""]
+    for (file, sim), rows in series.items():
+        ok = [r for r in rows if r["status"] == "OK" and not math.isnan(r["metrics"].get("apogee", math.nan))]
+        out.append(f"### `{file}` · {sim}")
+        out.append("")
+        if not ok:
+            out.append("_No successful simulation in this file's history._")
+            out.append("")
+            continue
+        shown = ok[-(max_points + 1):]  # one extra so the first charted version has a "previous"
+        if len(shown) < 2:
+            out.append("_Only one version so far; deltas start with the next commit._")
+            out.append("")
+        else:
+            out.append("Each bar is the change from the previous committed version: 🟩 increase, 🟥 decrease "
+                       "(bar height is the size of the change; Mermaid bars can't point down).")
+            out.append("")
+            labels = ", ".join(_mermaid_label(r["label"]) for r in shown[1:])
+            for key, label, unit, dec in PRIMARY_METRICS:
+                title = f"Δ {label[0].lower() + label[1:]}"
+                vals = [r["metrics"].get(key, math.nan) for r in shown]
+                if all(math.isnan(v) for v in vals):
+                    continue
+                deltas = [0.0 if (math.isnan(a) or math.isnan(b)) else b - a for a, b in zip(vals, vals[1:])]
+                # Mermaid colours per SERIES, not per bar: increases go in series 1 (green),
+                # decreases in series 2 (red), each as a magnitude; the other series is 0 there.
+                # Overlapping bar series share the x slot, so it reads as one coloured bar.
+                up = [d if d > 0 else 0.0 for d in deltas]
+                down = [-d if d < 0 else 0.0 for d in deltas]
+                top = max(up + down) if any(up + down) else 1.0
+                y1 = round(top * 1.15, dec) or 1.0
+                fmt_series = lambda s: ", ".join(f"{v:.{dec}f}" for v in s)  # noqa: E731
+                u = f" ({unit})" if unit else ""
+                out.append("```mermaid")
+                out.append('%%{init: {"themeVariables": {"xyChart": {"plotColorPalette": "#2da44e, #cf222e"}}}}%%')
+                out.append("xychart-beta")
+                out.append(f'    title "{title} vs previous version{u}"')
+                out.append(f"    x-axis [{labels}]")
+                out.append(f'    y-axis "|{title}|{u}" 0 --> {y1:g}')
+                out.append(f"    bar [{fmt_series(up)}]")
+                out.append(f"    bar [{fmt_series(down)}]")
+                out.append("```")
+                out.append("")
+        heads = [f"{label} ({unit})" if unit else label for _, label, unit, _ in PRIMARY_METRICS]
+        out.append("| Version | Date | Author | Commit | " + " | ".join(heads) + " | Δ apogee | Note |")
+        out.append("|---|---|---|---|" + "---:|" * len(heads) + "---:|---|")
+        prev = None
+        for r in rows[-max_points:]:
+            m = r["metrics"] or {}
+            ap = m.get("apogee", math.nan)
+            msg = r["message"][:60] + ("…" if len(r["message"]) > 60 else "")
+            delta = fmt_delta(prev, ap, 0) if prev is not None and r["status"] == "OK" else "–"
+            cells = " | ".join(fmt(m.get(k, math.nan), dec) for k, _, _, dec in PRIMARY_METRICS)
+            out.append(f"| `{r['short']}` | {r['date']} | {r['author']} | {msg} | {cells} | {delta} | "
+                       f"{r['note'] or ('' if r['status'] == 'OK' else r['status'])} |")
+            if r["status"] == "OK" and not math.isnan(ap):
+                prev = ap
+        out.append("")
+    return "\n".join(out) + "\n"
+
+
+def cmd_history(args):
+    import datetime as dt
+    cfg = Config(Path(args.config))
+    root = repo_root(cfg.dir)
+    head = Snapshot(root)
+    files = [rel_posix(Path(f), root) for f in args.files] or discover_orks(cfg, root)
+    files = [f for f in files if f]
+    if not files:
+        print("no .ork files to build history for")
+        return 0
+    cache_dir = Path(args.cache).resolve() if args.cache else None
+    if cache_dir:
+        cache_dir.mkdir(parents=True, exist_ok=True)
+    cache_salt = f"s{cfg.seed}-w{int(cfg.deterministic_wind)}-m2"  # bump the suffix when metrics change
+
+    # plan: (file, version entry, blob) for every version; look up the cache first
+    plan, cached, files_versions = [], {}, {}
+    for f in files:
+        versions = git_file_history(root, f, args.max_commits)
+        for v in versions:
+            v["blob"] = _blob(root, v["sha"], v["path"])
+        # uncommitted working-tree version, if it differs from HEAD
+        wt = head.path(f)
+        if wt is not None:
+            wt_blob = _hash_file(wt)
+            if not versions or versions[-1]["blob"] != wt_blob:
+                versions.append({"sha": None, "short": "working", "time": int(time.time()), "author": "",
+                                 "message": "(uncommitted working tree)", "path": f, "blob": wt_blob})
+        for v in versions:
+            key = (f, v["blob"])
+            hit = cache_dir / f"{v['blob']}-{cache_salt}.json" if (cache_dir and v["blob"]) else None
+            if hit and hit.is_file():
+                try:
+                    cached[key] = json.loads(hit.read_text(encoding="utf-8"))
+                    continue
+                except Exception:
+                    pass
+            plan.append((f, v))
+        files_versions[f] = versions
+
+    todo = plan
+    print(f"History: {sum(len(v) for v in files_versions.values())} version(s) across {len(files)} file(s); "
+          f"{len(todo)} to simulate, {len(cached)} from cache")
+    results = dict(cached)
+    if todo:
+        orlab, jar = open_jvm(args.jar)
+        with orlab.OpenRocketInstance(jar, log_level="ERROR") as inst:
+            helper = orlab.Helper(inst)
+            for f, v in todo:
+                snap = head if v["sha"] is None else Snapshot(root, v["sha"])
+                cfg_key = rel_posix(root / f, cfg.dir)  # config is keyed by the CURRENT name
+                recs = run_ork(helper, cfg, snap, root, v["path"], cfg.seed, fallback=head, cfg_key=cfg_key)
+                results[(f, v["blob"])] = recs
+                if cache_dir and v["blob"]:
+                    (cache_dir / f"{v['blob']}-{cache_salt}.json").write_text(json.dumps(recs), encoding="utf-8")
+
+    # assemble series per (file, sim name)
+    series, csv_rows = {}, []
+    for f, versions in files_versions.items():
+        for v in versions:
+            date = dt.datetime.fromtimestamp(v["time"]).strftime("%Y-%m-%d")
+            for rec in results.get((f, v["blob"]), []):
+                sim = rec.get("sim_name") or f"#{rec.get('sim_index')}"
+                row = {"label": f"{date[5:]} {v['short']}", "short": v["short"], "date": date, "author": v["author"],
+                       "message": v["message"], "status": rec["status"], "metrics": rec.get("metrics") or {},
+                       "note": ("motor unresolved" if "unresolved" in (rec.get("motor_source") or "") else "")}
+                series.setdefault((f, sim), []).append(row)
+                csv_rows.append({"file": f, "path_at_commit": v["path"], "sim_name": sim, "commit": v["sha"] or "",
+                                 "short": v["short"], "date": date, "author": v["author"], "message": v["message"],
+                                 "status": rec["status"], "motor": rec.get("motor", ""),
+                                 "motor_source": rec.get("motor_source", ""), **(rec.get("metrics") or {})})
+    out = Path(args.results)
+    out.mkdir(parents=True, exist_ok=True)
+    fields = ["file", "path_at_commit", "sim_name", "commit", "short", "date", "author", "message", "status",
+              "motor", "motor_source"] + METRIC_KEYS
+    with open(out / "history.csv", "w", newline="", encoding="utf-8") as fh:
+        w = csv.DictWriter(fh, fieldnames=fields, extrasaction="ignore")
+        w.writeheader()
+        w.writerows(csv_rows)
+    md = render_history_md(series, args.max_points)
+    (out / "history.md").write_text(md, encoding="utf-8")
+    _emit(md, args)
+    print(f"Wrote {out / 'history.md'}, {out / 'history.csv'}")
+    return 0
+
+
 def main():
     for stream in (sys.stdout, sys.stderr):  # the report has arrows/emoji; Windows consoles default to cp1252
         try:
@@ -708,6 +961,11 @@ def main():
     c.add_argument("--base", default="", help="Base commit/ref (default: HEAD~1; all-zero SHAs fall back too)")
     c.add_argument("--all", action="store_true", help="Compare every file, not just the changed ones")
     c.set_defaults(fn=cmd_compare)
+    h = sub.add_parser("history", parents=[common], help="Simulate every committed version; Mermaid bar charts")
+    h.add_argument("--cache", default=None, help="Folder caching per-version results by git blob id (skips re-simulation)")
+    h.add_argument("--max-commits", type=int, default=200, help="How far back to walk per file")
+    h.add_argument("--max-points", type=int, default=30, help="Versions per chart (the most recent ones)")
+    h.set_defaults(fn=cmd_history)
     args = p.parse_args()
     sys.exit(args.fn(args))
 
