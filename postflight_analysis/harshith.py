@@ -1,6 +1,94 @@
 
 from dataclasses import dataclass
 import numpy as np
+from pathlib import Path
+import pint
+import pandas as pd
+
+try:
+    from CoolProp.CoolProp import PropsSI
+    _HAS_COOLPROP = True
+except ImportError:
+    _HAS_COOLPROP = False
+
+
+IN_TO_M = 0.0254
+LBM_TO_KG = 0.45359237
+PSI_TO_PA = 6894.757293168
+
+
+
+def cumulative(y: np.ndarray, x: np.ndarray) -> np.ndarray:
+    """Cumulative trapezoidal integral of y dx, same length as y, starting at 0."""
+    y = np.asarray(y, dtype=float)
+    x = np.asarray(x, dtype=float)
+    out = np.zeros_like(y)
+    out[1:] = np.cumsum(0.5 * (y[:-1] + y[1:]) * np.diff(x))
+    return out
+
+
+
+class N2OSaturation:
+    """
+    Defining the liquid/vapor properties within the oxidizer tank with
+    N2O saturation-dome property lookups. Called through N2OSaturation.function
+
+    `vf_vg(P)` is kept around for reference / for anyone who wants to
+    run the simpler full-equilibrium model as a comparison, but the
+    tank model below only uses `vg(P)` (saturated vapor, assumed valid
+    for the ullage) plus `subcooled_liquid_v` (NOT assumed saturated).
+    """
+
+    @classmethod
+    def vf_vg(cls, pressure_pa: float) -> tuple[float, float]:
+        """Return (v_f, v_g) in m^3/kg at the given saturation pressure (Pa)."""
+        vf = 1.0 / PropsSI("D", "P", pressure_pa, "Q", 0, "N2O")
+        vg = 1.0 / PropsSI("D", "P", pressure_pa, "Q", 1, "N2O")
+        return vf, vg
+
+    @classmethod
+    def vg(cls, pressure_pa: float) -> float:
+        """Saturated vapor specific volume (m^3/kg) at the given pressure -- used for the ullage."""
+
+        return 1.0 / PropsSI("D", "P", pressure_pa, "Q", 1, "N2O")
+
+    @classmethod
+    def p_sat(cls, temperature_k: float) -> float:
+        """Pressure needed to boil, when sitting at a given temperature (K)."""
+        return PropsSI("P", "T", temperature_k, "Q", 0, "N2O")
+       
+    @classmethod
+    def subcooled_liquid_v(cls, temperature_k: float, pressure_pa: float) -> float:
+        """
+        Specific volume ((m^3/kg) of liquid N2O, at given temperature (K) and with given surrounding pressure
+
+        If `pressure_pa` is at/below the saturation
+        pressure for that temperature, the liquid would actually be
+        boiling there -- our fixed-liquid-temperature assumption has
+        broken down at that instant, so we clamp to the saturated-
+        liquid state at that temperature as the least-bad fallback
+        (rather than raising, or letting CoolProp fail on an invalid
+        two-phase T,P query).
+        """
+        p_sat = cls.p_sat(temperature_k)
+        p_eff = max(pressure_pa, p_sat)
+        
+            # Right at/near p_sat, T&P aren't independent (that's the
+            # definition of saturation) and CoolProp's single-phase
+            # solver can't resolve it -- fall back to the saturated
+            # liquid state at this temperature, which is the correct
+            # limit anyway as p_eff -> p_sat.
+        if p_eff <= p_sat * (1 + 1e-4):
+            return 1.0 / PropsSI("D", "T", temperature_k, "Q", 0, "N2O")
+            try:
+                return 1.0 / PropsSI("D", "T", temperature_k, "P", p_eff, "N2O")
+            except ValueError:
+                return 1.0 / PropsSI("D", "T", temperature_k, "Q", 0, "N2O")
+        # Fallback: liquid is nearly incompressible, so approximate with
+        # the saturated-liquid specific volume at this temperature.
+        p_at_t = float(np.interp(temperature_k, cls._T, cls._P))
+        return float(np.interp(p_at_t, cls._P, cls._VF))
+
 
 @dataclass
 class EngineComponent:

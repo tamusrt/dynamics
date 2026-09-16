@@ -421,7 +421,6 @@ class Rocket:
         return (sum(p.iyy_about(cg) for p in self.parts)
                 + sum(f.iyy_about(cg) for f in self.fins))
 
-    # -- NEW: time-varying quantities including the engine -----------
     def mass_at(self, t: float = 0.0) -> float:
         structural = sum(p.mass for p in self.parts) + sum(f.mass for f in self.fins)
         engine_mass = self.engine.mass_at(t) if self.engine is not None else 0.0
@@ -450,9 +449,6 @@ class Rocket:
             iyy += self.engine.iyy_at(t, cg)
         return iyy
 
-# --------------------------------------------------------------------------
-# recursive tree walker
-# --------------------------------------------------------------------------
 
 def _resolve_offset(elem, parent_front, parent_length, this_length, stack_cursor):
     off_el = elem.find("axialoffset")
