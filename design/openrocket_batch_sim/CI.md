@@ -75,13 +75,15 @@ python design/openrocket_batch_sim/or_ci.py compare --config aero_modeling/sim_c
 
 ## Reading the report
 
+**Units.** `"units"` in `sim_config.json` selects how reports read: `metric` (default: m, m/s, kPa) or `imperial` (ft, ft/s, psi). Calibers, Mach and seconds are the same in both. Limits in the config are written in the selected units. The CSV, JSON and history cache always hold SI values, so switching the flag changes only the rendered reports and never invalidates cached results.
+
 **Tracked metrics** (summary table, history charts, and the default limits):
 
 | Metric | Definition |
 |---|---|
-| Apogee | Highest altitude above the launch site (m) |
+| Apogee | Highest altitude above the launch site (m or ft) |
 | Max Mach | Peak Mach number |
-| Max dynamic pressure | Peak ½·ρ·v² (kPa), with ρ from OpenRocket's air pressure and temperature along the flight |
+| Max dynamic pressure | Peak ½·ρ·v² (kPa or psi), with ρ from OpenRocket's air pressure and temperature along the flight |
 | Stability off rod | Barrowman margin (calibers) at launch-rod departure |
 | Min / max stability | Smallest and largest margin between rod departure and apogee, **counting only samples with airspeed ≥ 30 m/s**. OpenRocket's margin diverges as airspeed goes to zero near apogee (it reads −20 cal on the IREC file), which is not a real stability event. orlab's unfiltered values are kept in the CSV as `*_raw`. |
 

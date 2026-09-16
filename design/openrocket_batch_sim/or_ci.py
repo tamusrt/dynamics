@@ -118,6 +118,44 @@ METRICS = PRIMARY_METRICS + SECONDARY_METRICS
 METRIC_KEYS = [m[0] for m in METRICS]
 PRIMARY_KEYS = [m[0] for m in PRIMARY_METRICS]
 
+# Display units. Everything is computed and stored (JSON, CSV, cache) in SI; the config's
+# "units" flag ("metric" default | "imperial") only changes how reports and limits read.
+M_TO_FT = 3.280839895
+KPA_TO_PSI = 0.1450377377
+IMPERIAL = {  # metric key -> (unit, factor from SI, decimals)
+    "apogee": ("ft", M_TO_FT, 0),
+    "max_dynamic_pressure_kpa": ("psi", KPA_TO_PSI, 1),
+    "max_velocity": ("ft/s", M_TO_FT, 1),
+    "max_acceleration": ("ft/s²", M_TO_FT, 1),
+    "velocity_off_rod": ("ft/s", M_TO_FT, 1),
+    "velocity_at_deployment": ("ft/s", M_TO_FT, 1),
+    "descent_rate": ("ft/s", M_TO_FT, 1),
+    "landing_distance": ("ft", M_TO_FT, 0),
+}
+UNIT_SYSTEMS = ("metric", "imperial")
+
+
+def metric_specs(units: str = "metric"):
+    """[(key, label, unit, decimals, factor_from_SI)] for every metric in the requested unit system."""
+    out = []
+    for key, label, unit, dec in METRICS:
+        factor = 1.0
+        if units == "imperial" and key in IMPERIAL:
+            unit, factor, dec = IMPERIAL[key]
+        out.append((key, label, unit, dec, factor))
+    return out
+
+
+def primary_specs(units: str = "metric"):
+    return [s for s in metric_specs(units) if s[0] in PRIMARY_KEYS]
+
+
+def spec_for(key: str, units: str = "metric"):
+    for s in metric_specs(units):
+        if s[0] == key:
+            return s
+    return (key, key, "", 3, 1.0)
+
 # Stability window: from launch-rod departure to apogee, but only while the rocket is
 # moving faster than this. OpenRocket's margin diverges as airspeed -> 0 near apogee
 # (orlab's raw min comes out at -20 cal on the IREC design), which is not a real
@@ -202,6 +240,9 @@ class Config:
         raw = json.loads(self.path.read_text(encoding="utf-8"))
         self.dir = self.path.parent
         self.seed = int(raw.get("seed", DEFAULT_SEED))
+        self.units = str(raw.get("units", "metric")).strip().lower()
+        if self.units not in UNIT_SYSTEMS:
+            raise SystemExit(f"sim_config.json: units must be one of {UNIT_SYSTEMS}, got {self.units!r}")
         self.deterministic_wind = bool(raw.get("deterministic_wind", True))
         self.fail_on_limits = bool(raw.get("fail_on_limits", False))
         self.ignore = list(raw.get("ignore", []))
@@ -417,16 +458,20 @@ def derived_metrics(helper, sim, summary: dict) -> dict:
     return out
 
 
-def check_limits(metrics: dict, limits: dict):
+def check_limits(metrics: dict, limits: dict, units: str = "metric"):
+    """Limits are written in the config's display units; metrics are SI."""
     out = []
     for metric, spec in limits.items():
         val = metrics.get(metric, math.nan)
         if math.isnan(val):
             continue
-        if "min" in spec and val < float(spec["min"]):
-            out.append(f"{metric} = {val:.3g} < min {spec['min']}")
-        if "max" in spec and val > float(spec["max"]):
-            out.append(f"{metric} = {val:.3g} > max {spec['max']}")
+        _, _, unit, dec, factor = spec_for(metric, units)
+        shown = val * factor
+        u = f" {unit}" if unit else ""
+        if "min" in spec and shown < float(spec["min"]):
+            out.append(f"{metric} = {shown:.{dec}f}{u} < min {spec['min']}")
+        if "max" in spec and shown > float(spec["max"]):
+            out.append(f"{metric} = {shown:.{dec}f}{u} > max {spec['max']}")
     return out
 
 
@@ -522,7 +567,7 @@ def _run_one(helper, cfg, snap, root, ork_rel, base_rec, info, fcfg, scfg, sim, 
         summary.update(derived_metrics(helper, sim, summary))
         rec["metrics"] = {k: _num(summary.get(k)) for k in METRIC_KEYS}
         rec["warnings"] = "; ".join(str(w) for w in (summary.get("warnings") or ()))[:400]
-        rec["violations"] = check_limits(rec["metrics"], cfg.limits_for(fcfg, scfg))
+        rec["violations"] = check_limits(rec["metrics"], cfg.limits_for(fcfg, scfg), cfg.units)
         log(f"  [{snap.label}] {ork_rel} :: {label} ({rec['motor'] or 'no motor'}, {rec['motor_source']}) "
             f"apogee={rec['metrics']['apogee']:.0f} m  {time.time()-t0:.1f}s")
     except Exception as e:
@@ -572,8 +617,12 @@ def pair_key(r):
 
 
 def render_report(head_recs, base_recs, base_label, head_label, changed_motor_files, deleted, strict,
-                  deterministic_wind=True) -> tuple:
+                  deterministic_wind=True, units="metric") -> tuple:
     """-> (markdown, n_violations, n_unresolved)"""
+    P = primary_specs(units)
+    ALL = metric_specs(units)
+    ap_key, _, ap_unit, ap_dec, ap_f = spec_for("apogee", units)
+    _, _, _, st_dec, _ = spec_for("stability_off_rod_cal", units)
     lines = [f"## OpenRocket simulation check", ""]
     if base_label:
         lines.append(f"**{base_label}** → **{head_label}**")
@@ -600,12 +649,12 @@ def render_report(head_recs, base_recs, base_label, head_label, changed_motor_fi
             n_viol += len(r["violations"])
             flags.extend("❌ " + v for v in r["violations"])
         m = r["metrics"] or {}
-        ap = m.get("apogee", math.nan)
-        ap_b = b["metrics"].get("apogee", math.nan) if b and b.get("metrics") else None
-        cells = [fmt(m.get(k, math.nan), dec) for k, _, _, dec in PRIMARY_METRICS[1:]]
+        ap = m.get("apogee", math.nan) * ap_f
+        ap_b = b["metrics"].get("apogee", math.nan) * ap_f if b and b.get("metrics") else None
+        cells = [fmt(m.get(k, math.nan) * f, dec) for k, _, _, dec, f in P[1:]]
         summary_rows.append(
             f"| `{r['file']}` | {sim} | {r.get('motor') or '–'} ({r.get('motor_source', '')}) | "
-            f"{fmt(ap, 0)} | {fmt_delta(ap_b, ap, 0) if ap_b is not None else ('new' if base_label else '–')} | "
+            f"{fmt(ap, ap_dec)} | {fmt_delta(ap_b, ap, ap_dec) if ap_b is not None else ('new' if base_label else '–')} | "
             + " | ".join(cells) + f" | {'; '.join(flags) if flags else '✅'} |")
         # detail table
         detail.append(f"<details><summary><code>{r['file']}</code> · {sim} · motor {r.get('motor') or '–'}"
@@ -615,11 +664,11 @@ def render_report(head_recs, base_recs, base_label, head_label, changed_motor_fi
             detail.append("_New in this range (no base version)._")
         detail.append("| Metric | Before | After | Δ |" if base_label else "| Metric | Value |")
         detail.append("|---|---:|---:|---:|" if base_label else "|---|---:|")
-        for key, label, unit, dec in METRICS:
-            hv = r["metrics"].get(key, math.nan) if r["metrics"] else math.nan
-            u = f" {unit}" if unit else ""
+        for key, label, unit, dec, f in ALL:
+            hv = (r["metrics"].get(key, math.nan) if r["metrics"] else math.nan) * f
+            u = f" ({unit})" if unit else ""
             if base_label:
-                bv = b["metrics"].get(key, math.nan) if b and b.get("metrics") else math.nan
+                bv = (b["metrics"].get(key, math.nan) if b and b.get("metrics") else math.nan) * f
                 detail.append(f"| {label}{u} | {fmt(bv, dec)} | {fmt(hv, dec)} | {fmt_delta(bv, hv, dec)} |")
             else:
                 detail.append(f"| {label}{u} | {fmt(hv, dec)} |")
@@ -636,8 +685,8 @@ def render_report(head_recs, base_recs, base_label, head_label, changed_motor_fi
         b = base_by.get(pair_key(r))
         m = r["metrics"] or {}
         sim = r["sim_name"] or f"#{r['sim_index']}"
-        ap = m.get("apogee", math.nan)
-        ap_b = b["metrics"].get("apogee", math.nan) if b and b.get("metrics") else None
+        ap = m.get("apogee", math.nan) * ap_f
+        ap_b = b["metrics"].get("apogee", math.nan) * ap_f if b and b.get("metrics") else None
         if r["status"] != "OK":
             status = f"❌ {r['status']}"
         elif "unresolved" in (r.get("motor_source") or ""):
@@ -651,13 +700,13 @@ def render_report(head_recs, base_recs, base_label, head_label, changed_motor_fi
         elif not (math.isnan(ap) or math.isnan(ap_b)) and abs(ap - ap_b) < 0.5:
             d = ", unchanged"
         else:
-            d = f", Δ {fmt_delta(ap_b, ap, 0)}"
-        lines.append(f"- **{PurePosixPath(r['file']).name}** · {sim} · {status} · apogee {fmt(ap, 0)} m{d}"
+            d = f", Δ {fmt_delta(ap_b, ap, ap_dec)}"
+        lines.append(f"- **{PurePosixPath(r['file']).name}** · {sim} · {status} · apogee {fmt(ap, ap_dec)} {ap_unit}{d}"
                      + f" · Mach {fmt(m.get('max_mach', math.nan), 2)}"
-                     + f" · rail {fmt(m.get('stability_off_rod_cal', math.nan), 2)} cal")
+                     + f" · rail {fmt(m.get('stability_off_rod_cal', math.nan), st_dec)} cal")
     lines.append("")
-    heads = [f"{label} ({unit})" if unit else label for _, label, unit, _ in PRIMARY_METRICS[1:]]
-    lines.append("| File | Simulation | Motor | Apogee (m) | Δ apogee | " + " | ".join(heads) + " | Status |")
+    heads = [f"{label} ({unit})" if unit else label for _, label, unit, _, _ in P[1:]]
+    lines.append(f"| File | Simulation | Motor | Apogee ({ap_unit}) | Δ apogee | " + " | ".join(heads) + " | Status |")
     lines.append("|---|---|---|---:|---:|" + "---:|" * len(heads) + "---|")
     lines.extend(summary_rows)
     lines.append("")
@@ -732,7 +781,7 @@ def cmd_run(args):
     (out / "results.json").write_text(json.dumps(records, indent=2), encoding="utf-8")
     write_csv(records, out / "results.csv")
     report, n_viol, n_unres = render_report(records, None, None, snap.label, [], [], args.strict or cfg.fail_on_limits,
-                                            cfg.deterministic_wind)
+                                            cfg.deterministic_wind, cfg.units)
     (out / "report.md").write_text(report, encoding="utf-8")
     _emit(report, args)
     print(f"\nWrote {out / 'results.csv'}, {out / 'results.json'}, {out / 'report.md'}")
@@ -793,7 +842,7 @@ def cmd_compare(args):
             head_recs.extend(run_ork(helper, cfg, head, root, f, cfg.seed))
     strict = args.strict or cfg.fail_on_limits
     report, n_viol, n_unres = render_report(head_recs, base_recs if base else None, base_label,
-                                            head_sha, motor_changed, deleted, strict, cfg.deterministic_wind)
+                                            head_sha, motor_changed, deleted, strict, cfg.deterministic_wind, cfg.units)
     out = Path(args.results)
     out.mkdir(parents=True, exist_ok=True)
     (out / "report.md").write_text(report, encoding="utf-8")
@@ -851,8 +900,10 @@ def _mermaid_label(s: str) -> str:
     return '"' + s.replace('"', "'") + '"'
 
 
-def render_history_md(series: dict, max_points: int) -> str:
+def render_history_md(series: dict, max_points: int, units: str = "metric") -> str:
     """series: {(file, sim): [{'label', 'short', 'date', 'author', 'message', 'status', 'metrics', 'note'} ...]}"""
+    P = primary_specs(units)
+    _, _, _, ap_dec, ap_f = spec_for("apogee", units)
     out = ["## Performance history", ""]
     for (file, sim), rows in series.items():
         ok = [r for r in rows if r["status"] == "OK" and not math.isnan(r["metrics"].get("apogee", math.nan))]
@@ -870,9 +921,9 @@ def render_history_md(series: dict, max_points: int) -> str:
             out.append("Each bar is the change from the previous committed version: 🟩 increase, 🟥 decrease ")
             out.append("")
             labels = ", ".join(_mermaid_label(r["label"]) for r in shown[1:])
-            for key, label, unit, dec in PRIMARY_METRICS:
+            for key, label, unit, dec, f in P:
                 title = CHART_TITLES.get(key, label)
-                vals = [r["metrics"].get(key, math.nan) for r in shown]
+                vals = [r["metrics"].get(key, math.nan) * f for r in shown]
                 if all(math.isnan(v) for v in vals):
                     continue
                 deltas = [0.0 if (math.isnan(a) or math.isnan(b)) else b - a for a, b in zip(vals, vals[1:])]
@@ -895,16 +946,16 @@ def render_history_md(series: dict, max_points: int) -> str:
                 out.append(f"    bar [{fmt_series(down)}]")
                 out.append("```")
                 out.append("")
-        heads = [f"{label} ({unit})" if unit else label for _, label, unit, _ in PRIMARY_METRICS]
+        heads = [f"{label} ({unit})" if unit else label for _, label, unit, _, _ in P]
         out.append("| Version | Date | Author | Commit | " + " | ".join(heads) + " | Δ apogee | Note |")
         out.append("|---|---|---|---|" + "---:|" * len(heads) + "---:|---|")
         prev = None
         for r in rows[-max_points:]:
             m = r["metrics"] or {}
-            ap = m.get("apogee", math.nan)
+            ap = m.get("apogee", math.nan) * ap_f
             msg = r["message"][:60] + ("…" if len(r["message"]) > 60 else "")
-            delta = fmt_delta(prev, ap, 0) if prev is not None and r["status"] == "OK" else "–"
-            cells = " | ".join(fmt(m.get(k, math.nan), dec) for k, _, _, dec in PRIMARY_METRICS)
+            delta = fmt_delta(prev, ap, ap_dec) if prev is not None and r["status"] == "OK" else "–"
+            cells = " | ".join(fmt(m.get(k, math.nan) * f, dec) for k, _, _, dec, f in P)
             out.append(f"| `{r['short']}` | {r['date']} | {r['author']} | {msg} | {cells} | {delta} | "
                        f"{r['note'] or ('' if r['status'] == 'OK' else r['status'])} |")
             if r["status"] == "OK" and not math.isnan(ap):
@@ -997,7 +1048,7 @@ def cmd_history(args):
         w = csv.DictWriter(fh, fieldnames=fields, extrasaction="ignore")
         w.writeheader()
         w.writerows(csv_rows)
-    md = render_history_md(series, args.max_points)
+    md = render_history_md(series, args.max_points, cfg.units)
     (out / "history.md").write_text(md, encoding="utf-8")
     _emit(md, args)
     print(f"Wrote {out / 'history.md'}, {out / 'history.csv'}")
