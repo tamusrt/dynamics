@@ -1,0 +1,101 @@
+name: OpenRocket simulation check
+
+# Runs on EVERY push (any branch, no pull request needed) that touches an
+# OpenRocket design, a motor thrust curve, or the simulation config. Each
+# changed .ork is simulated before and after the push, and a before/after
+# table is posted as a comment on the commit, in the job summary, and as a
+# downloadable artifact. See design/openrocket_batch_sim/CI.md.
+on:
+  push:
+    paths:
+      - "aero_modeling/**/*.ork"
+      - "aero_modeling/**/*.rse"
+      - "aero_modeling/**/*.eng"
+      - "aero_modeling/sim_config.json"
+      - "design/openrocket_batch_sim/or_ci.py"
+      - ".github/workflows/openrocket-sim.yml"
+  workflow_dispatch:
+    inputs:
+      base:
+        description: "Base commit/ref to compare against (empty = previous commit)"
+        required: false
+        default: ""
+      all:
+        description: "Simulate every configured .ork, not just changed ones"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write   # needed to post commit comments with GITHUB_TOKEN
+
+concurrency:
+  group: openrocket-sim-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  simulate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out (full history, so the base commit is available)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Java 17 (Temurin)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: design/openrocket_batch_sim/requirements.txt
+
+      - name: Install orlab
+        run: pip install -r design/openrocket_batch_sim/requirements.txt
+
+      - name: Cache the OpenRocket jar
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/orlab-jars
+          key: openrocket-jar-24.12
+
+      - name: Fetch OpenRocket 24.12 (verified download, cached across runs)
+        run: python -m orlab fetch 24.12
+
+      - name: Simulate before/after
+        id: sim
+        env:
+          BASE: ${{ github.event.before || inputs.base }}
+          ALL: ${{ inputs.all == true && '--all' || '' }}
+        run: |
+          python design/openrocket_batch_sim/or_ci.py compare \
+            --config aero_modeling/sim_config.json \
+            --base "$BASE" $ALL \
+            --results or_ci_results \
+            --summary "$GITHUB_STEP_SUMMARY" \
+            --quiet
+
+      - name: Upload results (CSV / JSON / report)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: openrocket-sim-${{ github.sha }}
+          path: or_ci_results/
+          if-no-files-found: ignore
+
+      - name: Comment on the commit
+        if: always() && github.event_name == 'push' && hashFiles('or_ci_results/report.md') != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          {
+            cat or_ci_results/report.md
+            echo
+            echo "_[Workflow run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) · results CSV/JSON in the run's artifacts._"
+          } > comment.md
+          gh api "repos/${{ github.repository }}/commits/${{ github.sha }}/comments" -F body=@comment.md >/dev/null
