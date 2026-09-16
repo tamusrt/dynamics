@@ -50,6 +50,18 @@
       "simulations": {
         "Simulation 1": {"motor": "SOL_INVICTUS/OpenRocket/IGNIS_INJECTOR_SCALED_FULL_THRUST_FOR_DYN.rse"}
       }
+    },
+    "LUMINA/Engine Files/Lumina.ork": {
+      "default_motor": "LUMINA/Engine Files/85per_Liq.eng",
+      "simulations": {
+        "Simulation 1": {"motor": "LUMINA/Engine Files/85per_Liq.eng"}
+      }
+    },
+    "LUMINA/Engine Files/Lumina.ork": {
+      "default_motor": "LUMINA/Engine Files/95per_Liq.eng",
+      "simulations": {
+        "Simulation 1": {"motor": "LUMINA/Engine Files/95per_Liq.eng"}
+      }
     }
   }
 }
