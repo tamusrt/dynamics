@@ -66,10 +66,36 @@ python design/openrocket_batch_sim/or_ci.py compare --config aero_modeling/sim_c
 
 ## Reading the report
 
+**Tracked metrics** (summary table, history charts, and the default limits):
+
+| Metric | Definition |
+|---|---|
+| Apogee | Highest altitude above the launch site (m) |
+| Max Mach | Peak Mach number |
+| Max dynamic pressure | Peak ½·ρ·v² (kPa), with ρ from OpenRocket's air pressure and temperature along the flight |
+| Stability off rod | Barrowman margin (calibers) at launch-rod departure |
+| Min / max stability | Smallest and largest margin between rod departure and apogee, **counting only samples with airspeed ≥ 30 m/s**. OpenRocket's margin diverges as airspeed goes to zero near apogee (it reads −20 cal on the IREC file), which is not a real stability event. orlab's unfiltered values are kept in the CSV as `*_raw`. |
+
+Max velocity, acceleration, rod-exit speed, time to apogee, deployment speed, descent rate, flight time and landing distance are in the collapsible detail tables, the CSV and the JSON, and can be used in `limits`.
+
 - **Δ apogee** is new minus old, with percent. An unchanged design produces identical numbers, so any delta is real.
 - **Stability off rod** is OpenRocket's Barrowman margin when leaving the rod. With the file's own wind turbulence it moves by up to half a caliber between runs, and OpenRocket 24.12 does not tie that draw to the random seed. The check therefore runs with `deterministic_wind` on (default): turbulence intensity is set to 0 while the saved average wind, rod, site and atmosphere are kept. Set it to false in the config if you want the saved turbulence, accepting the noise.
 - **"new"** in the Δ column means the file did not exist at the base commit.
 - **Motor** shows the designation that actually flew and the rule that picked it (`config`, `config-default`, `file`, `auto`, `unresolved`).
+
+## Performance history charts
+
+Below the before/after table, the commit comment and job summary carry a **Performance history** section for each changed design: one Mermaid bar chart per tracked metric showing the change from the previous committed version (green up, red down; bar height is the size of the change), and a table with date, author, commit message and every tracked metric per version. GitHub draws Mermaid charts inline, so nothing is committed back to the repo and nothing is published outside it.
+
+How it's built: `or_ci.py history` walks each design's git history along the first-parent line, following renames (the IREC file's `2027_OR_9_15` → `2027_OR` rename is tracked), simulates every version with the same seed and wind settings as the check, and caches each result by the file's git blob id in `.or_ci_cache/` (restored between workflow runs with `actions/cache`). Only versions never seen before are simulated, so the step costs a few seconds after the first backfill. The last 30 versions are charted; the whole history is in the artifact's `history.csv`.
+
+Locally, the same command draws the chart for your uncommitted working copy as a final "working" bar:
+
+```
+python design/openrocket_batch_sim/or_ci.py history --config aero_modeling/sim_config.json --cache .or_ci_cache aero_modeling/IREC_2027/2027_OR.ork
+```
+
+Paste `or_ci_results/history/history.md` into any GitHub issue, PR, or a Markdown preview that supports Mermaid to see the charts.
 
 ## Manual runs
 

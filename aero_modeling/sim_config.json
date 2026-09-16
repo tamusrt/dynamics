@@ -10,8 +10,10 @@
     "saved in the .ork -> UNRESOLVED (reported).",
     "A hybrid modelled as two motors (ox tank + combustion chamber) is two mounts: see SOL_4_30 below.",
     "limits: {metric: {min, max}} checked on the current version; global here, overridable per file / simulation.",
-    "Metrics: apogee, max_velocity, max_mach, max_acceleration, velocity_off_rod, stability_off_rod_cal,",
-    "min_stability_cal, time_to_apogee, velocity_at_deployment, descent_rate, flight_time, landing_distance.",
+    "Tracked metrics (tables + history charts): apogee, max_mach, max_dynamic_pressure_kpa, stability_off_rod_cal,",
+    "min_stability_cal, max_stability_cal (min/max over rod exit -> apogee while airspeed >= 30 m/s).",
+    "Also usable in limits: max_velocity, max_acceleration, velocity_off_rod, time_to_apogee, velocity_at_deployment,",
+    "descent_rate, flight_time, landing_distance.",
     "Set fail_on_limits to true once the team wants violations to turn the check red.",
     "deterministic_wind true zeroes wind turbulence (average wind is kept) so an unchanged design reproduces",
     "exactly; OpenRocket 24.12's turbulence is not controlled by the seed and moves stability off the rod by ~0.5 cal."
@@ -26,6 +28,7 @@
   ],
   "limits": {
     "stability_off_rod_cal": {"min": 1.5},
+    "min_stability_cal": {"min": 1.0},
     "velocity_off_rod": {"min": 15.0}
   },
   "files": {
