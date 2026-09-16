@@ -106,6 +106,14 @@ SECONDARY_METRICS = [
     ("min_stability_cal_raw", "Min stability, orlab raw (to apogee)", "cal", 2),
     ("max_stability_cal_raw", "Max stability, orlab raw (to apogee)", "cal", 2),
 ]
+CHART_TITLES = {
+    "apogee": "Apogee",
+    "max_mach": "Max Mach",
+    "max_dynamic_pressure_kpa": "Max-Q",
+    "stability_off_rod_cal": "Off-the-rail stability",
+    "min_stability_cal": "Minimum stability",
+    "max_stability_cal": "Maximum stability",
+}
 METRICS = PRIMARY_METRICS + SECONDARY_METRICS
 METRIC_KEYS = [m[0] for m in METRICS]
 PRIMARY_KEYS = [m[0] for m in PRIMARY_METRICS]
@@ -789,10 +797,7 @@ def _mermaid_label(s: str) -> str:
 
 def render_history_md(series: dict, max_points: int) -> str:
     """series: {(file, sim): [{'label', 'short', 'date', 'author', 'message', 'status', 'metrics', 'note'} ...]}"""
-    out = ["## Performance history", "",
-           f"Every committed version of each design (first-parent history, renames followed), simulated with "
-           f"the same settings as the check above. Last {max_points} versions shown per chart; the full table "
-           f"is in the run artifacts (`history.csv`).", ""]
+    out = ["## Performance history", ""]
     for (file, sim), rows in series.items():
         ok = [r for r in rows if r["status"] == "OK" and not math.isnan(r["metrics"].get("apogee", math.nan))]
         out.append(f"### `{file}` · {sim}")
@@ -806,12 +811,11 @@ def render_history_md(series: dict, max_points: int) -> str:
             out.append("_Only one version so far; deltas start with the next commit._")
             out.append("")
         else:
-            out.append("Each bar is the change from the previous committed version: 🟩 increase, 🟥 decrease "
-                       "(bar height is the size of the change; Mermaid bars can't point down).")
+            out.append("Each bar is the change from the previous committed version: 🟩 increase, 🟥 decrease ")
             out.append("")
             labels = ", ".join(_mermaid_label(r["label"]) for r in shown[1:])
             for key, label, unit, dec in PRIMARY_METRICS:
-                title = f"Δ {label[0].lower() + label[1:]}"
+                title = CHART_TITLES.get(key, label)
                 vals = [r["metrics"].get(key, math.nan) for r in shown]
                 if all(math.isnan(v) for v in vals):
                     continue
@@ -828,9 +832,9 @@ def render_history_md(series: dict, max_points: int) -> str:
                 out.append("```mermaid")
                 out.append('%%{init: {"themeVariables": {"xyChart": {"plotColorPalette": "#2da44e, #cf222e"}}}}%%')
                 out.append("xychart-beta")
-                out.append(f'    title "{title} vs previous version{u}"')
+                out.append(f'    title "{title}"')
                 out.append(f"    x-axis [{labels}]")
-                out.append(f'    y-axis "|{title}|{u}" 0 --> {y1:g}')
+                out.append(f'    y-axis "|Δ|{u}" 0 --> {y1:g}')
                 out.append(f"    bar [{fmt_series(up)}]")
                 out.append(f"    bar [{fmt_series(down)}]")
                 out.append("```")
