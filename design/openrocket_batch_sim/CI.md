@@ -34,7 +34,7 @@ Per simulation, and per motor mount within it, the motor is resolved in this ord
 1. `simulations[<simulation name>].motors[<mount name>]`, or `.motor` when the simulation has a single mount
 2. `default_motors[<mount name>]` / `default_motor` for the file
 3. the motor the file resolves on its own (commercial motors need nothing)
-4. auto-lookup: a `.rse`/`.eng` in the same folder or any subfolder (for example `Thrust Curves/`) whose designation matches the one saved in the `.ork` for that mount
+4. auto-lookup: a `.rse`/`.eng` whose designation matches the one saved in the `.ork` for that mount, searched in the `.ork`'s folder and subfolders (`IREC_2027/Thrust Curves/`) and then in the project folder above it (`LUMINA/Engine Files/` next to `LUMINA/OpenRocket/`)
 5. **unresolved**, flagged with ⚠️ in the report
 
 A hybrid modelled as two motors, an ox-tank curve in one body tube and a combustion-chamber curve in another, is two mounts. `SOL_4_30.ork` is the example in the config:
@@ -43,6 +43,15 @@ A hybrid modelled as two motors, an ox-tank curve in one body tube and a combust
 "SOL_INVICTUS/OpenRocket/SOL_4_30.ork": {
   "default_motors": {"Ox Tank": "SOL_INVICTUS/OpenRocket/OXTank.eng",
                      "Combustion Chamber": "SOL_INVICTUS/OpenRocket/CC.eng"}
+}
+```
+
+**Several curves for one design.** `motor_variants` runs every simulation in the file once per listed motor, reported as `Seymour_10 [85%]`, `Seymour_10 [95%]`, and so on, each with its own row, limits check and history charts. It can sit at file level or inside one simulation's entry, and a per-mount form (`{"85%": {"Tank": "..."}}`) works for multi-mount designs:
+
+```json
+"LUMINA/OpenRocket/Lumina.ork": {
+  "motor_variants": {"85%": "LUMINA/Engine Files/85per_Liq.eng",
+                     "95%": "LUMINA/Engine Files/95per_Liq.eng"}
 }
 ```
 
