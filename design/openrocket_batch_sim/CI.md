@@ -108,6 +108,18 @@ python design/openrocket_batch_sim/or_ci.py history --config aero_modeling/sim_c
 
 Paste `or_ci_results/history/history.md` into any GitHub issue, PR, or a Markdown preview that supports Mermaid to see the charts.
 
+## GitHub Pages site
+
+On every push to `main` the workflow also rebuilds the full history for **every** configured design and publishes it as a static site through GitHub Pages (Actions deployment, so nothing is committed back). The URL is shown on the workflow run under the `deploy-pages` job and in the repo's Settings → Pages. The page has one card per simulation with a button per tracked metric, bars coloured by direction of change, a toggle to show deltas instead of absolute values, hover tooltips with the commit, author, message and delta, and click-through to the commit on GitHub. It renders in the config's units.
+
+One-time setup, already done via the API: Settings → Pages → Source = **GitHub Actions**. Pages requires a public repo on GitHub's free plan.
+
+To build the site locally (open `or_ci_results/site/index.html` in a browser):
+
+```
+python design/openrocket_batch_sim/or_ci.py history --config aero_modeling/sim_config.json --cache .or_ci_cache --site or_ci_results/site
+```
+
 ## Manual runs
 
 The workflow can also be started from the Actions tab (**Run workflow**) with a custom base commit or with **all** ticked to simulate every configured design, for example after a motor curve update.
