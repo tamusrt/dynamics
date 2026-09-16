@@ -1,0 +1,52 @@
+{
+  "_readme": [
+    "Configuration for the OpenRocket simulation check (design/openrocket_batch_sim/or_ci.py and",
+    ".github/workflows/openrocket-sim.yml). Every path is relative to this file.",
+    "A .ork stores only a REFERENCE to its motor; headless OpenRocket knows just the commercial motors",
+    "bundled in its jar, so team-made .rse/.eng motors must be pointed to here, per simulation name.",
+    "Resolution order per simulation and per motor mount: simulations[<name>].motors[<mount>] (or .motor when",
+    "the simulation has one mount) -> default_motors[<mount>] / default_motor -> the file's own motor",
+    "-> a .rse/.eng in the .ork's folder or its subfolders (e.g. Thrust Curves/) whose designation matches the one",
+    "saved in the .ork -> UNRESOLVED (reported).",
+    "A hybrid modelled as two motors (ox tank + combustion chamber) is two mounts: see SOL_4_30 below.",
+    "limits: {metric: {min, max}} checked on the current version; global here, overridable per file / simulation.",
+    "Metrics: apogee, max_velocity, max_mach, max_acceleration, velocity_off_rod, stability_off_rod_cal,",
+    "min_stability_cal, time_to_apogee, velocity_at_deployment, descent_rate, flight_time, landing_distance.",
+    "Set fail_on_limits to true once the team wants violations to turn the check red.",
+    "deterministic_wind true zeroes wind turbulence (average wind is kept) so an unchanged design reproduces",
+    "exactly; OpenRocket 24.12's turbulence is not controlled by the seed and moves stability off the rod by ~0.5 cal."
+  ],
+  "seed": 20260915,
+  "deterministic_wind": true,
+  "fail_on_limits": false,
+  "ignore": [
+    "**/OLD/**",
+    "**/PROGRESS REPORT*/**",
+    "LUMINA/liquid (1).ork"
+  ],
+  "limits": {
+    "stability_off_rod_cal": {"min": 1.5},
+    "velocity_off_rod": {"min": 15.0}
+  },
+  "files": {
+    "IREC_2027/2027_OR.ork": {
+      "default_motor": "IREC_2027/Thrust Curves/IGNIS_2027.rse",
+      "simulations": {
+        "Simulation 3": {"motor": "IREC_2027/Thrust Curves/IGNIS_2027.rse"}
+      }
+    },
+    "SOL_INVICTUS/OpenRocket/SOL_4_30.ork": {
+      "_note": "Two-mount hybrid model; these would also auto-resolve by designation (OX / CC).",
+      "default_motors": {
+        "Ox Tank": "SOL_INVICTUS/OpenRocket/OXTank.eng",
+        "Combustion Chamber": "SOL_INVICTUS/OpenRocket/CC.eng"
+      }
+    },
+    "SOL_INVICTUS/OpenRocket/Invictus_RSE.ork": {
+      "default_motor": "SOL_INVICTUS/OpenRocket/IGNIS_INJECTOR_SCALED_FULL_THRUST_FOR_DYN.rse",
+      "simulations": {
+        "Simulation 1": {"motor": "SOL_INVICTUS/OpenRocket/IGNIS_INJECTOR_SCALED_FULL_THRUST_FOR_DYN.rse"}
+      }
+    }
+  }
+}
