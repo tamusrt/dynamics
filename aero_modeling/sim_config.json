@@ -4,9 +4,11 @@
     "Headless OpenRocket only knows commercial motors, so team-made .rse/.eng curves must be mapped here.",
     "Motor lookup per simulation & mount: simulations[<name>].motor(s) -> default_motor(s) -> file's own",
     "motor -> a curve in the .ork's folder/subfolders/project folder with a matching designation -> UNRESOLVED.",
-    "motor_variants runs every simulation once per listed curve. limits {metric: {min,max}} apply per file/sim.",
+    "motor_variants runs every simulation once per listed curve. limits {metric: {min,max}} apply per file/sim",
+    "and are written in the display units. units: metric (default) or imperial (ft, ft/s, psi); CSV/JSON stay SI.",
     "Full docs, metric definitions and examples: design/openrocket_batch_sim/CI.md"
   ],
+  "units": "imperial",
   "seed": 20260915,
   "deterministic_wind": true,
   "fail_on_limits": false,
@@ -17,7 +19,7 @@
   "limits": {
     "stability_off_rod_cal": {"min": 1.5},
     "min_stability_cal": {"min": 1.0},
-    "velocity_off_rod": {"min": 15.0}
+    "velocity_off_rod": {"min": 50.0}
   },
   "files": {
     "IREC_2027/2027_OR.ork": {
