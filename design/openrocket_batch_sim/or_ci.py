@@ -1107,6 +1107,7 @@ SITE_HTML = r"""<!doctype html>
   .sim .val.up { color:var(--up); } .sim .val.down { color:var(--down); }
   .navtools { display:flex; gap:6px; padding:2px 6px 10px; }
   .navtools button, .row button, .row label { font:inherit; font-size:12px; }
+  select { font:inherit; font-size:13px; padding:3px 6px; border-radius:6px; border:1px solid var(--line); background:var(--bg); color:var(--fg); }
   button { font:inherit; padding:4px 10px; border-radius:6px; border:1px solid var(--line); background:var(--bg); color:var(--fg); cursor:pointer; }
   button.on { background:var(--accent); color:#fff; border-color:var(--accent); }
   .row { display:flex; flex-wrap:wrap; gap:6px; align-items:center; margin-bottom:10px; }
@@ -1129,6 +1130,7 @@ SITE_HTML = r"""<!doctype html>
 <header>
   <h1>OpenRocket performance history</h1>
   <span class="sub" id="sub"></span>
+  <label class="sub" style="margin-left:auto">units <select id="units"><option value="metric">metric (m, m/s, kPa)</option><option value="imperial">imperial (ft, ft/s, psi)</option></select></label>
 </header>
 <div class="layout">
   <nav id="nav"></nav>
@@ -1147,24 +1149,30 @@ const PALETTE = ['#0969da','#e16f24','#1a7f37','#8250df','#cf222e','#0598a3','#b
 const fmt = (v, dec) => (v == null || Number.isNaN(v)) ? '–' : Number(v).toFixed(dec);
 const short = f => f.split('/').pop();
 const sub = document.getElementById('sub');
-sub.textContent = `${DATA.generated} · units: ${DATA.units}` + (DATA.repo ? ' · ' : '');
+sub.textContent = `${DATA.generated}` + (DATA.repo ? ' · ' : '');
 if (DATA.repo) { const a = document.createElement('a'); a.href = DATA.repo; a.textContent = DATA.repo.replace('https://github.com/', ''); sub.appendChild(a); }
 
 // ---- state (mirrored in the URL hash) ----
 const ALL = [];  // {id, file, sim, rows}
 for (const [file, sims] of Object.entries(DATA.designs)) for (const [sim, rows] of Object.entries(sims)) ALL.push({ id: `${file}|${sim}`, file, sim, rows });
-const state = { metric: DATA.metrics[0].key, delta: false, sel: new Set() };
+const state = { metric: DATA.metrics[0].key, delta: false, sel: new Set(), units: DATA.default_units || 'metric' };
+const unitSel = document.getElementById('units');
+unitSel.onchange = () => { state.units = unitSel.value; update(); };
+// metric spec in the current unit system: {key, label, unit, dec, factor}
+function specOf(key) { const m = DATA.metrics.find(x => x.key === key); const u = (m.units && m.units[state.units]) || m.units.metric; return { key: m.key, label: m.label, unit: u.unit, dec: u.dec, factor: u.factor }; }
+function val(r, key) { const v = r.m[key]; return v == null ? null : v * specOf(key).factor; }
 function readHash() {
   const p = new URLSearchParams(location.hash.slice(1));
   if (p.get('metric') && DATA.metrics.some(m => m.key === p.get('metric'))) state.metric = p.get('metric');
   state.delta = p.get('delta') === '1';
+  if (p.get('units') === 'metric' || p.get('units') === 'imperial') state.units = p.get('units');
   const s = p.get('sel');
   if (s) { state.sel = new Set(s.split(',').map(decodeURIComponent).filter(id => ALL.some(a => a.id === id))); }
   if (!state.sel.size) { const first = ALL[0] && ALL[0].file; ALL.filter(a => a.file === first).forEach(a => state.sel.add(a.id)); }
 }
 function writeHash() {
   const p = new URLSearchParams();
-  p.set('metric', state.metric); if (state.delta) p.set('delta', '1');
+  p.set('metric', state.metric); if (state.delta) p.set('delta', '1'); p.set('units', state.units);
   p.set('sel', [...state.sel].map(encodeURIComponent).join(','));
   history.replaceState(null, '', '#' + p.toString());
 }
@@ -1202,13 +1210,13 @@ function buildNav() {
   }
 }
 function refreshNav() {
-  const spec = DATA.metrics.find(m => m.key === state.metric);
+  const spec = specOf(state.metric);
   for (const row of nav.querySelectorAll('.sim')) {
     const a = ALL.find(x => x.id === row.dataset.id);
     row.querySelector('input').checked = state.sel.has(a.id);
     row.querySelector('.swatch').style.background = colorOf.get(a.id) || css('--line');
     const ok = a.rows.filter(r => r.ok && r.m[state.metric] != null);
-    const v = ok.length ? ok[ok.length - 1].m[state.metric] : null, p = ok.length > 1 ? ok[ok.length - 2].m[state.metric] : null;
+    const v = ok.length ? val(ok[ok.length - 1], state.metric) : null, p = ok.length > 1 ? val(ok[ok.length - 2], state.metric) : null;
     const el = row.querySelector('.val'); el.textContent = fmt(v, spec.dec) + (spec.unit ? ' ' + spec.unit : '');
     el.className = 'val' + (p == null || v == null || Math.abs(v - p) < Math.pow(10, -spec.dec) / 2 ? '' : v > p ? ' up' : ' down');
   }
@@ -1230,14 +1238,14 @@ let chart = null;
 const cv = document.getElementById('cv'), empty = document.getElementById('empty');
 function dateLabel(t) { const d = new Date(t); return d.toISOString().slice(0, 10); }
 function draw() {
-  const spec = DATA.metrics.find(m => m.key === state.metric);
+  const spec = specOf(state.metric);
   const unit = spec.unit ? ` (${spec.unit})` : '';
   const sets = [];
   for (const a of ALL) {
     if (!state.sel.has(a.id)) continue;
     const ok = a.rows.filter(r => r.ok && r.m[state.metric] != null);
-    const pts = ok.map((r, i) => ({ x: r.t * 1000, y: state.delta ? (i ? r.m[state.metric] - ok[i - 1].m[state.metric] : 0) : r.m[state.metric],
-                                    v: r.m[state.metric], d: i ? r.m[state.metric] - ok[i - 1].m[state.metric] : null, r }));
+    const pts = ok.map((r, i) => { const v = val(r, state.metric), d = i ? v - val(ok[i - 1], state.metric) : null;
+                                   return { x: r.t * 1000, y: state.delta ? (d ?? 0) : v, v, d, r }; });
     const col = colorOf.get(a.id);
     sets.push({ label: (Object.keys(DATA.designs).length > 1 ? short(a.file) + ' · ' : '') + a.sim, data: pts, borderColor: col, backgroundColor: col,
                 pointRadius: 4, pointHoverRadius: 6, borderWidth: 2, tension: 0, spanGaps: true,
@@ -1273,12 +1281,13 @@ function drawTable() {
   const box = document.getElementById('latest');
   const rows = ALL.filter(a => state.sel.has(a.id));
   if (!rows.length) { box.innerHTML = ''; return; }
-  let h = '<table><thead><tr><th>Simulation</th>' + DATA.metrics.map(m => `<th>${m.label}${m.unit ? ' (' + m.unit + ')' : ''}</th>`).join('') + '<th>Latest version</th></tr></thead><tbody>';
+  const specs = DATA.metrics.map(m => specOf(m.key));
+  let h = '<table><thead><tr><th>Simulation</th>' + specs.map(m => `<th>${m.label}${m.unit ? ' (' + m.unit + ')' : ''}</th>`).join('') + '<th>Latest version</th></tr></thead><tbody>';
   for (const a of rows) {
     const ok = a.rows.filter(r => r.ok); const last = ok[ok.length - 1], prev = ok[ok.length - 2];
     h += `<tr><td><span class="sw" style="background:${colorOf.get(a.id)}"></span>${Object.keys(DATA.designs).length > 1 ? short(a.file) + ' · ' : ''}${a.sim}</td>`;
-    for (const m of DATA.metrics) {
-      const v = last ? last.m[m.key] : null, p = prev ? prev.m[m.key] : null;
+    for (const m of specs) {
+      const v = last ? val(last, m.key) : null, p = prev ? val(prev, m.key) : null;
       let d = '';
       if (v != null && p != null && Math.abs(v - p) >= Math.pow(10, -m.dec) / 2) d = `<span class="d ${v > p ? 'up' : 'down'}">${v > p ? '+' : ''}${fmt(v - p, m.dec)}</span>`;
       h += `<td>${fmt(v, m.dec)}${d}</td>`;
@@ -1288,7 +1297,7 @@ function drawTable() {
   box.innerHTML = h + '</tbody></table>';
 }
 
-function update() { assignColors(); writeHash(); refreshNav(); buildMetrics(); draw(); drawTable(); }
+function update() { unitSel.value = state.units; assignColors(); writeHash(); refreshNav(); buildMetrics(); draw(); drawTable(); }
 readHash(); buildNav(); update();
 window.addEventListener('hashchange', () => { readHash(); update(); });
 </script>
@@ -1298,9 +1307,9 @@ window.addEventListener('hashchange', () => { readHash(); update(); });
 
 
 def write_site(series: dict, site_dir: Path, units: str, repo_url: str, files_versions: dict):
-    """A self-contained index.html (+ data.json) with interactive charts of every design's history."""
+    """A self-contained index.html (+ data.json) with interactive charts of every design's history.
+    Values are emitted in SI with both unit systems' specs; the page converts client-side."""
     import datetime as dt
-    specs = primary_specs(units)
     designs = {}
     for (file, sim), rows in series.items():
         out_rows = []
@@ -1313,14 +1322,16 @@ def write_site(series: dict, site_dir: Path, units: str, repo_url: str, files_ve
                 "short": r["short"], "sha": shas.get(r["short"]) or "", "t": times.get(r["short"], 0),
                 "date": r["date"], "author": r["author"],
                 "message": r["message"], "ok": r["status"] == "OK" and not r["note"],
-                "m": {k: (None if math.isnan(m.get(k, math.nan)) else round(m[k] * f, dec + 2))
-                      for k, _, _, dec, f in specs},
+                "m": {k: (None if math.isnan(m.get(k, math.nan)) else round(m[k], 4)) for k in PRIMARY_KEYS},
             })
         designs.setdefault(file, {})[sim] = out_rows
     payload = {
         "generated": dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
-        "units": units, "repo": repo_url,
-        "metrics": [{"key": k, "label": CHART_TITLES.get(k, label), "unit": unit, "dec": dec} for k, label, unit, dec, _ in specs],
+        "default_units": units, "repo": repo_url,
+        "metrics": [{"key": k, "label": CHART_TITLES.get(k, label),
+                     "units": {"metric": {"unit": mu, "dec": md, "factor": 1.0},
+                               "imperial": {"unit": iu, "dec": idec, "factor": f}}}
+                    for (k, label, mu, md, _), (_, _, iu, idec, f) in zip(primary_specs("metric"), primary_specs("imperial"))],
         "designs": designs,
     }
     site_dir.mkdir(parents=True, exist_ok=True)
