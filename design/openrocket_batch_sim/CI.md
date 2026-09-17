@@ -34,7 +34,7 @@ Per simulation, and per motor mount within it, the motor is resolved in this ord
 1. `simulations[<simulation name>].motors[<mount name>]`, or `.motor` when the simulation has a single mount
 2. `default_motors[<mount name>]` / `default_motor` for the file
 3. the motor the file resolves on its own (commercial motors need nothing)
-4. auto-lookup: a `.rse`/`.eng` in the same folder or any subfolder (for example `Thrust Curves/`) whose designation matches the one saved in the `.ork` for that mount
+4. auto-lookup: a `.rse`/`.eng` whose designation matches the one saved in the `.ork` for that mount, searched in the `.ork`'s folder and subfolders (`IREC_2027/Thrust Curves/`) and then in the project folder above it (`LUMINA/Engine Files/` next to `LUMINA/OpenRocket/`)
 5. **unresolved**, flagged with ⚠️ in the report
 
 A hybrid modelled as two motors, an ox-tank curve in one body tube and a combustion-chamber curve in another, is two mounts. `SOL_4_30.ork` is the example in the config:
@@ -43,6 +43,15 @@ A hybrid modelled as two motors, an ox-tank curve in one body tube and a combust
 "SOL_INVICTUS/OpenRocket/SOL_4_30.ork": {
   "default_motors": {"Ox Tank": "SOL_INVICTUS/OpenRocket/OXTank.eng",
                      "Combustion Chamber": "SOL_INVICTUS/OpenRocket/CC.eng"}
+}
+```
+
+**Several curves for one design.** `motor_variants` runs every simulation in the file once per listed motor, reported as `Seymour_10 [85%]`, `Seymour_10 [95%]`, and so on, each with its own row, limits check and history charts. It can sit at file level or inside one simulation's entry, and a per-mount form (`{"85%": {"Tank": "..."}}`) works for multi-mount designs:
+
+```json
+"LUMINA/OpenRocket/Lumina.ork": {
+  "motor_variants": {"85%": "LUMINA/Engine Files/85per_Liq.eng",
+                     "95%": "LUMINA/Engine Files/95per_Liq.eng"}
 }
 ```
 
@@ -66,13 +75,15 @@ python design/openrocket_batch_sim/or_ci.py compare --config aero_modeling/sim_c
 
 ## Reading the report
 
+**Units.** `"units"` in `sim_config.json` selects how reports read: `metric` (default: m, m/s, kPa) or `imperial` (ft, ft/s, psi). Calibers, Mach and seconds are the same in both. Limits in the config are written in the selected units. The CSV, JSON and history cache always hold SI values, so switching the flag changes only the rendered reports and never invalidates cached results.
+
 **Tracked metrics** (summary table, history charts, and the default limits):
 
 | Metric | Definition |
 |---|---|
-| Apogee | Highest altitude above the launch site (m) |
+| Apogee | Highest altitude above the launch site (m or ft) |
 | Max Mach | Peak Mach number |
-| Max dynamic pressure | Peak ½·ρ·v² (kPa), with ρ from OpenRocket's air pressure and temperature along the flight |
+| Max dynamic pressure | Peak ½·ρ·v² (kPa or psi), with ρ from OpenRocket's air pressure and temperature along the flight |
 | Stability off rod | Barrowman margin (calibers) at launch-rod departure |
 | Min / max stability | Smallest and largest margin between rod departure and apogee, **counting only samples with airspeed ≥ 30 m/s**. OpenRocket's margin diverges as airspeed goes to zero near apogee (it reads −20 cal on the IREC file), which is not a real stability event. orlab's unfiltered values are kept in the CSV as `*_raw`. |
 
@@ -96,6 +107,18 @@ python design/openrocket_batch_sim/or_ci.py history --config aero_modeling/sim_c
 ```
 
 Paste `or_ci_results/history/history.md` into any GitHub issue, PR, or a Markdown preview that supports Mermaid to see the charts.
+
+## GitHub Pages site
+
+On every push to `main` the workflow also rebuilds the full history for **every** configured design and publishes it as a static site through GitHub Pages (Actions deployment, so nothing is committed back). The URL is shown on the workflow run under the `deploy-pages` job and in the repo's Settings → Pages. The page is a sidebar tree of designs → simulations (each with its latest value for the chosen metric, coloured by its last change) and one large chart on the right. Tick any number of simulations to overlay them on the same axes, across designs too: the SOL_4_30 wind cases, or Lumina's 85% and 95% curves. Buttons switch the metric, a toggle shows deltas vs the previous version instead of absolute values, hovering a point shows the commit, author, message and change, and clicking it opens the commit on GitHub. A table below lists the latest values for the selection. The selection, metric and delta toggle live in the URL hash, so a view can be linked from Discord or an issue. Everything renders in the config's units.
+
+One-time setup, already done via the API: Settings → Pages → Source = **GitHub Actions**. Pages requires a public repo on GitHub's free plan.
+
+To build the site locally (open `or_ci_results/site/index.html` in a browser):
+
+```
+python design/openrocket_batch_sim/or_ci.py history --config aero_modeling/sim_config.json --cache .or_ci_cache --site or_ci_results/site
+```
 
 ## Manual runs
 
