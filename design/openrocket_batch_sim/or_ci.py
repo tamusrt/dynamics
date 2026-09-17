@@ -118,6 +118,44 @@ METRICS = PRIMARY_METRICS + SECONDARY_METRICS
 METRIC_KEYS = [m[0] for m in METRICS]
 PRIMARY_KEYS = [m[0] for m in PRIMARY_METRICS]
 
+# Display units. Everything is computed and stored (JSON, CSV, cache) in SI; the config's
+# "units" flag ("metric" default | "imperial") only changes how reports and limits read.
+M_TO_FT = 3.280839895
+KPA_TO_PSI = 0.1450377377
+IMPERIAL = {  # metric key -> (unit, factor from SI, decimals)
+    "apogee": ("ft", M_TO_FT, 0),
+    "max_dynamic_pressure_kpa": ("psi", KPA_TO_PSI, 1),
+    "max_velocity": ("ft/s", M_TO_FT, 1),
+    "max_acceleration": ("ft/s²", M_TO_FT, 1),
+    "velocity_off_rod": ("ft/s", M_TO_FT, 1),
+    "velocity_at_deployment": ("ft/s", M_TO_FT, 1),
+    "descent_rate": ("ft/s", M_TO_FT, 1),
+    "landing_distance": ("ft", M_TO_FT, 0),
+}
+UNIT_SYSTEMS = ("metric", "imperial")
+
+
+def metric_specs(units: str = "metric"):
+    """[(key, label, unit, decimals, factor_from_SI)] for every metric in the requested unit system."""
+    out = []
+    for key, label, unit, dec in METRICS:
+        factor = 1.0
+        if units == "imperial" and key in IMPERIAL:
+            unit, factor, dec = IMPERIAL[key]
+        out.append((key, label, unit, dec, factor))
+    return out
+
+
+def primary_specs(units: str = "metric"):
+    return [s for s in metric_specs(units) if s[0] in PRIMARY_KEYS]
+
+
+def spec_for(key: str, units: str = "metric"):
+    for s in metric_specs(units):
+        if s[0] == key:
+            return s
+    return (key, key, "", 3, 1.0)
+
 # Stability window: from launch-rod departure to apogee, but only while the rocket is
 # moving faster than this. OpenRocket's margin diverges as airspeed -> 0 near apogee
 # (orlab's raw min comes out at -20 cal on the IREC design), which is not a real
@@ -202,6 +240,9 @@ class Config:
         raw = json.loads(self.path.read_text(encoding="utf-8"))
         self.dir = self.path.parent
         self.seed = int(raw.get("seed", DEFAULT_SEED))
+        self.units = str(raw.get("units", "metric")).strip().lower()
+        if self.units not in UNIT_SYSTEMS:
+            raise SystemExit(f"sim_config.json: units must be one of {UNIT_SYSTEMS}, got {self.units!r}")
         self.deterministic_wind = bool(raw.get("deterministic_wind", True))
         self.fail_on_limits = bool(raw.get("fail_on_limits", False))
         self.ignore = list(raw.get("ignore", []))
@@ -351,17 +392,29 @@ def resolve_motor(cfg: Config, snap: Snapshot, root: Path, ork_rel: str, fcfg: d
     if file_resolved:
         return "file", None, None
     if file_desig:
-        folder = PurePosixPath(ork_rel).parent.as_posix()
-        folder = "" if folder == "." else folder
-        # the .ork's folder and its subfolders (e.g. "Thrust Curves/"), skipping ignored ones
-        for rel in snap.walk(folder):
-            if not rel.lower().endswith((".rse", ".eng")):
-                continue
-            if cfg.is_ignored(rel_posix(root / rel, cfg.dir)):
-                continue
-            p = snap.path(rel)
-            if p and any(d.strip().lower() == file_desig.lower() for d in motor_file_designations(p)):
-                return "auto", rel, file_desig
+        # Search the .ork's own folder (and subfolders such as "Thrust Curves/") first, then the
+        # project folder above it (for layouts like LUMINA/OpenRocket/x.ork + LUMINA/Engine Files/),
+        # never above the config folder; ignored paths are skipped.
+        cfg_root_rel = rel_posix(cfg.dir, root)
+        cfg_root_rel = "" if cfg_root_rel == "." else cfg_root_rel
+        folder = PurePosixPath(ork_rel).parent
+        search = []
+        for _ in range(2):
+            f = folder.as_posix()
+            f = "" if f == "." else f
+            if f == cfg_root_rel or not f.startswith(cfg_root_rel):
+                break
+            search.append(f)
+            folder = folder.parent
+        for f in search:
+            for rel in snap.walk(f):
+                if not rel.lower().endswith((".rse", ".eng")):
+                    continue
+                if cfg.is_ignored(rel_posix(root / rel, cfg.dir)):
+                    continue
+                p = snap.path(rel)
+                if p and any(d.strip().lower() == file_desig.lower() for d in motor_file_designations(p)):
+                    return "auto", rel, file_desig
     return "unresolved", None, file_desig or None
 
 
@@ -405,16 +458,20 @@ def derived_metrics(helper, sim, summary: dict) -> dict:
     return out
 
 
-def check_limits(metrics: dict, limits: dict):
+def check_limits(metrics: dict, limits: dict, units: str = "metric"):
+    """Limits are written in the config's display units; metrics are SI."""
     out = []
     for metric, spec in limits.items():
         val = metrics.get(metric, math.nan)
         if math.isnan(val):
             continue
-        if "min" in spec and val < float(spec["min"]):
-            out.append(f"{metric} = {val:.3g} < min {spec['min']}")
-        if "max" in spec and val > float(spec["max"]):
-            out.append(f"{metric} = {val:.3g} > max {spec['max']}")
+        _, _, unit, dec, factor = spec_for(metric, units)
+        shown = val * factor
+        u = f" {unit}" if unit else ""
+        if "min" in spec and shown < float(spec["min"]):
+            out.append(f"{metric} = {shown:.{dec}f}{u} < min {spec['min']}")
+        if "max" in spec and shown > float(spec["max"]):
+            out.append(f"{metric} = {shown:.{dec}f}{u} > max {spec['max']}")
     return out
 
 
@@ -441,67 +498,83 @@ def run_ork(helper, cfg: Config, snap: Snapshot, root: Path, ork_rel: str, seed:
                  "notes": "no simulation saved in the file; add one in the GUI"}]
     cfg_rel = cfg_key or rel_posix(root / ork_rel, cfg.dir)
     fcfg = cfg.file_cfg(cfg_rel)
+    # motor_variants: {"label": <motor path> | {"<mount>": <motor path>}} at file or simulation
+    # level -> every simulation runs once per variant, reported as "<sim> [label]"
     for i in range(n):
         sim = doc.getSimulation(i)
         sim_name = str(sim.getName())
         configid = info["sims"][i][1] if i < len(info["sims"]) else ""
-        rec = {**base_rec, "sim_index": i, "sim_name": sim_name, "status": "OK", "metrics": {}, "notes": "",
-               "motor_source": "", "motor_file": "", "motor": "", "motors": [], "warnings": "", "violations": []}
-        try:
-            scfg = cfg.sim_cfg(fcfg, sim_name)
-            mounts = mounts_for(info, configid) or [(None, "")]
-            notes = []
-            for mount, file_desig in mounts:
-                mount_obj = find_mount(helper, sim.getRocket(), mount) if mount else None
-                try:
-                    own = helper.get_motor(sim, mount=mount_obj)
-                except Exception:
-                    own = None
+        scfg = cfg.sim_cfg(fcfg, sim_name)
+        variants = scfg.get("motor_variants") or fcfg.get("motor_variants") or {None: None}
+        for vlabel, voverride in variants.items():
+            records.append(_run_one(helper, cfg, snap, root, ork_rel, base_rec, info, fcfg, scfg, sim, i,
+                                    sim_name, configid, vlabel, voverride, seed, log, fallback))
+    return records
+
+
+def _run_one(helper, cfg, snap, root, ork_rel, base_rec, info, fcfg, scfg, sim, i, sim_name, configid,
+             vlabel, voverride, seed, log, fallback):
+    """Resolve motors, run one simulation (one motor variant), return its record."""
+    label = sim_name if vlabel is None else f"{sim_name} [{vlabel}]"
+    rec = {**base_rec, "sim_index": i, "sim_name": label, "status": "OK", "metrics": {}, "notes": "",
+           "motor_source": "", "motor_file": "", "motor": "", "motors": [], "warnings": "", "violations": []}
+    try:
+        mounts = mounts_for(info, configid) or [(None, "")]
+        notes = []
+        for mount, file_desig in mounts:
+            mount_obj = find_mount(helper, sim.getRocket(), mount) if mount else None
+            try:
+                own = helper.get_motor(sim, mount=mount_obj)
+            except Exception:
+                own = None
+            override = _mount_lookup(voverride, mount or "") if isinstance(voverride, dict) else voverride
+            if override:
+                source, motor_rel, desig = f"variant {vlabel}", cfg.to_repo_rel(override, root), None
+            else:
                 source, motor_rel, desig = resolve_motor(cfg, snap, root, ork_rel, fcfg, scfg, mount or "",
                                                          len(mounts), file_desig, own is not None)
-                entry = {"mount": mount or "", "source": source, "file": motor_rel or "", "designation": own or ""}
-                if motor_rel:
-                    mpath = snap.path(motor_rel)
-                    if mpath is None and fallback is not None and fallback.path(motor_rel) is not None:
-                        mpath = fallback.path(motor_rel)
-                        notes.append(f"motor {motor_rel} absent in {snap.label}; used {fallback.label} copy")
-                    if mpath is None:
-                        raise FileNotFoundError(f"motor file {motor_rel} not found in {snap.label}")
-                    if desig is None and len(motor_file_designations(mpath)) > 1:
-                        desig = file_desig or None
-                    helper.set_motor(sim, str(mpath), mount=mount_obj, designation=desig)
-                    entry["designation"] = helper.get_motor(sim, mount=mount_obj) or ""
-                if source == "unresolved":
-                    notes.append(f"MOTOR UNRESOLVED on mount {mount or '(default)'!r} "
-                                 f"(file wants {file_desig or '?'}): add it to sim_config.json; results are meaningless")
-                rec["motors"].append(entry)
-            rec["motor"] = " + ".join(m["designation"] or "none" for m in rec["motors"])
-            rec["motor_source"] = ", ".join(sorted({m["source"] for m in rec["motors"]}))
-            rec["motor_file"] = ", ".join(m["file"] for m in rec["motors"] if m["file"])
-            rec["notes"] = "; ".join(notes)
-            if cfg.deterministic_wind:
-                # OpenRocket 24.12 draws turbulence entropy outside the seed: two loads of the
-                # same file differ by ~0.1-0.5 cal in stability off the rod. Zero turbulence
-                # (average wind kept) makes before/after bit-identical for an unchanged design.
-                sim.getOptions().setWindTurbulenceIntensity(0.0)
-            sim.getOptions().setRandomSeed(int(seed))
-            t0 = time.time()
-            helper.run_simulation(sim, randomize_seed=False)
-            summary = helper.get_summary(sim).to_dict()
-            summary["min_stability_cal_raw"] = summary.get("min_stability_cal")
-            summary["max_stability_cal_raw"] = summary.get("max_stability_cal")
-            summary.update(derived_metrics(helper, sim, summary))
-            rec["metrics"] = {k: _num(summary.get(k)) for k in METRIC_KEYS}
-            rec["warnings"] = "; ".join(str(w) for w in (summary.get("warnings") or ()))[:400]
-            rec["violations"] = check_limits(rec["metrics"], cfg.limits_for(fcfg, scfg))
-            log(f"  [{snap.label}] {ork_rel} :: {sim_name} ({rec['motor'] or 'no motor'}, {source}) "
-                f"apogee={rec['metrics']['apogee']:.0f} m  {time.time()-t0:.1f}s")
-        except Exception as e:
-            rec["status"] = "SIM_ERROR"
-            rec["notes"] = f"{type(e).__name__}: {str(e)[:300]}"
-            log(f"  [{snap.label}] {ork_rel} :: {sim_name} FAILED: {rec['notes']}")
-        records.append(rec)
-    return records
+            entry = {"mount": mount or "", "source": source, "file": motor_rel or "", "designation": own or ""}
+            if motor_rel:
+                mpath = snap.path(motor_rel)
+                if mpath is None and fallback is not None and fallback.path(motor_rel) is not None:
+                    mpath = fallback.path(motor_rel)
+                    notes.append(f"motor {motor_rel} absent in {snap.label}; used {fallback.label} copy")
+                if mpath is None:
+                    raise FileNotFoundError(f"motor file {motor_rel} not found in {snap.label}")
+                if desig is None and len(motor_file_designations(mpath)) > 1:
+                    desig = file_desig or None
+                helper.set_motor(sim, str(mpath), mount=mount_obj, designation=desig)
+                entry["designation"] = helper.get_motor(sim, mount=mount_obj) or ""
+            if source == "unresolved":
+                notes.append(f"MOTOR UNRESOLVED on mount {mount or '(default)'!r} "
+                             f"(file wants {file_desig or '?'}): add it to sim_config.json; results are meaningless")
+            rec["motors"].append(entry)
+        rec["motor"] = " + ".join(m["designation"] or "none" for m in rec["motors"])
+        rec["motor_source"] = ", ".join(sorted({m["source"] for m in rec["motors"]}))
+        rec["motor_file"] = ", ".join(m["file"] for m in rec["motors"] if m["file"])
+        rec["notes"] = "; ".join(notes)
+        if cfg.deterministic_wind:
+            # OpenRocket 24.12 draws turbulence entropy outside the seed: two loads of the
+            # same file differ by ~0.1-0.5 cal in stability off the rod. Zero turbulence
+            # (average wind kept) makes before/after bit-identical for an unchanged design.
+            sim.getOptions().setWindTurbulenceIntensity(0.0)
+        sim.getOptions().setRandomSeed(int(seed))
+        t0 = time.time()
+        helper.run_simulation(sim, randomize_seed=False)
+        summary = helper.get_summary(sim).to_dict()
+        summary["min_stability_cal_raw"] = summary.get("min_stability_cal")
+        summary["max_stability_cal_raw"] = summary.get("max_stability_cal")
+        summary.update(derived_metrics(helper, sim, summary))
+        rec["metrics"] = {k: _num(summary.get(k)) for k in METRIC_KEYS}
+        rec["warnings"] = "; ".join(str(w) for w in (summary.get("warnings") or ()))[:400]
+        rec["violations"] = check_limits(rec["metrics"], cfg.limits_for(fcfg, scfg), cfg.units)
+        log(f"  [{snap.label}] {ork_rel} :: {label} ({rec['motor'] or 'no motor'}, {rec['motor_source']}) "
+            f"apogee={rec['metrics']['apogee']:.0f} m  {time.time()-t0:.1f}s")
+    except Exception as e:
+        rec["status"] = "SIM_ERROR"
+        rec["notes"] = f"{type(e).__name__}: {str(e)[:300]}"
+        log(f"  [{snap.label}] {ork_rel} :: {label} FAILED: {rec['notes']}")
+    return rec
 
 
 def open_jvm(jar):
@@ -544,19 +617,17 @@ def pair_key(r):
 
 
 def render_report(head_recs, base_recs, base_label, head_label, changed_motor_files, deleted, strict,
-                  deterministic_wind=True) -> tuple:
+                  deterministic_wind=True, units="metric") -> tuple:
     """-> (markdown, n_violations, n_unresolved)"""
+    P = primary_specs(units)
+    ALL = metric_specs(units)
+    ap_key, _, ap_unit, ap_dec, ap_f = spec_for("apogee", units)
+    _, _, _, st_dec, _ = spec_for("stability_off_rod_cal", units)
     lines = [f"## OpenRocket simulation check", ""]
-    wind = ("wind turbulence set to 0 for reproducibility (average wind kept)" if deterministic_wind
-            else "wind turbulence as saved in the file (results vary run to run)")
     if base_label:
-        lines.append(f"Comparing **{base_label}** (before) → **{head_label}** (after); same random seed, {wind}.")
+        lines.append(f"**{base_label}** → **{head_label}**")
     else:
-        lines.append(f"Simulated **{head_label}** (no base commit to compare against); {wind}.")
-    if changed_motor_files:
-        lines.append(f"Motor files changed in this range: {', '.join(f'`{m}`' for m in changed_motor_files)}.")
-    for d in deleted:
-        lines.append(f"Deleted: `{d}`")
+        lines.append(f"**{head_label}** (no base commit to compare against)")
     lines.append("")
 
     base_by = {pair_key(r): r for r in (base_recs or [])}
@@ -578,12 +649,12 @@ def render_report(head_recs, base_recs, base_label, head_label, changed_motor_fi
             n_viol += len(r["violations"])
             flags.extend("❌ " + v for v in r["violations"])
         m = r["metrics"] or {}
-        ap = m.get("apogee", math.nan)
-        ap_b = b["metrics"].get("apogee", math.nan) if b and b.get("metrics") else None
-        cells = [fmt(m.get(k, math.nan), dec) for k, _, _, dec in PRIMARY_METRICS[1:]]
+        ap = m.get("apogee", math.nan) * ap_f
+        ap_b = b["metrics"].get("apogee", math.nan) * ap_f if b and b.get("metrics") else None
+        cells = [fmt(m.get(k, math.nan) * f, dec) for k, _, _, dec, f in P[1:]]
         summary_rows.append(
             f"| `{r['file']}` | {sim} | {r.get('motor') or '–'} ({r.get('motor_source', '')}) | "
-            f"{fmt(ap, 0)} | {fmt_delta(ap_b, ap, 0) if ap_b is not None else ('new' if base_label else '–')} | "
+            f"{fmt(ap, ap_dec)} | {fmt_delta(ap_b, ap, ap_dec) if ap_b is not None else ('new' if base_label else '–')} | "
             + " | ".join(cells) + f" | {'; '.join(flags) if flags else '✅'} |")
         # detail table
         detail.append(f"<details><summary><code>{r['file']}</code> · {sim} · motor {r.get('motor') or '–'}"
@@ -593,11 +664,11 @@ def render_report(head_recs, base_recs, base_label, head_label, changed_motor_fi
             detail.append("_New in this range (no base version)._")
         detail.append("| Metric | Before | After | Δ |" if base_label else "| Metric | Value |")
         detail.append("|---|---:|---:|---:|" if base_label else "|---|---:|")
-        for key, label, unit, dec in METRICS:
-            hv = r["metrics"].get(key, math.nan) if r["metrics"] else math.nan
-            u = f" {unit}" if unit else ""
+        for key, label, unit, dec, f in ALL:
+            hv = (r["metrics"].get(key, math.nan) if r["metrics"] else math.nan) * f
+            u = f" ({unit})" if unit else ""
             if base_label:
-                bv = b["metrics"].get(key, math.nan) if b and b.get("metrics") else math.nan
+                bv = (b["metrics"].get(key, math.nan) if b and b.get("metrics") else math.nan) * f
                 detail.append(f"| {label}{u} | {fmt(bv, dec)} | {fmt(hv, dec)} | {fmt_delta(bv, hv, dec)} |")
             else:
                 detail.append(f"| {label}{u} | {fmt(hv, dec)} |")
@@ -608,10 +679,44 @@ def render_report(head_recs, base_recs, base_label, head_label, changed_motor_fi
         detail.append("</details>")
         detail.append("")
 
-    heads = [f"{label} ({unit})" if unit else label for _, label, unit, _ in PRIMARY_METRICS[1:]]
-    lines.append("| File | Simulation | Motor | Apogee (m) | Δ apogee | " + " | ".join(heads) + " | Status |")
+    # Digest first: one short line per simulation. Chat integrations (the Discord GitHub bot)
+    # show only the first few hundred characters of a commit comment and cannot draw tables.
+    for r in head_recs:
+        b = base_by.get(pair_key(r))
+        m = r["metrics"] or {}
+        sim = r["sim_name"] or f"#{r['sim_index']}"
+        ap = m.get("apogee", math.nan) * ap_f
+        ap_b = b["metrics"].get("apogee", math.nan) * ap_f if b and b.get("metrics") else None
+        if r["status"] != "OK":
+            status = f"❌ {r['status']}"
+        elif "unresolved" in (r.get("motor_source") or ""):
+            status = "⚠️ motor unresolved"
+        elif r.get("violations"):
+            status = "❌ " + "; ".join(r["violations"])
+        else:
+            status = "✅"
+        if ap_b is None:
+            d = ", new" if base_label else ""
+        elif not (math.isnan(ap) or math.isnan(ap_b)) and abs(ap - ap_b) < 0.5:
+            d = ", unchanged"
+        else:
+            d = f", Δ {fmt_delta(ap_b, ap, ap_dec)}"
+        lines.append(f"- **{PurePosixPath(r['file']).name}** · {sim} · {status} · apogee {fmt(ap, ap_dec)} {ap_unit}{d}"
+                     + f" · Mach {fmt(m.get('max_mach', math.nan), 2)}"
+                     + f" · rail {fmt(m.get('stability_off_rod_cal', math.nan), st_dec)} cal")
+    lines.append("")
+    heads = [f"{label} ({unit})" if unit else label for _, label, unit, _, _ in P[1:]]
+    lines.append(f"| File | Simulation | Motor | Apogee ({ap_unit}) | Δ apogee | " + " | ".join(heads) + " | Status |")
     lines.append("|---|---|---|---:|---:|" + "---:|" * len(heads) + "---|")
     lines.extend(summary_rows)
+    lines.append("")
+    wind = ("wind turbulence set to 0 for reproducibility (average wind kept)" if deterministic_wind
+            else "wind turbulence as saved in the file (results vary run to run)")
+    lines.append(f"Same random seed before and after; {wind}.")
+    if changed_motor_files:
+        lines.append(f"Motor files changed in this range: {', '.join(f'`{m}`' for m in changed_motor_files)}.")
+    for d in deleted:
+        lines.append(f"Deleted: `{d}`")
     lines.append("")
     lines.extend(detail)
     if n_viol or n_unres:
@@ -676,7 +781,7 @@ def cmd_run(args):
     (out / "results.json").write_text(json.dumps(records, indent=2), encoding="utf-8")
     write_csv(records, out / "results.csv")
     report, n_viol, n_unres = render_report(records, None, None, snap.label, [], [], args.strict or cfg.fail_on_limits,
-                                            cfg.deterministic_wind)
+                                            cfg.deterministic_wind, cfg.units)
     (out / "report.md").write_text(report, encoding="utf-8")
     _emit(report, args)
     print(f"\nWrote {out / 'results.csv'}, {out / 'results.json'}, {out / 'report.md'}")
@@ -737,7 +842,7 @@ def cmd_compare(args):
             head_recs.extend(run_ork(helper, cfg, head, root, f, cfg.seed))
     strict = args.strict or cfg.fail_on_limits
     report, n_viol, n_unres = render_report(head_recs, base_recs if base else None, base_label,
-                                            head_sha, motor_changed, deleted, strict, cfg.deterministic_wind)
+                                            head_sha, motor_changed, deleted, strict, cfg.deterministic_wind, cfg.units)
     out = Path(args.results)
     out.mkdir(parents=True, exist_ok=True)
     (out / "report.md").write_text(report, encoding="utf-8")
@@ -795,8 +900,10 @@ def _mermaid_label(s: str) -> str:
     return '"' + s.replace('"', "'") + '"'
 
 
-def render_history_md(series: dict, max_points: int) -> str:
+def render_history_md(series: dict, max_points: int, units: str = "metric") -> str:
     """series: {(file, sim): [{'label', 'short', 'date', 'author', 'message', 'status', 'metrics', 'note'} ...]}"""
+    P = primary_specs(units)
+    _, _, _, ap_dec, ap_f = spec_for("apogee", units)
     out = ["## Performance history", ""]
     for (file, sim), rows in series.items():
         ok = [r for r in rows if r["status"] == "OK" and not math.isnan(r["metrics"].get("apogee", math.nan))]
@@ -814,9 +921,9 @@ def render_history_md(series: dict, max_points: int) -> str:
             out.append("Each bar is the change from the previous committed version: 🟩 increase, 🟥 decrease ")
             out.append("")
             labels = ", ".join(_mermaid_label(r["label"]) for r in shown[1:])
-            for key, label, unit, dec in PRIMARY_METRICS:
+            for key, label, unit, dec, f in P:
                 title = CHART_TITLES.get(key, label)
-                vals = [r["metrics"].get(key, math.nan) for r in shown]
+                vals = [r["metrics"].get(key, math.nan) * f for r in shown]
                 if all(math.isnan(v) for v in vals):
                     continue
                 deltas = [0.0 if (math.isnan(a) or math.isnan(b)) else b - a for a, b in zip(vals, vals[1:])]
@@ -839,16 +946,16 @@ def render_history_md(series: dict, max_points: int) -> str:
                 out.append(f"    bar [{fmt_series(down)}]")
                 out.append("```")
                 out.append("")
-        heads = [f"{label} ({unit})" if unit else label for _, label, unit, _ in PRIMARY_METRICS]
+        heads = [f"{label} ({unit})" if unit else label for _, label, unit, _, _ in P]
         out.append("| Version | Date | Author | Commit | " + " | ".join(heads) + " | Δ apogee | Note |")
         out.append("|---|---|---|---|" + "---:|" * len(heads) + "---:|---|")
         prev = None
         for r in rows[-max_points:]:
             m = r["metrics"] or {}
-            ap = m.get("apogee", math.nan)
+            ap = m.get("apogee", math.nan) * ap_f
             msg = r["message"][:60] + ("…" if len(r["message"]) > 60 else "")
-            delta = fmt_delta(prev, ap, 0) if prev is not None and r["status"] == "OK" else "–"
-            cells = " | ".join(fmt(m.get(k, math.nan), dec) for k, _, _, dec in PRIMARY_METRICS)
+            delta = fmt_delta(prev, ap, ap_dec) if prev is not None and r["status"] == "OK" else "–"
+            cells = " | ".join(fmt(m.get(k, math.nan) * f, dec) for k, _, _, dec, f in P)
             out.append(f"| `{r['short']}` | {r['date']} | {r['author']} | {msg} | {cells} | {delta} | "
                        f"{r['note'] or ('' if r['status'] == 'OK' else r['status'])} |")
             if r["status"] == "OK" and not math.isnan(ap):
@@ -872,6 +979,11 @@ def cmd_history(args):
         cache_dir.mkdir(parents=True, exist_ok=True)
     cache_salt = f"s{cfg.seed}-w{int(cfg.deterministic_wind)}-m2"  # bump the suffix when metrics change
 
+    def salt_for(f):  # the file's config entry (motors, variants) changes the results too
+        import hashlib
+        entry = json.dumps(cfg.file_cfg(rel_posix(root / f, cfg.dir)), sort_keys=True)
+        return cache_salt + "-" + hashlib.sha1(entry.encode()).hexdigest()[:8]
+
     # plan: (file, version entry, blob) for every version; look up the cache first
     plan, cached, files_versions = [], {}, {}
     for f in files:
@@ -887,7 +999,7 @@ def cmd_history(args):
                                  "message": "(uncommitted working tree)", "path": f, "blob": wt_blob})
         for v in versions:
             key = (f, v["blob"])
-            hit = cache_dir / f"{v['blob']}-{cache_salt}.json" if (cache_dir and v["blob"]) else None
+            hit = cache_dir / f"{v['blob']}-{salt_for(f)}.json" if (cache_dir and v["blob"]) else None
             if hit and hit.is_file():
                 try:
                     cached[key] = json.loads(hit.read_text(encoding="utf-8"))
@@ -911,7 +1023,7 @@ def cmd_history(args):
                 recs = run_ork(helper, cfg, snap, root, v["path"], cfg.seed, fallback=head, cfg_key=cfg_key)
                 results[(f, v["blob"])] = recs
                 if cache_dir and v["blob"]:
-                    (cache_dir / f"{v['blob']}-{cache_salt}.json").write_text(json.dumps(recs), encoding="utf-8")
+                    (cache_dir / f"{v['blob']}-{salt_for(f)}.json").write_text(json.dumps(recs), encoding="utf-8")
 
     # assemble series per (file, sim name)
     series, csv_rows = {}, []
@@ -936,11 +1048,298 @@ def cmd_history(args):
         w = csv.DictWriter(fh, fieldnames=fields, extrasaction="ignore")
         w.writeheader()
         w.writerows(csv_rows)
-    md = render_history_md(series, args.max_points)
+    md = render_history_md(series, args.max_points, cfg.units)
     (out / "history.md").write_text(md, encoding="utf-8")
     _emit(md, args)
     print(f"Wrote {out / 'history.md'}, {out / 'history.csv'}")
+    if args.site:
+        repo_url = args.repo_url or _guess_repo_url(root)
+        write_site(series, Path(args.site), cfg.units, repo_url, files_versions)
     return 0
+
+
+# ----------------------------------------------------------------------------
+# static site (GitHub Pages): interactive charts of the same history
+# ----------------------------------------------------------------------------
+def _guess_repo_url(root: Path):
+    r = _git(root, "remote", "get-url", "origin", check=False)
+    url = r.stdout.strip()
+    if not url:
+        return ""
+    m = re.match(r"(?:git@github\.com:|https://github\.com/)([^/]+/[^/]+?)(?:\.git)?$", url)
+    return f"https://github.com/{m.group(1)}" if m else ""
+
+
+SITE_HTML = r"""<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OpenRocket performance history</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<style>
+  :root { color-scheme: light dark; --bg:#fff; --fg:#1f2328; --muted:#59636e; --card:#f6f8fa; --line:#d0d7de;
+          --up:#1a7f37; --down:#cf222e; --flat:#8c959f; --accent:#0969da; --hover:#eaeef2; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#0d1117; --fg:#e6edf3; --muted:#9198a1; --card:#161b22; --line:#30363d;
+          --up:#3fb950; --down:#f85149; --flat:#6e7681; --accent:#58a6ff; --hover:#21262d; } }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg); font:14px/1.45 -apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif; }
+  header { padding:12px 16px; border-bottom:1px solid var(--line); display:flex; flex-wrap:wrap; gap:6px 16px; align-items:baseline; }
+  header h1 { font-size:18px; margin:0; } header .sub { color:var(--muted); font-size:13px; }
+  .layout { display:grid; grid-template-columns:300px 1fr; min-height:calc(100vh - 50px); }
+  nav { border-right:1px solid var(--line); background:var(--card); padding:10px 8px; overflow:auto; }
+  main { padding:14px 16px 32px; min-width:0; }
+  .design { margin-bottom:6px; }
+  .design > .head { display:flex; align-items:center; gap:6px; padding:5px 6px; border-radius:6px; cursor:pointer; font-weight:600; }
+  .design > .head:hover { background:var(--hover); }
+  .design > .head .caret { width:14px; color:var(--muted); font-size:11px; transition:transform .12s; }
+  .design.closed > .head .caret { transform:rotate(-90deg); }
+  .design.closed > .sims { display:none; }
+  .design > .head .name { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .design > .head .mini { color:var(--muted); font-size:11px; font-weight:400; }
+  .sims { padding-left:18px; }
+  .sim { display:flex; align-items:center; gap:7px; padding:4px 6px; border-radius:6px; cursor:pointer; }
+  .sim:hover { background:var(--hover); }
+  .sim input { margin:0; accent-color:var(--accent); }
+  .sim .swatch { width:10px; height:10px; border-radius:3px; background:var(--line); flex:none; }
+  .sim .label { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .sim .val { color:var(--muted); font-size:12px; font-variant-numeric:tabular-nums; }
+  .sim .val.up { color:var(--up); } .sim .val.down { color:var(--down); }
+  .navtools { display:flex; gap:6px; padding:2px 6px 10px; }
+  .navtools button, .row button, .row label { font:inherit; font-size:12px; }
+  select { font:inherit; font-size:13px; padding:3px 6px; border-radius:6px; border:1px solid var(--line); background:var(--bg); color:var(--fg); }
+  button { font:inherit; padding:4px 10px; border-radius:6px; border:1px solid var(--line); background:var(--bg); color:var(--fg); cursor:pointer; }
+  button.on { background:var(--accent); color:#fff; border-color:var(--accent); }
+  .row { display:flex; flex-wrap:wrap; gap:6px; align-items:center; margin-bottom:10px; }
+  .row .spacer { flex:1; }
+  .toggle { color:var(--muted); display:flex; align-items:center; gap:5px; }
+  .chartbox { position:relative; height:440px; background:var(--card); border:1px solid var(--line); border-radius:8px; padding:10px; }
+  .empty { display:flex; align-items:center; justify-content:center; height:100%; color:var(--muted); }
+  table { border-collapse:collapse; width:100%; margin-top:14px; font-size:13px; }
+  th, td { text-align:right; padding:5px 8px; border-bottom:1px solid var(--line); white-space:nowrap; font-variant-numeric:tabular-nums; }
+  th:first-child, td:first-child { text-align:left; }
+  th { color:var(--muted); font-weight:600; }
+  td .sw { display:inline-block; width:10px; height:10px; border-radius:3px; margin-right:6px; vertical-align:middle; }
+  td .d { color:var(--muted); font-size:11px; margin-left:4px; } td .d.up { color:var(--up); } td .d.down { color:var(--down); }
+  .legend { color:var(--muted); font-size:12px; margin-top:14px; }
+  a { color:var(--accent); }
+  @media (max-width: 760px) { .layout { grid-template-columns:1fr; } nav { border-right:0; border-bottom:1px solid var(--line); max-height:45vh; } .chartbox { height:340px; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>OpenRocket performance history</h1>
+  <span class="sub" id="sub"></span>
+  <label class="sub" style="margin-left:auto">units <select id="units"><option value="metric">metric (m, m/s, kPa)</option><option value="imperial">imperial (ft, ft/s, psi)</option></select></label>
+</header>
+<div class="layout">
+  <nav id="nav"></nav>
+  <main>
+    <div class="row" id="metrics"></div>
+    <div class="chartbox"><canvas id="cv"></canvas><div class="empty" id="empty" hidden>Select simulations in the list.</div></div>
+    <div id="latest"></div>
+    <p class="legend">Each line is one simulation across its committed versions; hover a point for the commit, author, message and change from the previous version, click it to open the commit on GitHub. Tick several simulations to compare them (wind cases, engine curves, designs). Views are linkable: the URL updates as you select. Simulated headlessly with OpenRocket 24.12, wind turbulence off, fixed seed. Generated by <code>or_ci.py history --site</code>.</p>
+  </main>
+</div>
+<script id="data" type="application/json">__DATA__</script>
+<script>
+const DATA = JSON.parse(document.getElementById('data').textContent);
+const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+const PALETTE = ['#0969da','#e16f24','#1a7f37','#8250df','#cf222e','#0598a3','#bf8700','#d1478e','#57606a','#3fb950'];
+const fmt = (v, dec) => (v == null || Number.isNaN(v)) ? '–' : Number(v).toFixed(dec);
+const short = f => f.split('/').pop();
+const sub = document.getElementById('sub');
+sub.textContent = `${DATA.generated}` + (DATA.repo ? ' · ' : '');
+if (DATA.repo) { const a = document.createElement('a'); a.href = DATA.repo; a.textContent = DATA.repo.replace('https://github.com/', ''); sub.appendChild(a); }
+
+// ---- state (mirrored in the URL hash) ----
+const ALL = [];  // {id, file, sim, rows}
+for (const [file, sims] of Object.entries(DATA.designs)) for (const [sim, rows] of Object.entries(sims)) ALL.push({ id: `${file}|${sim}`, file, sim, rows });
+const state = { metric: DATA.metrics[0].key, delta: false, sel: new Set(), units: DATA.default_units || 'metric' };
+const unitSel = document.getElementById('units');
+unitSel.onchange = () => { state.units = unitSel.value; update(); };
+// metric spec in the current unit system: {key, label, unit, dec, factor}
+function specOf(key) { const m = DATA.metrics.find(x => x.key === key); const u = (m.units && m.units[state.units]) || m.units.metric; return { key: m.key, label: m.label, unit: u.unit, dec: u.dec, factor: u.factor }; }
+function val(r, key) { const v = r.m[key]; return v == null ? null : v * specOf(key).factor; }
+function readHash() {
+  const p = new URLSearchParams(location.hash.slice(1));
+  if (p.get('metric') && DATA.metrics.some(m => m.key === p.get('metric'))) state.metric = p.get('metric');
+  state.delta = p.get('delta') === '1';
+  if (p.get('units') === 'metric' || p.get('units') === 'imperial') state.units = p.get('units');
+  const s = p.get('sel');
+  if (s) { state.sel = new Set(s.split(',').map(decodeURIComponent).filter(id => ALL.some(a => a.id === id))); }
+  if (!state.sel.size) { const first = ALL[0] && ALL[0].file; ALL.filter(a => a.file === first).forEach(a => state.sel.add(a.id)); }
+}
+function writeHash() {
+  const p = new URLSearchParams();
+  p.set('metric', state.metric); if (state.delta) p.set('delta', '1'); p.set('units', state.units);
+  p.set('sel', [...state.sel].map(encodeURIComponent).join(','));
+  history.replaceState(null, '', '#' + p.toString());
+}
+const colorOf = new Map();
+function assignColors() { colorOf.clear(); let i = 0; for (const a of ALL) if (state.sel.has(a.id)) colorOf.set(a.id, PALETTE[i++ % PALETTE.length]); }
+
+// ---- sidebar tree ----
+const nav = document.getElementById('nav');
+function buildNav() {
+  nav.innerHTML = '';
+  const tools = document.createElement('div'); tools.className = 'navtools';
+  const bNone = document.createElement('button'); bNone.textContent = 'Clear'; bNone.onclick = () => { state.sel.clear(); update(); };
+  tools.appendChild(bNone); nav.appendChild(tools);
+  for (const [file, sims] of Object.entries(DATA.designs)) {
+    const d = document.createElement('div'); d.className = 'design';
+    const head = document.createElement('div'); head.className = 'head';
+    const caret = document.createElement('span'); caret.className = 'caret'; caret.textContent = '▼';
+    const name = document.createElement('span'); name.className = 'name'; name.textContent = short(file); name.title = file;
+    const mini = document.createElement('span'); mini.className = 'mini'; mini.textContent = `${Object.keys(sims).length}`;
+    const all = document.createElement('button'); all.textContent = 'all'; all.title = 'Select every simulation of this design';
+    all.onclick = e => { e.stopPropagation(); const ids = ALL.filter(a => a.file === file).map(a => a.id); const every = ids.every(id => state.sel.has(id)); ids.forEach(id => every ? state.sel.delete(id) : state.sel.add(id)); update(); };
+    head.append(caret, name, mini, all); head.onclick = () => d.classList.toggle('closed');
+    const list = document.createElement('div'); list.className = 'sims';
+    for (const [sim, rows] of Object.entries(sims)) {
+      const id = `${file}|${sim}`;
+      const row = document.createElement('label'); row.className = 'sim'; row.dataset.id = id;
+      const cb = document.createElement('input'); cb.type = 'checkbox'; cb.checked = state.sel.has(id);
+      cb.onchange = () => { cb.checked ? state.sel.add(id) : state.sel.delete(id); update(); };
+      const sw = document.createElement('span'); sw.className = 'swatch';
+      const lab = document.createElement('span'); lab.className = 'label'; lab.textContent = sim; lab.title = sim;
+      const val = document.createElement('span'); val.className = 'val';
+      row.append(cb, sw, lab, val); list.appendChild(row);
+    }
+    d.append(head, list); nav.appendChild(d);
+  }
+}
+function refreshNav() {
+  const spec = specOf(state.metric);
+  for (const row of nav.querySelectorAll('.sim')) {
+    const a = ALL.find(x => x.id === row.dataset.id);
+    row.querySelector('input').checked = state.sel.has(a.id);
+    row.querySelector('.swatch').style.background = colorOf.get(a.id) || css('--line');
+    const ok = a.rows.filter(r => r.ok && r.m[state.metric] != null);
+    const v = ok.length ? val(ok[ok.length - 1], state.metric) : null, p = ok.length > 1 ? val(ok[ok.length - 2], state.metric) : null;
+    const el = row.querySelector('.val'); el.textContent = fmt(v, spec.dec) + (spec.unit ? ' ' + spec.unit : '');
+    el.className = 'val' + (p == null || v == null || Math.abs(v - p) < Math.pow(10, -spec.dec) / 2 ? '' : v > p ? ' up' : ' down');
+  }
+}
+
+// ---- metric buttons ----
+const mrow = document.getElementById('metrics');
+function buildMetrics() {
+  mrow.innerHTML = '';
+  for (const m of DATA.metrics) { const b = document.createElement('button'); b.textContent = m.label; b.className = m.key === state.metric ? 'on' : ''; b.onclick = () => { state.metric = m.key; update(); }; mrow.appendChild(b); }
+  const sp = document.createElement('span'); sp.className = 'spacer'; mrow.appendChild(sp);
+  const tog = document.createElement('label'); tog.className = 'toggle';
+  const cb = document.createElement('input'); cb.type = 'checkbox'; cb.checked = state.delta; cb.onchange = () => { state.delta = cb.checked; update(); };
+  tog.append(cb, document.createTextNode('show Δ vs previous version')); mrow.appendChild(tog);
+}
+
+// ---- chart ----
+let chart = null;
+const cv = document.getElementById('cv'), empty = document.getElementById('empty');
+function dateLabel(t) { const d = new Date(t); return d.toISOString().slice(0, 10); }
+function draw() {
+  const spec = specOf(state.metric);
+  const unit = spec.unit ? ` (${spec.unit})` : '';
+  const sets = [];
+  for (const a of ALL) {
+    if (!state.sel.has(a.id)) continue;
+    const ok = a.rows.filter(r => r.ok && r.m[state.metric] != null);
+    const pts = ok.map((r, i) => { const v = val(r, state.metric), d = i ? v - val(ok[i - 1], state.metric) : null;
+                                   return { x: r.t * 1000, y: state.delta ? (d ?? 0) : v, v, d, r }; });
+    const col = colorOf.get(a.id);
+    sets.push({ label: (Object.keys(DATA.designs).length > 1 ? short(a.file) + ' · ' : '') + a.sim, data: pts, borderColor: col, backgroundColor: col,
+                pointRadius: 4, pointHoverRadius: 6, borderWidth: 2, tension: 0, spanGaps: true,
+                pointBackgroundColor: pts.map(p => p.d == null || Math.abs(p.d) < Math.pow(10, -spec.dec) / 2 ? css('--flat') : p.d > 0 ? css('--up') : css('--down')) });
+  }
+  empty.hidden = sets.length > 0;
+  if (chart) chart.destroy();
+  if (!sets.length) { chart = null; return; }
+  chart = new Chart(cv, {
+    type: 'line', data: { datasets: sets },
+    options: {
+      responsive: true, maintainAspectRatio: false, animation: false, parsing: false,
+      interaction: { mode: 'nearest', intersect: true },
+      onClick: (e, els) => { if (els.length && DATA.repo) { const p = sets[els[0].datasetIndex].data[els[0].index]; if (p.r.sha) window.open(`${DATA.repo}/commit/${p.r.sha}`, '_blank'); } },
+      plugins: {
+        legend: { display: sets.length > 1, position: 'top', labels: { boxWidth: 12, usePointStyle: true } },
+        tooltip: { callbacks: {
+          title: items => { const p = items[0].raw; return `${p.r.short} · ${p.r.date} · ${p.r.author}`; },
+          label: item => { const p = item.raw; const out = [`${item.dataset.label}: ${fmt(p.v, spec.dec)}${spec.unit ? ' ' + spec.unit : ''}`];
+            if (p.d != null) { const prev = p.v - p.d; out.push(`Δ vs previous: ${p.d >= 0 ? '+' : ''}${fmt(p.d, spec.dec)}${spec.unit ? ' ' + spec.unit : ''}` + (prev ? ` (${(p.d / prev * 100).toFixed(1)}%)` : '')); }
+            out.push(p.r.message); return out; } } }
+      },
+      scales: {
+        x: { type: 'linear', ticks: { callback: v => dateLabel(v), maxRotation: 45, autoSkip: true, maxTicksLimit: 10 }, grid: { display: false }, title: { display: true, text: 'commit date' } },
+        y: { title: { display: true, text: (state.delta ? 'Δ ' : '') + spec.label + unit }, grace: '8%' }
+      }
+    }
+  });
+}
+
+// ---- latest-values table ----
+function drawTable() {
+  const box = document.getElementById('latest');
+  const rows = ALL.filter(a => state.sel.has(a.id));
+  if (!rows.length) { box.innerHTML = ''; return; }
+  const specs = DATA.metrics.map(m => specOf(m.key));
+  let h = '<table><thead><tr><th>Simulation</th>' + specs.map(m => `<th>${m.label}${m.unit ? ' (' + m.unit + ')' : ''}</th>`).join('') + '<th>Latest version</th></tr></thead><tbody>';
+  for (const a of rows) {
+    const ok = a.rows.filter(r => r.ok); const last = ok[ok.length - 1], prev = ok[ok.length - 2];
+    h += `<tr><td><span class="sw" style="background:${colorOf.get(a.id)}"></span>${Object.keys(DATA.designs).length > 1 ? short(a.file) + ' · ' : ''}${a.sim}</td>`;
+    for (const m of specs) {
+      const v = last ? val(last, m.key) : null, p = prev ? val(prev, m.key) : null;
+      let d = '';
+      if (v != null && p != null && Math.abs(v - p) >= Math.pow(10, -m.dec) / 2) d = `<span class="d ${v > p ? 'up' : 'down'}">${v > p ? '+' : ''}${fmt(v - p, m.dec)}</span>`;
+      h += `<td>${fmt(v, m.dec)}${d}</td>`;
+    }
+    h += `<td>${last ? (DATA.repo && last.sha ? `<a href="${DATA.repo}/commit/${last.sha}" target="_blank">${last.short}</a>` : last.short) + ' · ' + last.date : '–'}</td></tr>`;
+  }
+  box.innerHTML = h + '</tbody></table>';
+}
+
+function update() { unitSel.value = state.units; assignColors(); writeHash(); refreshNav(); buildMetrics(); draw(); drawTable(); }
+readHash(); buildNav(); update();
+window.addEventListener('hashchange', () => { readHash(); update(); });
+</script>
+</body>
+</html>
+"""
+
+
+def write_site(series: dict, site_dir: Path, units: str, repo_url: str, files_versions: dict):
+    """A self-contained index.html (+ data.json) with interactive charts of every design's history.
+    Values are emitted in SI with both unit systems' specs; the page converts client-side."""
+    import datetime as dt
+    designs = {}
+    for (file, sim), rows in series.items():
+        out_rows = []
+        # map short sha -> full sha via files_versions
+        shas = {v["short"]: v["sha"] for v in files_versions.get(file, [])}
+        times = {v["short"]: v["time"] for v in files_versions.get(file, [])}
+        for r in rows:
+            m = r["metrics"] or {}
+            out_rows.append({
+                "short": r["short"], "sha": shas.get(r["short"]) or "", "t": times.get(r["short"], 0),
+                "date": r["date"], "author": r["author"],
+                "message": r["message"], "ok": r["status"] == "OK" and not r["note"],
+                "m": {k: (None if math.isnan(m.get(k, math.nan)) else round(m[k], 4)) for k in PRIMARY_KEYS},
+            })
+        designs.setdefault(file, {})[sim] = out_rows
+    payload = {
+        "generated": dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
+        "default_units": units, "repo": repo_url,
+        "metrics": [{"key": k, "label": CHART_TITLES.get(k, label),
+                     "units": {"metric": {"unit": mu, "dec": md, "factor": 1.0},
+                               "imperial": {"unit": iu, "dec": idec, "factor": f}}}
+                    for (k, label, mu, md, _), (_, _, iu, idec, f) in zip(primary_specs("metric"), primary_specs("imperial"))],
+        "designs": designs,
+    }
+    site_dir.mkdir(parents=True, exist_ok=True)
+    data = json.dumps(payload).replace("</", "<\\/")
+    (site_dir / "index.html").write_text(SITE_HTML.replace("__DATA__", data), encoding="utf-8")
+    (site_dir / "data.json").write_text(json.dumps(payload, indent=1), encoding="utf-8")
+    (site_dir / ".nojekyll").write_text("", encoding="utf-8")
+    print(f"Wrote site to {site_dir / 'index.html'}")
 
 
 def main():
@@ -969,6 +1368,8 @@ def main():
     h.add_argument("--cache", default=None, help="Folder caching per-version results by git blob id (skips re-simulation)")
     h.add_argument("--max-commits", type=int, default=200, help="How far back to walk per file")
     h.add_argument("--max-points", type=int, default=30, help="Versions per chart (the most recent ones)")
+    h.add_argument("--site", default=None, help="Also write a static site (index.html + data.json) to this folder, for GitHub Pages")
+    h.add_argument("--repo-url", default=None, help="GitHub repo URL for commit links in the site (default: from git remote origin)")
     h.set_defaults(fn=cmd_history)
     args = p.parse_args()
     sys.exit(args.fn(args))
