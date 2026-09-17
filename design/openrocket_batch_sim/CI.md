@@ -77,6 +77,8 @@ python design/openrocket_batch_sim/or_ci.py compare --config aero_modeling/sim_c
 
 **Units.** `"units"` in `sim_config.json` selects how reports read: `metric` (default: m, m/s, kPa) or `imperial` (ft, ft/s, psi). Calibers, Mach and seconds are the same in both. Limits in the config are written in the selected units. The CSV, JSON and history cache always hold SI values, so switching the flag changes only the rendered reports and never invalidates cached results.
 
+**Stability form.** `"stability_units"` selects how the three stability margins are reported: `cal` (calibers, the OpenRocket convention, (CP−CG)/reference diameter) or `pct` (percentage of overall rocket length, (CP−CG)/length × 100). Both forms are always computed and stored, so `limits` can name either key (`stability_off_rod_cal` or `stability_off_rod_pct`), and the Pages site has a dropdown to switch. The reference diameter and rocket length used are recorded per simulation in the CSV.
+
 **Tracked metrics** (summary table, history charts, and the default limits):
 
 | Metric | Definition |
@@ -84,7 +86,7 @@ python design/openrocket_batch_sim/or_ci.py compare --config aero_modeling/sim_c
 | Apogee | Highest altitude above the launch site (m or ft) |
 | Max Mach | Peak Mach number |
 | Max dynamic pressure | Peak ½·ρ·v² (kPa or psi), with ρ from OpenRocket's air pressure and temperature along the flight |
-| Stability off rod | Barrowman margin (calibers) at launch-rod departure |
+| Stability off rod | Barrowman margin at launch-rod departure, in calibers or % of length per `stability_units` |
 | Min / max stability | Smallest and largest margin between rod departure and apogee, **counting only samples with airspeed ≥ 30 m/s**. OpenRocket's margin diverges as airspeed goes to zero near apogee (it reads −20 cal on the IREC file), which is not a real stability event. orlab's unfiltered values are kept in the CSV as `*_raw`. |
 
 Max velocity, acceleration, rod-exit speed, time to apogee, deployment speed, descent rate, flight time and landing distance are in the collapsible detail tables, the CSV and the JSON, and can be used in `limits`.
