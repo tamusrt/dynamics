@@ -1079,95 +1079,218 @@ SITE_HTML = r"""<!doctype html>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
 <style>
   :root { color-scheme: light dark; --bg:#fff; --fg:#1f2328; --muted:#59636e; --card:#f6f8fa; --line:#d0d7de;
-          --up:#1a7f37; --down:#cf222e; --flat:#8c959f; --accent:#0969da; }
+          --up:#1a7f37; --down:#cf222e; --flat:#8c959f; --accent:#0969da; --hover:#eaeef2; }
   @media (prefers-color-scheme: dark) { :root { --bg:#0d1117; --fg:#e6edf3; --muted:#9198a1; --card:#161b22; --line:#30363d;
-          --up:#3fb950; --down:#f85149; --flat:#6e7681; --accent:#58a6ff; } }
-  body { margin:0; padding:24px 16px 48px; background:var(--bg); color:var(--fg);
-         font:14px/1.5 -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
-  main { max-width:1100px; margin:0 auto; }
-  h1 { font-size:22px; margin:0 0 4px; } h2 { font-size:18px; margin:32px 0 8px; border-bottom:1px solid var(--line); padding-bottom:4px; }
-  .sub { color:var(--muted); margin:0 0 16px; }
-  .card { background:var(--card); border:1px solid var(--line); border-radius:8px; padding:14px 16px; margin:12px 0; }
-  .card h3 { margin:0 0 8px; font-size:15px; }
-  .row { display:flex; flex-wrap:wrap; gap:6px; align-items:center; margin-bottom:8px; }
-  button { font:inherit; font-size:13px; padding:4px 10px; border-radius:6px; border:1px solid var(--line);
-           background:var(--bg); color:var(--fg); cursor:pointer; }
+          --up:#3fb950; --down:#f85149; --flat:#6e7681; --accent:#58a6ff; --hover:#21262d; } }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg); font:14px/1.45 -apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif; }
+  header { padding:12px 16px; border-bottom:1px solid var(--line); display:flex; flex-wrap:wrap; gap:6px 16px; align-items:baseline; }
+  header h1 { font-size:18px; margin:0; } header .sub { color:var(--muted); font-size:13px; }
+  .layout { display:grid; grid-template-columns:300px 1fr; min-height:calc(100vh - 50px); }
+  nav { border-right:1px solid var(--line); background:var(--card); padding:10px 8px; overflow:auto; }
+  main { padding:14px 16px 32px; min-width:0; }
+  .design { margin-bottom:6px; }
+  .design > .head { display:flex; align-items:center; gap:6px; padding:5px 6px; border-radius:6px; cursor:pointer; font-weight:600; }
+  .design > .head:hover { background:var(--hover); }
+  .design > .head .caret { width:14px; color:var(--muted); font-size:11px; transition:transform .12s; }
+  .design.closed > .head .caret { transform:rotate(-90deg); }
+  .design.closed > .sims { display:none; }
+  .design > .head .name { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .design > .head .mini { color:var(--muted); font-size:11px; font-weight:400; }
+  .sims { padding-left:18px; }
+  .sim { display:flex; align-items:center; gap:7px; padding:4px 6px; border-radius:6px; cursor:pointer; }
+  .sim:hover { background:var(--hover); }
+  .sim input { margin:0; accent-color:var(--accent); }
+  .sim .swatch { width:10px; height:10px; border-radius:3px; background:var(--line); flex:none; }
+  .sim .label { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .sim .val { color:var(--muted); font-size:12px; font-variant-numeric:tabular-nums; }
+  .sim .val.up { color:var(--up); } .sim .val.down { color:var(--down); }
+  .navtools { display:flex; gap:6px; padding:2px 6px 10px; }
+  .navtools button, .row button, .row label { font:inherit; font-size:12px; }
+  button { font:inherit; padding:4px 10px; border-radius:6px; border:1px solid var(--line); background:var(--bg); color:var(--fg); cursor:pointer; }
   button.on { background:var(--accent); color:#fff; border-color:var(--accent); }
-  .toggle { margin-left:auto; color:var(--muted); font-size:13px; }
-  .chart { position:relative; height:260px; }
-  .latest { display:flex; flex-wrap:wrap; gap:14px; color:var(--muted); font-size:13px; margin-top:8px; }
-  .latest b { color:var(--fg); }
-  .legend { color:var(--muted); font-size:12px; }
+  .row { display:flex; flex-wrap:wrap; gap:6px; align-items:center; margin-bottom:10px; }
+  .row .spacer { flex:1; }
+  .toggle { color:var(--muted); display:flex; align-items:center; gap:5px; }
+  .chartbox { position:relative; height:440px; background:var(--card); border:1px solid var(--line); border-radius:8px; padding:10px; }
+  .empty { display:flex; align-items:center; justify-content:center; height:100%; color:var(--muted); }
+  table { border-collapse:collapse; width:100%; margin-top:14px; font-size:13px; }
+  th, td { text-align:right; padding:5px 8px; border-bottom:1px solid var(--line); white-space:nowrap; font-variant-numeric:tabular-nums; }
+  th:first-child, td:first-child { text-align:left; }
+  th { color:var(--muted); font-weight:600; }
+  td .sw { display:inline-block; width:10px; height:10px; border-radius:3px; margin-right:6px; vertical-align:middle; }
+  td .d { color:var(--muted); font-size:11px; margin-left:4px; } td .d.up { color:var(--up); } td .d.down { color:var(--down); }
+  .legend { color:var(--muted); font-size:12px; margin-top:14px; }
   a { color:var(--accent); }
+  @media (max-width: 760px) { .layout { grid-template-columns:1fr; } nav { border-right:0; border-bottom:1px solid var(--line); max-height:45vh; } .chartbox { height:340px; } }
 </style>
 </head>
 <body>
-<main>
+<header>
   <h1>OpenRocket performance history</h1>
-  <p class="sub" id="sub"></p>
-  <div id="root"></div>
-  <p class="legend">Bars are coloured by the change from the previous version (green up, red down, grey unchanged or first). Hover a bar for the commit; click it to open the commit on GitHub. Simulated headlessly with OpenRocket 24.12, wind turbulence off, fixed seed. Generated by <code>or_ci.py history --site</code>.</p>
-</main>
+  <span class="sub" id="sub"></span>
+</header>
+<div class="layout">
+  <nav id="nav"></nav>
+  <main>
+    <div class="row" id="metrics"></div>
+    <div class="chartbox"><canvas id="cv"></canvas><div class="empty" id="empty" hidden>Select simulations in the list.</div></div>
+    <div id="latest"></div>
+    <p class="legend">Each line is one simulation across its committed versions; hover a point for the commit, author, message and change from the previous version, click it to open the commit on GitHub. Tick several simulations to compare them (wind cases, engine curves, designs). Views are linkable: the URL updates as you select. Simulated headlessly with OpenRocket 24.12, wind turbulence off, fixed seed. Generated by <code>or_ci.py history --site</code>.</p>
+  </main>
+</div>
 <script id="data" type="application/json">__DATA__</script>
 <script>
 const DATA = JSON.parse(document.getElementById('data').textContent);
 const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
-document.getElementById('sub').textContent =
-  `${DATA.generated} · units: ${DATA.units} · ${Object.keys(DATA.designs).length} design(s)` + (DATA.repo ? ' · ' : '');
-if (DATA.repo) { const a = document.createElement('a'); a.href = DATA.repo; a.textContent = DATA.repo.replace('https://github.com/', ''); document.getElementById('sub').appendChild(a); }
-const root = document.getElementById('root');
-for (const [file, sims] of Object.entries(DATA.designs)) {
-  const h2 = document.createElement('h2'); h2.textContent = file; root.appendChild(h2);
-  for (const [sim, rows] of Object.entries(sims)) {
-    const card = document.createElement('div'); card.className = 'card';
-    const h3 = document.createElement('h3'); h3.textContent = sim; card.appendChild(h3);
-    const bar = document.createElement('div'); bar.className = 'row';
-    let metric = DATA.metrics[0].key, showDelta = false;
-    const btns = DATA.metrics.map(m => { const b = document.createElement('button'); b.textContent = m.label; b.dataset.key = m.key; bar.appendChild(b); return b; });
-    const tog = document.createElement('label'); tog.className = 'toggle';
-    const cb = document.createElement('input'); cb.type = 'checkbox'; tog.appendChild(cb); tog.appendChild(document.createTextNode(' show Δ vs previous'));
-    bar.appendChild(tog); card.appendChild(bar);
-    const wrap = document.createElement('div'); wrap.className = 'chart'; const cv = document.createElement('canvas'); wrap.appendChild(cv); card.appendChild(wrap);
-    const latest = document.createElement('div'); latest.className = 'latest'; card.appendChild(latest);
-    const last = rows.filter(r => r.ok).slice(-1)[0];
-    if (last) latest.innerHTML = DATA.metrics.map(m => `<span>${m.label}: <b>${fmt(last.m[m.key], m.dec)}${m.unit ? ' ' + m.unit : ''}</b></span>`).join('');
-    root.appendChild(card);
-    let chart = null;
-    function draw() {
-      btns.forEach(b => b.classList.toggle('on', b.dataset.key === metric));
-      const spec = DATA.metrics.find(m => m.key === metric);
-      const ok = rows.filter(r => r.ok && r.m[metric] != null);
-      const vals = ok.map(r => r.m[metric]);
-      const deltas = vals.map((v, i) => i ? v - vals[i - 1] : null);
-      const colors = deltas.map(d => d == null || Math.abs(d) < Math.pow(10, -spec.dec) / 2 ? css('--flat') : d > 0 ? css('--up') : css('--down'));
-      const data = showDelta ? deltas.map(d => d ?? 0) : vals;
-      const unit = spec.unit ? ` (${spec.unit})` : '';
-      if (chart) chart.destroy();
-      chart = new Chart(cv, {
-        type: 'bar',
-        data: { labels: ok.map(r => `${r.date} ${r.short}`), datasets: [{ data, backgroundColor: colors, borderRadius: 3 }] },
-        options: {
-          responsive: true, maintainAspectRatio: false, animation: false,
-          onClick: (e, els) => { if (els.length && DATA.repo && ok[els[0].index].sha) window.open(`${DATA.repo}/commit/${ok[els[0].index].sha}`, '_blank'); },
-          plugins: { legend: { display: false }, tooltip: { callbacks: {
-            title: items => { const r = ok[items[0].dataIndex]; return `${r.short} · ${r.date} · ${r.author}`; },
-            label: items => { const i = items.dataIndex; const r = ok[i];
-              const out = [`${spec.label}: ${fmt(vals[i], spec.dec)}${spec.unit ? ' ' + spec.unit : ''}`];
-              if (deltas[i] != null) out.push(`Δ vs previous: ${deltas[i] >= 0 ? '+' : ''}${fmt(deltas[i], spec.dec)}${spec.unit ? ' ' + spec.unit : ''}` + (vals[i-1] ? ` (${(deltas[i] / vals[i-1] * 100).toFixed(1)}%)` : ''));
-              out.push(r.message); return out; } } } },
-          scales: { x: { ticks: { maxRotation: 60, autoSkip: true }, grid: { display: false } },
-                    y: { title: { display: true, text: (showDelta ? 'Δ ' : '') + spec.label + unit }, beginAtZero: showDelta,
-                         grace: showDelta ? '10%' : '5%', min: showDelta ? undefined : niceMin(vals) } }
-        }
-      });
+const PALETTE = ['#0969da','#e16f24','#1a7f37','#8250df','#cf222e','#0598a3','#bf8700','#d1478e','#57606a','#3fb950'];
+const fmt = (v, dec) => (v == null || Number.isNaN(v)) ? '–' : Number(v).toFixed(dec);
+const short = f => f.split('/').pop();
+const sub = document.getElementById('sub');
+sub.textContent = `${DATA.generated} · units: ${DATA.units}` + (DATA.repo ? ' · ' : '');
+if (DATA.repo) { const a = document.createElement('a'); a.href = DATA.repo; a.textContent = DATA.repo.replace('https://github.com/', ''); sub.appendChild(a); }
+
+// ---- state (mirrored in the URL hash) ----
+const ALL = [];  // {id, file, sim, rows}
+for (const [file, sims] of Object.entries(DATA.designs)) for (const [sim, rows] of Object.entries(sims)) ALL.push({ id: `${file}|${sim}`, file, sim, rows });
+const state = { metric: DATA.metrics[0].key, delta: false, sel: new Set() };
+function readHash() {
+  const p = new URLSearchParams(location.hash.slice(1));
+  if (p.get('metric') && DATA.metrics.some(m => m.key === p.get('metric'))) state.metric = p.get('metric');
+  state.delta = p.get('delta') === '1';
+  const s = p.get('sel');
+  if (s) { state.sel = new Set(s.split(',').map(decodeURIComponent).filter(id => ALL.some(a => a.id === id))); }
+  if (!state.sel.size) { const first = ALL[0] && ALL[0].file; ALL.filter(a => a.file === first).forEach(a => state.sel.add(a.id)); }
+}
+function writeHash() {
+  const p = new URLSearchParams();
+  p.set('metric', state.metric); if (state.delta) p.set('delta', '1');
+  p.set('sel', [...state.sel].map(encodeURIComponent).join(','));
+  history.replaceState(null, '', '#' + p.toString());
+}
+const colorOf = new Map();
+function assignColors() { colorOf.clear(); let i = 0; for (const a of ALL) if (state.sel.has(a.id)) colorOf.set(a.id, PALETTE[i++ % PALETTE.length]); }
+
+// ---- sidebar tree ----
+const nav = document.getElementById('nav');
+function buildNav() {
+  nav.innerHTML = '';
+  const tools = document.createElement('div'); tools.className = 'navtools';
+  const bNone = document.createElement('button'); bNone.textContent = 'Clear'; bNone.onclick = () => { state.sel.clear(); update(); };
+  tools.appendChild(bNone); nav.appendChild(tools);
+  for (const [file, sims] of Object.entries(DATA.designs)) {
+    const d = document.createElement('div'); d.className = 'design';
+    const head = document.createElement('div'); head.className = 'head';
+    const caret = document.createElement('span'); caret.className = 'caret'; caret.textContent = '▼';
+    const name = document.createElement('span'); name.className = 'name'; name.textContent = short(file); name.title = file;
+    const mini = document.createElement('span'); mini.className = 'mini'; mini.textContent = `${Object.keys(sims).length}`;
+    const all = document.createElement('button'); all.textContent = 'all'; all.title = 'Select every simulation of this design';
+    all.onclick = e => { e.stopPropagation(); const ids = ALL.filter(a => a.file === file).map(a => a.id); const every = ids.every(id => state.sel.has(id)); ids.forEach(id => every ? state.sel.delete(id) : state.sel.add(id)); update(); };
+    head.append(caret, name, mini, all); head.onclick = () => d.classList.toggle('closed');
+    const list = document.createElement('div'); list.className = 'sims';
+    for (const [sim, rows] of Object.entries(sims)) {
+      const id = `${file}|${sim}`;
+      const row = document.createElement('label'); row.className = 'sim'; row.dataset.id = id;
+      const cb = document.createElement('input'); cb.type = 'checkbox'; cb.checked = state.sel.has(id);
+      cb.onchange = () => { cb.checked ? state.sel.add(id) : state.sel.delete(id); update(); };
+      const sw = document.createElement('span'); sw.className = 'swatch';
+      const lab = document.createElement('span'); lab.className = 'label'; lab.textContent = sim; lab.title = sim;
+      const val = document.createElement('span'); val.className = 'val';
+      row.append(cb, sw, lab, val); list.appendChild(row);
     }
-    function niceMin(v) { if (!v.length) return undefined; const lo = Math.min(...v), hi = Math.max(...v); if (lo <= 0) return undefined; const pad = Math.max((hi - lo) * 0.5, hi * 0.02); return Math.max(0, lo - pad); }
-    btns.forEach(b => b.onclick = () => { metric = b.dataset.key; draw(); });
-    cb.onchange = () => { showDelta = cb.checked; draw(); };
-    draw();
+    d.append(head, list); nav.appendChild(d);
   }
 }
-function fmt(v, dec) { return (v == null || Number.isNaN(v)) ? '–' : Number(v).toFixed(dec); }
+function refreshNav() {
+  const spec = DATA.metrics.find(m => m.key === state.metric);
+  for (const row of nav.querySelectorAll('.sim')) {
+    const a = ALL.find(x => x.id === row.dataset.id);
+    row.querySelector('input').checked = state.sel.has(a.id);
+    row.querySelector('.swatch').style.background = colorOf.get(a.id) || css('--line');
+    const ok = a.rows.filter(r => r.ok && r.m[state.metric] != null);
+    const v = ok.length ? ok[ok.length - 1].m[state.metric] : null, p = ok.length > 1 ? ok[ok.length - 2].m[state.metric] : null;
+    const el = row.querySelector('.val'); el.textContent = fmt(v, spec.dec) + (spec.unit ? ' ' + spec.unit : '');
+    el.className = 'val' + (p == null || v == null || Math.abs(v - p) < Math.pow(10, -spec.dec) / 2 ? '' : v > p ? ' up' : ' down');
+  }
+}
+
+// ---- metric buttons ----
+const mrow = document.getElementById('metrics');
+function buildMetrics() {
+  mrow.innerHTML = '';
+  for (const m of DATA.metrics) { const b = document.createElement('button'); b.textContent = m.label; b.className = m.key === state.metric ? 'on' : ''; b.onclick = () => { state.metric = m.key; update(); }; mrow.appendChild(b); }
+  const sp = document.createElement('span'); sp.className = 'spacer'; mrow.appendChild(sp);
+  const tog = document.createElement('label'); tog.className = 'toggle';
+  const cb = document.createElement('input'); cb.type = 'checkbox'; cb.checked = state.delta; cb.onchange = () => { state.delta = cb.checked; update(); };
+  tog.append(cb, document.createTextNode('show Δ vs previous version')); mrow.appendChild(tog);
+}
+
+// ---- chart ----
+let chart = null;
+const cv = document.getElementById('cv'), empty = document.getElementById('empty');
+function dateLabel(t) { const d = new Date(t); return d.toISOString().slice(0, 10); }
+function draw() {
+  const spec = DATA.metrics.find(m => m.key === state.metric);
+  const unit = spec.unit ? ` (${spec.unit})` : '';
+  const sets = [];
+  for (const a of ALL) {
+    if (!state.sel.has(a.id)) continue;
+    const ok = a.rows.filter(r => r.ok && r.m[state.metric] != null);
+    const pts = ok.map((r, i) => ({ x: r.t * 1000, y: state.delta ? (i ? r.m[state.metric] - ok[i - 1].m[state.metric] : 0) : r.m[state.metric],
+                                    v: r.m[state.metric], d: i ? r.m[state.metric] - ok[i - 1].m[state.metric] : null, r }));
+    const col = colorOf.get(a.id);
+    sets.push({ label: (Object.keys(DATA.designs).length > 1 ? short(a.file) + ' · ' : '') + a.sim, data: pts, borderColor: col, backgroundColor: col,
+                pointRadius: 4, pointHoverRadius: 6, borderWidth: 2, tension: 0, spanGaps: true,
+                pointBackgroundColor: pts.map(p => p.d == null || Math.abs(p.d) < Math.pow(10, -spec.dec) / 2 ? css('--flat') : p.d > 0 ? css('--up') : css('--down')) });
+  }
+  empty.hidden = sets.length > 0;
+  if (chart) chart.destroy();
+  if (!sets.length) { chart = null; return; }
+  chart = new Chart(cv, {
+    type: 'line', data: { datasets: sets },
+    options: {
+      responsive: true, maintainAspectRatio: false, animation: false, parsing: false,
+      interaction: { mode: 'nearest', intersect: true },
+      onClick: (e, els) => { if (els.length && DATA.repo) { const p = sets[els[0].datasetIndex].data[els[0].index]; if (p.r.sha) window.open(`${DATA.repo}/commit/${p.r.sha}`, '_blank'); } },
+      plugins: {
+        legend: { display: sets.length > 1, position: 'top', labels: { boxWidth: 12, usePointStyle: true } },
+        tooltip: { callbacks: {
+          title: items => { const p = items[0].raw; return `${p.r.short} · ${p.r.date} · ${p.r.author}`; },
+          label: item => { const p = item.raw; const out = [`${item.dataset.label}: ${fmt(p.v, spec.dec)}${spec.unit ? ' ' + spec.unit : ''}`];
+            if (p.d != null) { const prev = p.v - p.d; out.push(`Δ vs previous: ${p.d >= 0 ? '+' : ''}${fmt(p.d, spec.dec)}${spec.unit ? ' ' + spec.unit : ''}` + (prev ? ` (${(p.d / prev * 100).toFixed(1)}%)` : '')); }
+            out.push(p.r.message); return out; } } }
+      },
+      scales: {
+        x: { type: 'linear', ticks: { callback: v => dateLabel(v), maxRotation: 45, autoSkip: true, maxTicksLimit: 10 }, grid: { display: false }, title: { display: true, text: 'commit date' } },
+        y: { title: { display: true, text: (state.delta ? 'Δ ' : '') + spec.label + unit }, grace: '8%' }
+      }
+    }
+  });
+}
+
+// ---- latest-values table ----
+function drawTable() {
+  const box = document.getElementById('latest');
+  const rows = ALL.filter(a => state.sel.has(a.id));
+  if (!rows.length) { box.innerHTML = ''; return; }
+  let h = '<table><thead><tr><th>Simulation</th>' + DATA.metrics.map(m => `<th>${m.label}${m.unit ? ' (' + m.unit + ')' : ''}</th>`).join('') + '<th>Latest version</th></tr></thead><tbody>';
+  for (const a of rows) {
+    const ok = a.rows.filter(r => r.ok); const last = ok[ok.length - 1], prev = ok[ok.length - 2];
+    h += `<tr><td><span class="sw" style="background:${colorOf.get(a.id)}"></span>${Object.keys(DATA.designs).length > 1 ? short(a.file) + ' · ' : ''}${a.sim}</td>`;
+    for (const m of DATA.metrics) {
+      const v = last ? last.m[m.key] : null, p = prev ? prev.m[m.key] : null;
+      let d = '';
+      if (v != null && p != null && Math.abs(v - p) >= Math.pow(10, -m.dec) / 2) d = `<span class="d ${v > p ? 'up' : 'down'}">${v > p ? '+' : ''}${fmt(v - p, m.dec)}</span>`;
+      h += `<td>${fmt(v, m.dec)}${d}</td>`;
+    }
+    h += `<td>${last ? (DATA.repo && last.sha ? `<a href="${DATA.repo}/commit/${last.sha}" target="_blank">${last.short}</a>` : last.short) + ' · ' + last.date : '–'}</td></tr>`;
+  }
+  box.innerHTML = h + '</tbody></table>';
+}
+
+function update() { assignColors(); writeHash(); refreshNav(); buildMetrics(); draw(); drawTable(); }
+readHash(); buildNav(); update();
+window.addEventListener('hashchange', () => { readHash(); update(); });
 </script>
 </body>
 </html>
@@ -1183,10 +1306,12 @@ def write_site(series: dict, site_dir: Path, units: str, repo_url: str, files_ve
         out_rows = []
         # map short sha -> full sha via files_versions
         shas = {v["short"]: v["sha"] for v in files_versions.get(file, [])}
+        times = {v["short"]: v["time"] for v in files_versions.get(file, [])}
         for r in rows:
             m = r["metrics"] or {}
             out_rows.append({
-                "short": r["short"], "sha": shas.get(r["short"]) or "", "date": r["date"], "author": r["author"],
+                "short": r["short"], "sha": shas.get(r["short"]) or "", "t": times.get(r["short"], 0),
+                "date": r["date"], "author": r["author"],
                 "message": r["message"], "ok": r["status"] == "OK" and not r["note"],
                 "m": {k: (None if math.isnan(m.get(k, math.nan)) else round(m[k] * f, dec + 2))
                       for k, _, _, dec, f in specs},
