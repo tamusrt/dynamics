@@ -1,13 +1,13 @@
 <engine-database>
 	<engine-list>
-	<engine FDiv="10" FFix="1" FStep="-1." Isp="165.7" Itot="38500" Type="Hybrid" auto-calc-cg="1" auto-calc-mass="1" avgThrust="3850" burn-time="10" cgDiv="10" cgFix="1" cgStep="-1." code="2027_Engine" delays="0" dia="152.400000" exitDia="77.314608" initWt="43.866921" len="2870" mDiv="10" mFix="1" mStep="-1." massFrac="0.373888" mfg="TAMUSRT" peakThrust="3850" propWt="22135.31" tDiv="10" tFix="1" tStep="-1." throatDia="38.303200">
+	<engine FDiv="10" FFix="1" FStep="-1." Isp="180" Itot="36000" Type="Hybrid" auto-calc-cg="1" auto-calc-mass="1" avgThrust="3600" burn-time="10" cgDiv="10" cgFix="1" cgStep="-1." code="2027_RSE" delays="0" dia="152.400000" exitDia="86.9696" initWt="43712.7" len="2870" mDiv="10" mFix="1" mStep="-1." massFrac="0.373888" mfg="TAMUSRT" peakThrust="3600" propWt="22135.31" tDiv="10" tFix="1" tStep="-1." throatDia="38.303200">
 	<comments> 
-		2027_Engine
+		2027_RSE
 	</comments>
 	<data>
 		<eng-data f="0.000000" t="0.000000"/>
-		<eng-data f="3850" t="0.010000"/>
-		<eng-data f="3850" t="9.990000"/>
+		<eng-data f="3600" t="0.010000"/>
+		<eng-data f="3600" t="9.990000"/>
 		<eng-data f="0" t="10.000000"/>
 
 	</data>
