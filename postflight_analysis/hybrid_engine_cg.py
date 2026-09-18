@@ -407,7 +407,6 @@ class Engine:
             + self.plumbing.dry_mass
         )
 
-    # AFTER
     def cg_at(self, t):
         t_arr = np.atleast_1d(np.asarray(t, dtype=float))
 
@@ -442,7 +441,144 @@ class Engine:
         scalar_in = np.isscalar(t) or np.asarray(t).ndim == 0
         return float(cg[0]) if scalar_in else cg               # <-- scalar in, scalar out
 
+@dataclass
+class EngineComponent2:
+    name: str
+    dry_mass: float # lbs
+    offset: float  # lbs
+    length: float #inches
+    prop_mass: float = 0.0   # to hold depletion (plumbing has none)
+    radius: float = None
+    volume: float = None 
+    mass_flow_rate = float = None
+
+    def cg_offset(self) -> float:
+        # assuming uniform density
+        return self.offset + self.length / 2
+
+@dataclass
+class Engine2:
+    tank:      EngineComponent   # oxidizer
+    plumbing:  EngineComponent   # injector, valves, lines
+    grain:     EngineComponent   # fuel grain + casing
+    length: float #inches 
+    offset: float #inches
+    thrusts:   np.ndarray = None
+    times:     np.ndarray = None
+    pressure_tank: np.ndarray = None
+    pressure_grain: np.ndarray = None
+    mass_flow_rate = float = None
+
+
+
+    def set_mass_flow_rate(self, mass_flow_rate: float):
+        self.mass_flow_rate = mass_flow_rate
+
+    def mass(self):
+        if self.mass_flow_rate is not None and self.length is not None:
+            return (self.tank.dry_mass + self.tank.prop_mass) - self.mass_flow_rate * self.times
+
+    def specific_volume(self):
+        if self.pressure_tank is not None and self.mass_at is not None:
+            self.specific_volume = self.tank.volume / self.mass_at
+            return self.specific_volume
+        # If volume is not set, calculate it based on other parameters
+        return self.length * self.radius**2 * math.pi
+
+    def __post_init__(self):
+        self._curve_ready = False
+        if self.thrusts is not None and self.times is not None:
+            self._process_curve()
+
+    def set_curve(self, thrusts, times):
+        self.thrusts = thrusts
+        self.times = times
+        self._process_curve()
+
+    def _process_curve(self):
+        assert len(self.thrusts) == len(self.times)
+        cumulative = np.zeros(len(self.times))
+        cumulative[1:] = np.cumsum(0.5 * (self.thrusts[:-1] + self.thrusts[1:]) * np.diff(self.times))
+        self.total_impulse = cumulative[-1]
+        self._frac_expended = cumulative / self.total_impulse
+        self.burn_time = self.times[-1]
+        self._curve_ready = True
+
+    def _check_ready(self):
+        if not self._curve_ready:
+            raise RuntimeError("Thrust curve not set — call set_curve(thrusts, times) first")
+
+    def _frac_at(self, t):
+        t = np.asarray(t, dtype=float)
+        frac = np.interp(t, self.times, self._frac_expended, left=0.0, right=1.0)
+        return np.where(t >= self.burn_time, 1.0, frac)
+
+    def thrust_at(self, t):
+        self._check_ready()
+        t = np.asarray(t, dtype=float)
+        return np.interp(t, self.times, self.thrusts, left=0.0, right=0.0)
+
+    def mass_at(self, t):
+        self._check_ready()
+        frac = self._frac_at(t)
+        # oxidizer depletes with the thrust curve; grain regression can use
+        # the same frac, or a separate curve if you're tracking O/F ratio
+        tank_mass = self.tank.dry_mass + self.tank.prop_mass * (1 - frac)
+        grain_mass = self.grain.dry_mass + self.grain.prop_mass * (1 - frac)
+        plumbing_mass = self.plumbing.dry_mass
+        return tank_mass + grain_mass + plumbing_mass
+
+    def cg_at(self, t):
+        self._check_ready()
+        frac = self._frac_at(t)
+        tank_mass = self.tank.dry_mass + self.tank.prop_mass * (1 - frac)
+        grain_mass = self.grain.dry_mass + self.grain.prop_mass * (1 - frac)
+        plumbing_mass = self.plumbing.dry_mass
+
+        total = tank_mass + grain_mass + plumbing_mass
+        moment = (tank_mass * self.tank.cg_offset()
+                  + grain_mass * self.grain.cg_offset()
+                  + plumbing_mass * self.plumbing.cg_offset())
+        # cg_offset() is measured aft of the engine's own forward face
+        return self.offset + moment / total
+    
+    @staticmethod
+    def _rod_iyy(m: float, L: float) -> float:
+        return (1.0 / 12.0) * m * L ** 2 if L > 0 else 0.0
+
+    def iyy_at(self, t, rocket_cg: float) -> float:
+        """Engine's contribution to pitch Iyy about rocket_cg, at time t."""
+        self._check_ready()
+        frac = self._frac_at(t)
+        tank_mass = self.tank.dry_mass + self.tank.prop_mass * (1 - frac)
+        grain_mass = self.grain.dry_mass + self.grain.prop_mass * (1 - frac)
+        plumbing_mass = self.plumbing.dry_mass
+
+        total = 0.0
+        for comp, m in ((self.tank, tank_mass),
+                         (self.grain, grain_mass),
+                         (self.plumbing, plumbing_mass)):
+            cg_local = self.offset + comp.cg_offset()
+            d = cg_local - rocket_cg
+            total += self._rod_iyy(m, comp.length) + m * d ** 2
+        return total
+
+
 def main():
+    path1 = Path(r"G:\Shared drives\TAMU-SRT\srt_general\9_flight_data\Morpheus\04232025_lone_star_cup\SPEC_thrust.csv")
+    df = pd.read_csv(path1)
+
+    sol_ignis = Engine2(EngineComponent2(name="ox_tank", dry_mass=8.0, prop_mass=40, offset=10.0, length=24.0),
+                        EngineComponent2(name="plumbing", dry_mass=2.0, offset=10.0, length=2.0),
+                        EngineComponent2(name="fuel_grain", dry_mass=3.0, prop_mass=0.1, offset=36.0, length=12.0), length=38, offset=0.0)
+
+    time = df['Time'].to_numpy()
+    thrust = df['Thrust (N)'].to_numpy()
+    thrust = thrust/4.448
+
+    sol_ignis.set_curve(thrust, time)
+    print(sol_ignis.cg_at(time))
+
     path = Path(r"G:\Shared drives\TAMU-SRT\srt_13\7_ground_support_engineering\5_Testing_Operations\9_Tests\4_Test_Completed\IGNIS SET-5\set-5 full data.csv")
     df = pd.read_csv(path)
 
@@ -457,7 +593,7 @@ def main():
     tank_casing = EngineComponent(name="ox_tank_casing", dry_mass=8.0, offset=10.0, length=24.0, radius=2.0)
     tank = OxidizerTank(
         casing=tank_casing,
-        volume_in3=math.pi * 2.0**2 * 24.0,
+        volume_in3=math.pi * 2.0**2 * 30.0,
         initial_ox_mass_lbm=40.0,
         liquid_temp_F=65.0,  # assumed/measured fill temperature, held fixed for the burn
         times_s=t, pressure_psi=ox_pressure, mdot_lbm_s=ox_mdot,

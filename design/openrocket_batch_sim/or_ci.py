@@ -105,6 +105,12 @@ SECONDARY_METRICS = [
     ("landing_distance", "Landing distance", "m", 0),
     ("min_stability_cal_raw", "Min stability, orlab raw (to apogee)", "cal", 2),
     ("max_stability_cal_raw", "Max stability, orlab raw (to apogee)", "cal", 2),
+    # the same three stability margins as a percentage of overall rocket length
+    ("stability_off_rod_pct", "Stability off rod", "% L", 1),
+    ("min_stability_pct", "Min stability", "% L", 1),
+    ("max_stability_pct", "Max stability", "% L", 1),
+    ("reference_diameter_m", "Reference diameter", "m", 4),
+    ("rocket_length_m", "Rocket length", "m", 3),
 ]
 CHART_TITLES = {
     "apogee": "Apogee",
@@ -114,6 +120,13 @@ CHART_TITLES = {
     "min_stability_cal": "Minimum stability",
     "max_stability_cal": "Maximum stability",
 }
+# stability margin in calibers (CP-CG)/D or as a percentage of rocket length (CP-CG)/L*100;
+# both are stored, "stability_units" in the config picks which one the reports show
+STABILITY_PAIRS = {"stability_off_rod_cal": "stability_off_rod_pct", "min_stability_cal": "min_stability_pct",
+                   "max_stability_cal": "max_stability_pct"}
+STABILITY_UNITS = ("cal", "pct")
+for _cal, _pct in STABILITY_PAIRS.items():
+    CHART_TITLES[_pct] = CHART_TITLES[_cal]
 METRICS = PRIMARY_METRICS + SECONDARY_METRICS
 METRIC_KEYS = [m[0] for m in METRICS]
 PRIMARY_KEYS = [m[0] for m in PRIMARY_METRICS]
@@ -146,8 +159,11 @@ def metric_specs(units: str = "metric"):
     return out
 
 
-def primary_specs(units: str = "metric"):
-    return [s for s in metric_specs(units) if s[0] in PRIMARY_KEYS]
+def primary_specs(units: str = "metric", stability: str = "cal"):
+    """The six tracked metrics, with the stability margins in calibers or % of length."""
+    keys = [STABILITY_PAIRS.get(k, k) if stability == "pct" else k for k in PRIMARY_KEYS]
+    by_key = {s[0]: s for s in metric_specs(units)}
+    return [by_key[k] for k in keys]
 
 
 def spec_for(key: str, units: str = "metric"):
@@ -243,6 +259,9 @@ class Config:
         self.units = str(raw.get("units", "metric")).strip().lower()
         if self.units not in UNIT_SYSTEMS:
             raise SystemExit(f"sim_config.json: units must be one of {UNIT_SYSTEMS}, got {self.units!r}")
+        self.stability_units = str(raw.get("stability_units", "cal")).strip().lower()
+        if self.stability_units not in STABILITY_UNITS:
+            raise SystemExit(f"sim_config.json: stability_units must be one of {STABILITY_UNITS}, got {self.stability_units!r}")
         self.deterministic_wind = bool(raw.get("deterministic_wind", True))
         self.fail_on_limits = bool(raw.get("fail_on_limits", False))
         self.ignore = list(raw.get("ignore", []))
@@ -565,6 +584,16 @@ def _run_one(helper, cfg, snap, root, ork_rel, base_rec, info, fcfg, scfg, sim, 
         summary["min_stability_cal_raw"] = summary.get("min_stability_cal")
         summary["max_stability_cal_raw"] = summary.get("max_stability_cal")
         summary.update(derived_metrics(helper, sim, summary))
+        # stability as % of rocket length: calibers x (reference diameter / overall length) x 100
+        try:
+            fc = sim.getActiveConfiguration()
+            length_m, ref_d = float(fc.getLength()), float(fc.getReferenceLength())
+        except Exception:
+            length_m = ref_d = math.nan
+        summary["rocket_length_m"], summary["reference_diameter_m"] = length_m, ref_d
+        for cal_key, pct_key in STABILITY_PAIRS.items():
+            v = _num(summary.get(cal_key))
+            summary[pct_key] = v * ref_d / length_m * 100.0 if length_m and not math.isnan(v) else math.nan
         rec["metrics"] = {k: _num(summary.get(k)) for k in METRIC_KEYS}
         rec["warnings"] = "; ".join(str(w) for w in (summary.get("warnings") or ()))[:400]
         rec["violations"] = check_limits(rec["metrics"], cfg.limits_for(fcfg, scfg), cfg.units)
@@ -617,12 +646,12 @@ def pair_key(r):
 
 
 def render_report(head_recs, base_recs, base_label, head_label, changed_motor_files, deleted, strict,
-                  deterministic_wind=True, units="metric") -> tuple:
+                  deterministic_wind=True, units="metric", stability="cal") -> tuple:
     """-> (markdown, n_violations, n_unresolved)"""
-    P = primary_specs(units)
+    P = primary_specs(units, stability)
     ALL = metric_specs(units)
     ap_key, _, ap_unit, ap_dec, ap_f = spec_for("apogee", units)
-    _, _, _, st_dec, _ = spec_for("stability_off_rod_cal", units)
+    st_key, _, st_unit, st_dec, _ = next(s for s in P if s[0].startswith("stability_off_rod"))
     lines = [f"## OpenRocket simulation check", ""]
     if base_label:
         lines.append(f"**{base_label}** → **{head_label}**")
@@ -703,7 +732,7 @@ def render_report(head_recs, base_recs, base_label, head_label, changed_motor_fi
             d = f", Δ {fmt_delta(ap_b, ap, ap_dec)}"
         lines.append(f"- **{PurePosixPath(r['file']).name}** · {sim} · {status} · apogee {fmt(ap, ap_dec)} {ap_unit}{d}"
                      + f" · Mach {fmt(m.get('max_mach', math.nan), 2)}"
-                     + f" · rail {fmt(m.get('stability_off_rod_cal', math.nan), st_dec)} cal")
+                     + f" · rail {fmt(m.get(st_key, math.nan), st_dec)} {st_unit}")
     lines.append("")
     heads = [f"{label} ({unit})" if unit else label for _, label, unit, _, _ in P[1:]]
     lines.append(f"| File | Simulation | Motor | Apogee ({ap_unit}) | Δ apogee | " + " | ".join(heads) + " | Status |")
@@ -781,7 +810,7 @@ def cmd_run(args):
     (out / "results.json").write_text(json.dumps(records, indent=2), encoding="utf-8")
     write_csv(records, out / "results.csv")
     report, n_viol, n_unres = render_report(records, None, None, snap.label, [], [], args.strict or cfg.fail_on_limits,
-                                            cfg.deterministic_wind, cfg.units)
+                                            cfg.deterministic_wind, cfg.units, cfg.stability_units)
     (out / "report.md").write_text(report, encoding="utf-8")
     _emit(report, args)
     print(f"\nWrote {out / 'results.csv'}, {out / 'results.json'}, {out / 'report.md'}")
@@ -842,7 +871,8 @@ def cmd_compare(args):
             head_recs.extend(run_ork(helper, cfg, head, root, f, cfg.seed))
     strict = args.strict or cfg.fail_on_limits
     report, n_viol, n_unres = render_report(head_recs, base_recs if base else None, base_label,
-                                            head_sha, motor_changed, deleted, strict, cfg.deterministic_wind, cfg.units)
+                                            head_sha, motor_changed, deleted, strict, cfg.deterministic_wind, cfg.units,
+                                            cfg.stability_units)
     out = Path(args.results)
     out.mkdir(parents=True, exist_ok=True)
     (out / "report.md").write_text(report, encoding="utf-8")
@@ -900,9 +930,9 @@ def _mermaid_label(s: str) -> str:
     return '"' + s.replace('"', "'") + '"'
 
 
-def render_history_md(series: dict, max_points: int, units: str = "metric") -> str:
+def render_history_md(series: dict, max_points: int, units: str = "metric", stability: str = "cal") -> str:
     """series: {(file, sim): [{'label', 'short', 'date', 'author', 'message', 'status', 'metrics', 'note'} ...]}"""
-    P = primary_specs(units)
+    P = primary_specs(units, stability)
     _, _, _, ap_dec, ap_f = spec_for("apogee", units)
     out = ["## Performance history", ""]
     for (file, sim), rows in series.items():
@@ -977,7 +1007,7 @@ def cmd_history(args):
     cache_dir = Path(args.cache).resolve() if args.cache else None
     if cache_dir:
         cache_dir.mkdir(parents=True, exist_ok=True)
-    cache_salt = f"s{cfg.seed}-w{int(cfg.deterministic_wind)}-m2"  # bump the suffix when metrics change
+    cache_salt = f"s{cfg.seed}-w{int(cfg.deterministic_wind)}-m3"  # bump the suffix when metrics change
 
     def salt_for(f):  # the file's config entry (motors, variants) changes the results too
         import hashlib
@@ -1048,13 +1078,13 @@ def cmd_history(args):
         w = csv.DictWriter(fh, fieldnames=fields, extrasaction="ignore")
         w.writeheader()
         w.writerows(csv_rows)
-    md = render_history_md(series, args.max_points, cfg.units)
+    md = render_history_md(series, args.max_points, cfg.units, cfg.stability_units)
     (out / "history.md").write_text(md, encoding="utf-8")
     _emit(md, args)
     print(f"Wrote {out / 'history.md'}, {out / 'history.csv'}")
     if args.site:
         repo_url = args.repo_url or _guess_repo_url(root)
-        write_site(series, Path(args.site), cfg.units, repo_url, files_versions)
+        write_site(series, Path(args.site), cfg.units, repo_url, files_versions, cfg.stability_units)
     return 0
 
 
@@ -1131,6 +1161,7 @@ SITE_HTML = r"""<!doctype html>
   <h1>OpenRocket performance history</h1>
   <span class="sub" id="sub"></span>
   <label class="sub" style="margin-left:auto">units <select id="units"><option value="metric">metric (m, m/s, kPa)</option><option value="imperial">imperial (ft, ft/s, psi)</option></select></label>
+  <label class="sub">stability <select id="stab"><option value="cal">calibers</option><option value="pct">% of body length</option></select></label>
 </header>
 <div class="layout">
   <nav id="nav"></nav>
@@ -1155,9 +1186,13 @@ if (DATA.repo) { const a = document.createElement('a'); a.href = DATA.repo; a.te
 // ---- state (mirrored in the URL hash) ----
 const ALL = [];  // {id, file, sim, rows}
 for (const [file, sims] of Object.entries(DATA.designs)) for (const [sim, rows] of Object.entries(sims)) ALL.push({ id: `${file}|${sim}`, file, sim, rows });
-const state = { metric: DATA.metrics[0].key, delta: false, sel: new Set(), units: DATA.default_units || 'metric' };
+const state = { metric: DATA.metrics[0].key, delta: false, sel: new Set(), units: DATA.default_units || 'metric', stab: DATA.default_stability || 'cal' };
 const unitSel = document.getElementById('units');
 unitSel.onchange = () => { state.units = unitSel.value; update(); };
+const stabSel = document.getElementById('stab');
+stabSel.onchange = () => { state.stab = stabSel.value; const m = DATA.metrics.find(x => x.key === state.metric); if (m && m.stab && m.stab !== state.stab && m.pair) state.metric = m.pair; update(); };
+// the metrics shown for the current stability form (calibers vs % of length)
+function visibleMetrics() { return DATA.metrics.filter(m => !m.stab || m.stab === state.stab); }
 // metric spec in the current unit system: {key, label, unit, dec, factor}
 function specOf(key) { const m = DATA.metrics.find(x => x.key === key); const u = (m.units && m.units[state.units]) || m.units.metric; return { key: m.key, label: m.label, unit: u.unit, dec: u.dec, factor: u.factor }; }
 function val(r, key) { const v = r.m[key]; return v == null ? null : v * specOf(key).factor; }
@@ -1166,13 +1201,15 @@ function readHash() {
   if (p.get('metric') && DATA.metrics.some(m => m.key === p.get('metric'))) state.metric = p.get('metric');
   state.delta = p.get('delta') === '1';
   if (p.get('units') === 'metric' || p.get('units') === 'imperial') state.units = p.get('units');
+  if (p.get('stab') === 'cal' || p.get('stab') === 'pct') state.stab = p.get('stab');
+  { const m = DATA.metrics.find(x => x.key === state.metric); if (m && m.stab && m.stab !== state.stab && m.pair) state.metric = m.pair; }
   const s = p.get('sel');
   if (s) { state.sel = new Set(s.split(',').map(decodeURIComponent).filter(id => ALL.some(a => a.id === id))); }
   if (!state.sel.size) { const first = ALL[0] && ALL[0].file; ALL.filter(a => a.file === first).forEach(a => state.sel.add(a.id)); }
 }
 function writeHash() {
   const p = new URLSearchParams();
-  p.set('metric', state.metric); if (state.delta) p.set('delta', '1'); p.set('units', state.units);
+  p.set('metric', state.metric); if (state.delta) p.set('delta', '1'); p.set('units', state.units); p.set('stab', state.stab);
   p.set('sel', [...state.sel].map(encodeURIComponent).join(','));
   history.replaceState(null, '', '#' + p.toString());
 }
@@ -1226,7 +1263,7 @@ function refreshNav() {
 const mrow = document.getElementById('metrics');
 function buildMetrics() {
   mrow.innerHTML = '';
-  for (const m of DATA.metrics) { const b = document.createElement('button'); b.textContent = m.label; b.className = m.key === state.metric ? 'on' : ''; b.onclick = () => { state.metric = m.key; update(); }; mrow.appendChild(b); }
+  for (const m of visibleMetrics()) { const b = document.createElement('button'); b.textContent = m.label; b.className = m.key === state.metric ? 'on' : ''; b.onclick = () => { state.metric = m.key; update(); }; mrow.appendChild(b); }
   const sp = document.createElement('span'); sp.className = 'spacer'; mrow.appendChild(sp);
   const tog = document.createElement('label'); tog.className = 'toggle';
   const cb = document.createElement('input'); cb.type = 'checkbox'; cb.checked = state.delta; cb.onchange = () => { state.delta = cb.checked; update(); };
@@ -1281,7 +1318,7 @@ function drawTable() {
   const box = document.getElementById('latest');
   const rows = ALL.filter(a => state.sel.has(a.id));
   if (!rows.length) { box.innerHTML = ''; return; }
-  const specs = DATA.metrics.map(m => specOf(m.key));
+  const specs = visibleMetrics().map(m => specOf(m.key));
   let h = '<table><thead><tr><th>Simulation</th>' + specs.map(m => `<th>${m.label}${m.unit ? ' (' + m.unit + ')' : ''}</th>`).join('') + '<th>Latest version</th></tr></thead><tbody>';
   for (const a of rows) {
     const ok = a.rows.filter(r => r.ok); const last = ok[ok.length - 1], prev = ok[ok.length - 2];
@@ -1297,7 +1334,7 @@ function drawTable() {
   box.innerHTML = h + '</tbody></table>';
 }
 
-function update() { unitSel.value = state.units; assignColors(); writeHash(); refreshNav(); buildMetrics(); draw(); drawTable(); }
+function update() { unitSel.value = state.units; stabSel.value = state.stab; assignColors(); writeHash(); refreshNav(); buildMetrics(); draw(); drawTable(); }
 readHash(); buildNav(); update();
 window.addEventListener('hashchange', () => { readHash(); update(); });
 </script>
@@ -1306,10 +1343,12 @@ window.addEventListener('hashchange', () => { readHash(); update(); });
 """
 
 
-def write_site(series: dict, site_dir: Path, units: str, repo_url: str, files_versions: dict):
+def write_site(series: dict, site_dir: Path, units: str, repo_url: str, files_versions: dict, stability: str = "cal"):
     """A self-contained index.html (+ data.json) with interactive charts of every design's history.
-    Values are emitted in SI with both unit systems' specs; the page converts client-side."""
+    Values are emitted in SI with both unit systems' specs, and both stability forms (calibers and
+    % of length); the page converts and switches client-side."""
     import datetime as dt
+    site_keys = PRIMARY_KEYS + list(STABILITY_PAIRS.values())
     designs = {}
     for (file, sim), rows in series.items():
         out_rows = []
@@ -1322,16 +1361,19 @@ def write_site(series: dict, site_dir: Path, units: str, repo_url: str, files_ve
                 "short": r["short"], "sha": shas.get(r["short"]) or "", "t": times.get(r["short"], 0),
                 "date": r["date"], "author": r["author"],
                 "message": r["message"], "ok": r["status"] == "OK" and not r["note"],
-                "m": {k: (None if math.isnan(m.get(k, math.nan)) else round(m[k], 4)) for k in PRIMARY_KEYS},
+                "m": {k: (None if math.isnan(m.get(k, math.nan)) else round(m[k], 4)) for k in site_keys},
             })
         designs.setdefault(file, {})[sim] = out_rows
     payload = {
         "generated": dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
-        "default_units": units, "repo": repo_url,
+        "default_units": units, "default_stability": stability, "repo": repo_url,
         "metrics": [{"key": k, "label": CHART_TITLES.get(k, label),
+                     "stab": ("pct" if k in STABILITY_PAIRS.values() else "cal" if k in STABILITY_PAIRS else None),
+                     "pair": STABILITY_PAIRS.get(k) or next((c for c, p in STABILITY_PAIRS.items() if p == k), None),
                      "units": {"metric": {"unit": mu, "dec": md, "factor": 1.0},
                                "imperial": {"unit": iu, "dec": idec, "factor": f}}}
-                    for (k, label, mu, md, _), (_, _, iu, idec, f) in zip(primary_specs("metric"), primary_specs("imperial"))],
+                    for (k, label, mu, md, _), (_, _, iu, idec, f)
+                    in zip([spec_for(k, "metric") for k in site_keys], [spec_for(k, "imperial") for k in site_keys])],
         "designs": designs,
     }
     site_dir.mkdir(parents=True, exist_ok=True)
