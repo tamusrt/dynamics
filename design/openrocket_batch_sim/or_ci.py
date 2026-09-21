@@ -81,6 +81,9 @@ import xml.etree.ElementTree as ET
 import zipfile
 from pathlib import Path, PurePosixPath
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import ork_diff  # noqa: E402  (structural diff of two .ork files; stdlib only)
+
 DEFAULT_SEED = 20260915
 
 # The six TRACKED metrics: summary table columns, history charts, limits by default.
@@ -711,8 +714,8 @@ def pair_key(r):
 
 
 def render_report(head_recs, base_recs, base_label, head_label, changed_motor_files, deleted, strict,
-                  deterministic_wind=True, units="metric", stability="cal") -> tuple:
-    """-> (markdown, n_violations, n_unresolved)"""
+                  deterministic_wind=True, units="metric", stability="cal", changes=None) -> tuple:
+    """-> (markdown, n_violations, n_unresolved). `changes`: {file: {'record', 'narration'}} from ork_diff."""
     P = primary_specs(units, stability)
     ALL = metric_specs(units)
     ap_key, _, ap_unit, ap_dec, ap_f = spec_for("apogee", units)
@@ -723,6 +726,24 @@ def render_report(head_recs, base_recs, base_label, head_label, changed_motor_fi
     else:
         lines.append(f"**{head_label}** (no base commit to compare against)")
     lines.append("")
+    shown_changes = {f: c for f, c in (changes or {}).items() if not c["record"]["empty"]}
+    if shown_changes:
+        lines.append("### What changed")
+        for f, c in shown_changes.items():
+            lines.append(f"**{PurePosixPath(f).name}** \u00b7 {c['record']['headline']}")
+            if c.get("narration"):
+                lines.append("")
+                lines.append("> " + c["narration"].replace("\n", "\n> "))
+                lines.append("")
+            bullets = c["record"]["lines"][units]
+            lines.extend("- " + b for b in bullets[:8])
+            if len(bullets) > 8:
+                lines.append(f"- \u2026 and {len(bullets) - 8} more (full list below)")
+            lines.append("")
+    for f, c in (changes or {}).items():
+        if c["record"]["empty"]:
+            lines.append(f"**{PurePosixPath(f).name}**: no design changes in the file (only stored results or metadata).")
+            lines.append("")
 
     base_by = {pair_key(r): r for r in (base_recs or [])}
     n_viol = n_unres = 0
@@ -813,6 +834,16 @@ def render_report(head_recs, base_recs, base_label, head_label, changed_motor_fi
         lines.append(f"Deleted: `{d}`")
     lines.append("")
     lines.extend(detail)
+    for f, c in shown_changes.items():
+        rows = c["record"]["rows"][units]
+        lines.append(f"<details><summary>All changed fields \u00b7 <code>{f}</code> ({len(rows)})</summary>")
+        lines.append("")
+        lines.append("| Component | Field | Before | After |")
+        lines.append("|---|---|---|---|")
+        lines.extend(f"| {w} | {what} | {a} | {b} |" for w, what, a, b in rows[:400])
+        lines.append("")
+        lines.append("</details>")
+        lines.append("")
     if n_viol or n_unres:
         lines.append(f"**{n_viol} limit violation(s), {n_unres} unresolved motor(s).**"
                      + (" This check is configured to fail on limits." if strict else
@@ -823,6 +854,87 @@ def render_report(head_recs, base_recs, base_label, head_label, changed_motor_fi
 # ----------------------------------------------------------------------------
 # commands
 # ----------------------------------------------------------------------------
+# ----------------------------------------------------------------------------
+# design changelog: what changed in the .ork, in words (ork_diff), optionally narrated by an AI
+# ----------------------------------------------------------------------------
+def change_record(old_path, new_path) -> dict:
+    """What changed between two versions of a design, pre-rendered in both unit systems."""
+    d = ork_diff.diff_files(old_path, new_path)
+    return {"empty": ork_diff.is_empty(d), "headline": ork_diff.headline(d),
+            "lines": {u: ork_diff.describe(d, u) for u in UNIT_SYSTEMS},
+            "rows": {u: [list(r) for r in ork_diff.rows(d, u)] for u in UNIT_SYSTEMS}}
+
+
+def narration_key(old_blob, new_blob) -> str:
+    return f"{(old_blob or 'new')[:12]}-{(new_blob or 'none')[:12]}"
+
+
+def read_narration(cache_dir, key: str):
+    f = Path(cache_dir) / f"narration-{key}.md" if cache_dir else None
+    return f.read_text(encoding="utf-8").strip() or None if f and f.is_file() else None
+
+
+def clean_narration(text: str) -> str:
+    """Model output -> one tidy paragraph block: no code fences, no headings, bounded length."""
+    lines = [ln for ln in text.strip().splitlines() if not ln.strip().startswith("```")]
+    lines = [ln.lstrip("# ").rstrip() if ln.lstrip().startswith("#") else ln.rstrip() for ln in lines]
+    out = "\n".join(lines).strip()
+    return out[:1500].rsplit(" ", 1)[0] + "\u2026" if len(out) > 1500 else out
+
+
+def performance_lines(before: list, after: list, units: str, stability: str) -> list:
+    """'<sim>: apogee A -> B (delta) ...' for each simulation present in both record lists."""
+    by = {r["sim_name"]: r for r in before if r.get("status") == "OK"}
+    out = []
+    for r in after:
+        b = by.get(r["sim_name"])
+        if r.get("status") != "OK" or b is None:
+            continue
+        parts = []
+        for key, label, unit, dec, f in primary_specs(units, stability):
+            x, y = (b["metrics"] or {}).get(key, math.nan) * f, (r["metrics"] or {}).get(key, math.nan) * f
+            if not (math.isnan(x) or math.isnan(y)):
+                parts.append(f"{label} {fmt(x, dec)} -> {fmt(y, dec)}{(' ' + unit) if unit else ''} ({fmt_delta(x, y, dec)})")
+        out.append(f"{r['sim_name']}: " + "; ".join(parts))
+    return out
+
+
+def narration_prompt(file: str, record: dict, units: str, perf: list, commit_line: str, out_name: str) -> str:
+    rows = record["rows"][units]
+    table = "\n".join(f"- {w} | {what} | {a} -> {b}" for w, what, a, b in rows[:160])
+    if len(rows) > 160:
+        table += f"\n- ... {len(rows) - 160} more field changes not shown"
+    return f"""You are writing one entry of an engineering changelog for a rocket design file, for the team that flies it.
+
+Design file: {file}
+Commit: {commit_line}
+Summary of the structural diff: {record['headline']}
+
+Changes, already grouped per component:
+{chr(10).join('- ' + ln.replace('**', '') for ln in record['lines'][units])}
+
+Every changed field (component path | field | before -> after):
+{table}
+
+Simulated flight performance before -> after this change:
+{chr(10).join('- ' + ln for ln in perf) if perf else '- (not available)'}
+
+Write the entry as 2 to 5 plain sentences, at most 90 words, no heading, no bullet list, no code fence.
+Lead with the most consequential change. Group related edits by subsystem (nose and payload, recovery,
+avionics, airframe, fins, propulsion, simulation settings). A component removed and another of the same kind
+and similar name added in the same place is a replacement or resize, so say that instead of listing both.
+State the effect on performance using only the numbers above. Do not guess at intent, do not invent numbers,
+and do not mention anything that is not in the data above.
+
+Save the entry, and nothing else, to the file {out_name} in the current directory. Do not run any commands.
+"""
+
+
+def write_pending_prompt(pending_dir: Path, key: str, prompt: str):
+    pending_dir.mkdir(parents=True, exist_ok=True)
+    (pending_dir / f"{key}.prompt.md").write_text(prompt, encoding="utf-8")
+
+
 def discover_orks(cfg: Config, root: Path):
     out = []
     for p in sorted(cfg.dir.rglob("*.ork")):
@@ -935,20 +1047,78 @@ def cmd_compare(args):
                 base_recs.extend(run_ork(helper, cfg, base, root, f, cfg.seed, fallback=head))
             head_recs.extend(run_ork(helper, cfg, head, root, f, cfg.seed))
     strict = args.strict or cfg.fail_on_limits
-    report, n_viol, n_unres = render_report(head_recs, base_recs if base else None, base_label,
-                                            head_sha, motor_changed, deleted, strict, cfg.deterministic_wind, cfg.units,
-                                            cfg.stability_units)
     out = Path(args.results)
     out.mkdir(parents=True, exist_ok=True)
+    cache_dir = Path(args.cache).resolve() if getattr(args, "cache", None) else None
+    commit_line = _git(root, "log", "-1", "--format=%h %an: %s", check=False).stdout.strip()
+    changes = {}
+    for f in targets:
+        if base is None or not base.exists(f) or head.path(f) is None:
+            continue
+        old_blob, new_blob = _blob(root, base_sha, f), _hash_file(head.path(f))
+        if old_blob == new_blob:                     # re-simulated for another reason (config or motor change)
+            continue
+        try:
+            record = change_record(base.path(f), head.path(f))
+        except Exception as e:                       # a diff problem must never sink the simulation check
+            print(f"  could not diff {f}: {e}")
+            continue
+        key = narration_key(old_blob, new_blob)
+        changes[f] = {"record": record, "key": key, "narration": read_narration(cache_dir, key)}
+        if not record["empty"] and changes[f]["narration"] is None:
+            perf = performance_lines([r for r in base_recs if r["file"] == f], [r for r in head_recs if r["file"] == f],
+                                     cfg.units, cfg.stability_units)
+            write_pending_prompt(out / "pending", key, narration_prompt(f, record, cfg.units, perf, commit_line, f"{key}.out.md"))
+    render = {"base_label": base_label, "head_label": head_sha, "motor_changed": motor_changed, "deleted": deleted,
+              "strict": strict, "deterministic_wind": cfg.deterministic_wind, "units": cfg.units,
+              "stability": cfg.stability_units}
+    report, n_viol, n_unres = render_report(head_recs, base_recs if base else None, base_label,
+                                            head_sha, motor_changed, deleted, strict, cfg.deterministic_wind, cfg.units,
+                                            cfg.stability_units, changes)
     (out / "report.md").write_text(report, encoding="utf-8")
     (out / "results.json").write_text(json.dumps({"base": base_sha, "head": head_sha, "before": base_recs,
-                                                  "after": head_recs}, indent=2), encoding="utf-8")
+                                                  "after": head_recs, "changes": changes, "render": render},
+                                                 indent=2), encoding="utf-8")
     write_csv(base_recs + head_recs, out / "results.csv")
     _emit(report, args)
     print(f"\nWrote {out / 'report.md'}, {out / 'results.csv'}, {out / 'results.json'}")
     if strict and (n_viol or n_unres):
         print(f"FAIL: {n_viol} limit violation(s), {n_unres} unresolved motor(s)")
         return 2
+    return 0
+
+
+def cmd_narrate(args):
+    """Collect `<key>.out.md` files written by the narrator (Copilot CLI in CI), store them in the cache,
+    and re-render report.md with them. Safe to run when there is nothing to merge."""
+    out = Path(args.results)
+    cache_dir = Path(args.cache).resolve() if args.cache else None
+    if cache_dir:
+        cache_dir.mkdir(parents=True, exist_ok=True)
+    fresh = {}
+    for d in [out / "pending"] + [Path(x) for x in (args.pending or [])]:
+        for f in sorted(d.glob("*.out.md")) if d.is_dir() else []:
+            text = clean_narration(f.read_text(encoding="utf-8", errors="replace"))
+            if text:
+                fresh[f.name[:-len(".out.md")]] = text
+                if cache_dir:
+                    (cache_dir / f"narration-{f.name[:-len('.out.md')]}.md").write_text(text + "\n", encoding="utf-8")
+    print(f"narrate: {len(fresh)} new narration(s)")
+    res_file = out / "results.json"
+    if not res_file.is_file():
+        return 0
+    data = json.loads(res_file.read_text(encoding="utf-8"))
+    if "render" not in data:
+        return 0
+    for c in data.get("changes", {}).values():
+        c["narration"] = fresh.get(c["key"]) or c.get("narration") or read_narration(cache_dir, c["key"])
+    r = data["render"]
+    report, _, _ = render_report(data["after"], data["before"] if r["base_label"] else None, r["base_label"], r["head_label"],
+                                 r["motor_changed"], r["deleted"], r["strict"], r["deterministic_wind"], r["units"],
+                                 r["stability"], data.get("changes"))
+    (out / "report.md").write_text(report, encoding="utf-8")
+    res_file.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    _emit(report, args)
     return 0
 
 
@@ -1146,6 +1316,47 @@ def cmd_history(args):
                                  "motor_source": rec.get("motor_source", ""), **(rec.get("metrics") or {})})
     out = Path(args.results)
     out.mkdir(parents=True, exist_ok=True)
+
+    # design changelog: one entry per version whose file content differs from the version before it
+    changelog, backlog = {}, 0
+    pending_dir = Path(args.pending[0]) if args.pending else out / "pending"
+    for f, versions in files_versions.items():
+        entries = []
+        for prev, v in zip(versions, versions[1:]):
+            if not prev["blob"] or not v["blob"] or prev["blob"] == v["blob"]:
+                continue
+            key = narration_key(prev["blob"], v["blob"])
+            cached_diff = cache_dir / f"diff-{key}.json" if cache_dir else None
+            try:
+                if cached_diff and cached_diff.is_file():
+                    record = json.loads(cached_diff.read_text(encoding="utf-8"))
+                else:
+                    snaps = [head if x["sha"] is None else Snapshot(root, x["sha"]) for x in (prev, v)]
+                    record = change_record(snaps[0].path(prev["path"]), snaps[1].path(v["path"]))
+                    if cached_diff:
+                        cached_diff.write_text(json.dumps(record), encoding="utf-8")
+            except Exception as e:
+                print(f"  could not diff {f} {prev['short']}..{v['short']}: {e}")
+                continue
+            narration = read_narration(cache_dir, key)
+            date = dt.datetime.fromtimestamp(v["time"]).strftime("%Y-%m-%d")
+            entries.append({"short": v["short"], "sha": v["sha"] or "", "date": date, "author": v["author"],
+                            "message": v["message"], "prev": prev["short"], "key": key, "narration": narration,
+                            "headline": record["headline"], "empty": record["empty"], "lines": record["lines"],
+                            "rows": {u: record["rows"][u][:300] for u in UNIT_SYSTEMS}})
+            if narration is None and not record["empty"]:
+                entries[-1]["_prompt"] = (prev, v, record)
+        # prompts for the newest few un-narrated entries only, so a backfill never floods the narrator
+        for e in reversed(entries):
+            pv = e.pop("_prompt", None)
+            if pv and backlog < args.narrate_backlog:
+                prev, v, record = pv
+                perf = performance_lines(results.get((f, prev["blob"]), []), results.get((f, v["blob"]), []),
+                                         cfg.units, cfg.stability_units)
+                write_pending_prompt(pending_dir, e["key"], narration_prompt(
+                    f, record, cfg.units, perf, f"{v['short']} {v['author']}: {v['message']}", f"{e['key']}.out.md"))
+                backlog += 1
+        changelog[f] = list(reversed(entries))
     fields = ["file", "path_at_commit", "sim_name", "commit", "short", "date", "author", "message", "status",
               "motor", "motor_source"] + METRIC_KEYS
     with open(out / "history.csv", "w", newline="", encoding="utf-8") as fh:
@@ -1158,7 +1369,7 @@ def cmd_history(args):
     print(f"Wrote {out / 'history.md'}, {out / 'history.csv'}")
     if args.site:
         repo_url = args.repo_url or _guess_repo_url(root)
-        write_site(series, Path(args.site), cfg.units, repo_url, files_versions, cfg.stability_units)
+        write_site(series, Path(args.site), cfg.units, repo_url, files_versions, cfg.stability_units, changelog)
     return 0
 
 
@@ -1217,6 +1428,16 @@ SITE_HTML = r"""<!doctype html>
   .row { display:flex; flex-wrap:wrap; gap:6px; align-items:center; margin-bottom:10px; }
   .row .spacer { flex:1; }
   .toggle { color:var(--muted); display:flex; align-items:center; gap:5px; }
+  .clfile { font-size:15px; margin:22px 0 6px; border-bottom:1px solid var(--line); padding-bottom:4px; }
+  .entry { background:var(--card); border:1px solid var(--line); border-radius:8px; padding:10px 14px; margin:10px 0; }
+  .entry .ehead { color:var(--muted); font-size:12.5px; } .entry .ehl { font-weight:600; margin:4px 0; }
+  .entry ul { margin:6px 0 6px 18px; padding:0; } .entry li { margin:2px 0; }
+  .entry blockquote { margin:8px 0; padding:6px 12px; border-left:3px solid var(--accent); background:var(--bg); border-radius:0 6px 6px 0; }
+  .entry details { margin-top:6px; } .entry summary { cursor:pointer; color:var(--muted); font-size:12.5px; }
+  .entry table { margin-top:6px; font-size:12px; } .entry td, .entry th { text-align:left; white-space:normal; }
+  .chips { display:flex; flex-wrap:wrap; gap:6px; margin-top:4px; }
+  .chip { font-size:12px; border:1px solid var(--line); border-radius:12px; padding:2px 9px; background:var(--bg); }
+  .chip .up { color:var(--up); } .chip .down { color:var(--down); }
   .tabs { display:flex; gap:4px; }
   .tabs button { font-size:13px; padding:4px 12px; }
   .row select { max-width:260px; }
@@ -1238,7 +1459,7 @@ SITE_HTML = r"""<!doctype html>
 <body>
 <header>
   <h1>OpenRocket performance</h1>
-  <div class="tabs"><button id="tab-history">History</button><button id="tab-flight">Flight plots</button></div>
+  <div class="tabs"><button id="tab-history">History</button><button id="tab-flight">Flight plots</button><button id="tab-changelog">Changelog</button></div>
   <span class="sub" id="sub"></span>
   <label class="sub" style="margin-left:auto">units <select id="units"><option value="metric">metric (m, m/s, kPa)</option><option value="imperial">imperial (ft, ft/s, psi)</option></select></label>
   <label class="sub">stability <select id="stab"><option value="cal">calibers</option><option value="pct">% of body length</option></select></label>
@@ -1252,6 +1473,10 @@ SITE_HTML = r"""<!doctype html>
     <div class="chartbox tall"><canvas id="fcv"></canvas><div class="empty" id="fempty" hidden>Select simulations in the list.</div></div>
     <p class="legend" id="finfo"></p>
     <p class="legend">Any flight variable against any other, from the latest committed version of each ticked simulation: full resolution through apogee, thinned under parachute. Triangles mark launch-rod exit, burnout, apogee and deployment. A second Y variable gets its own right-hand axis when its unit differs. <b>Previous version</b> overlays the commit before as a faint dashed line. Simulated headlessly with OpenRocket 24.12, wind turbulence off, fixed seed; to change conditions, change the simulation in the <code>.ork</code> and push.</p>
+   </section>
+   <section id="view-changelog" hidden>
+    <div id="clog"></div>
+    <p class="legend">What changed in each design file, commit by commit, newest first, for the designs ticked on the left (all designs when none are). The bullet list and the field table are an exact structural diff of the <code>.ork</code> (components are matched by OpenRocket's internal ids, so renames and moves are recognised). A quoted paragraph, when present, is a summary written by GitHub Copilot from that same diff; the diff is the record. The coloured chips show how each ticked simulation moved at that commit.</p>
    </section>
    <section id="view-history">
     <div class="row" id="metrics"></div>
@@ -1294,7 +1519,7 @@ function readHash() {
   state.view = VIEWS.some(v => v[0] === p.get('view')) ? p.get('view') : (p.get('delta') === '1' ? 'dline' : 'abs');
   if (p.get('units') === 'metric' || p.get('units') === 'imperial') state.units = p.get('units');
   if (p.get('stab') === 'cal' || p.get('stab') === 'pct') state.stab = p.get('stab');
-  state.tab = p.get('tab') === 'flight' ? 'flight' : 'history';
+  state.tab = ['flight', 'changelog'].includes(p.get('tab')) ? p.get('tab') : 'history';
   if (FVARS[p.get('fx')]) state.fx = p.get('fx');
   if (FVARS[p.get('fy')]) state.fy = p.get('fy');
   state.fy2 = FVARS[p.get('fy2')] ? p.get('fy2') : '';
@@ -1590,15 +1815,60 @@ function drawFlight() {
       scales } });
 }
 
-const tabH = document.getElementById('tab-history'), tabF = document.getElementById('tab-flight');
-tabH.onclick = () => { state.tab = 'history'; update(); };
-tabF.onclick = () => { state.tab = 'flight'; update(); };
+// ---- changelog: what changed in each design file, commit by commit ----
+const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+const bold = s => esc(s).replace(/\*\*(.+?)\*\*/g, '<b>$1</b>');
+function changeChips(file, entry) {   // performance change of each ticked simulation at this commit
+  const chips = [];
+  for (const a of ALL) {
+    if (a.file !== file || !state.sel.has(a.id)) continue;
+    const ok = a.rows.filter(r => r.ok), i = ok.findIndex(r => r.short === entry.short);
+    if (i < 1) continue;
+    const parts = [];
+    for (const key of ['apogee', state.stab === 'pct' ? 'stability_off_rod_pct' : 'stability_off_rod_cal']) {
+      const sp = specOf(key), v = val(ok[i], key), p = val(ok[i - 1], key); if (v == null || p == null) continue;
+      const d = v - p, flat = Math.abs(d) < Math.pow(10, -sp.dec) / 2;
+      parts.push(`<span class="${flat ? '' : d > 0 ? 'up' : 'down'}">${sp.label} ${flat ? 'unchanged' : (d > 0 ? '+' : '') + fmt(d, sp.dec) + (sp.unit ? ' ' + sp.unit : '')}</span>`);
+    }
+    if (parts.length) chips.push(`<span class="chip"><b>${esc(a.sim)}</b> ${parts.join(' · ')}</span>`);
+  }
+  return chips.join('');
+}
+function drawChangelog() {
+  const box = document.getElementById('clog'), log = DATA.changelog || {};
+  const ticked = new Set(ALL.filter(a => state.sel.has(a.id)).map(a => a.file));
+  const files = Object.keys(log).filter(f => !ticked.size || ticked.has(f));
+  let h = '';
+  for (const f of files) {
+    h += `<h2 class="clfile">${esc(f)}</h2>`;
+    if (!log[f].length) { h += '<p class="legend">Only one version so far.</p>'; continue; }
+    for (const e of log[f]) {
+      const link = DATA.repo && e.sha ? `<a href="${DATA.repo}/commit/${e.sha}" target="_blank">${esc(e.short)}</a>` : esc(e.short);
+      const rows = (e.rows[state.units] || []);
+      h += `<div class="entry"><div class="ehead">${esc(e.date)} · ${link} · ${esc(e.author)} · <i>${esc(e.message)}</i></div>`
+        + `<div class="ehl">${esc(e.headline)}</div>`
+        + (e.narration ? `<blockquote title="Written by GitHub Copilot from the structured diff below">${esc(e.narration)}</blockquote>` : '')
+        + (e.empty ? '' : '<ul>' + (e.lines[state.units] || []).map(l => `<li>${bold(l)}</li>`).join('') + '</ul>')
+        + `<div class="chips">${changeChips(f, e)}</div>`
+        + (rows.length ? `<details><summary>All changed fields (${rows.length})</summary><table><thead><tr><th>Component</th><th>Field</th><th>Before</th><th>After</th></tr></thead><tbody>`
+            + rows.map(r => `<tr><td>${esc(r[0])}</td><td>${esc(r[1])}</td><td>${esc(r[2])}</td><td>${esc(r[3])}</td></tr>`).join('') + '</tbody></table></details>' : '')
+        + '</div>';
+    }
+  }
+  box.innerHTML = h || '<p class="legend">No changelog yet: it starts with the second committed version of a design.</p>';
+}
+
+const TABS = { history: 'tab-history', flight: 'tab-flight', changelog: 'tab-changelog' };
+for (const [name, id] of Object.entries(TABS)) document.getElementById(id).onclick = () => { state.tab = name; update(); };
 function update() {
   unitSel.value = state.units; stabSel.value = state.stab; assignColors(); writeHash(); refreshNav();
-  const flight = state.tab === 'flight';
-  tabH.className = flight ? '' : 'on'; tabF.className = flight ? 'on' : '';
-  document.getElementById('view-history').hidden = flight; document.getElementById('view-flight').hidden = !flight;
-  if (flight) { buildFlightControls(); drawFlight(); } else { buildMetrics(); draw(); drawTable(); }
+  for (const [name, id] of Object.entries(TABS)) {
+    document.getElementById(id).className = state.tab === name ? 'on' : '';
+    document.getElementById('view-' + name).hidden = state.tab !== name;
+  }
+  if (state.tab === 'flight') { buildFlightControls(); drawFlight(); }
+  else if (state.tab === 'changelog') drawChangelog();
+  else { buildMetrics(); draw(); drawTable(); }
 }
 readHash(); buildNav(); update();
 window.addEventListener('hashchange', () => { readHash(); update(); });
@@ -1608,7 +1878,8 @@ window.addEventListener('hashchange', () => { readHash(); update(); });
 """
 
 
-def write_site(series: dict, site_dir: Path, units: str, repo_url: str, files_versions: dict, stability: str = "cal"):
+def write_site(series: dict, site_dir: Path, units: str, repo_url: str, files_versions: dict, stability: str = "cal",
+               changelog: dict = None):
     """A self-contained index.html (+ data.json) with interactive charts of every design's history.
     Values are emitted in SI with both unit systems' specs, and both stability forms (calibers and
     % of length); the page converts and switches client-side."""
@@ -1660,6 +1931,7 @@ def write_site(series: dict, site_dir: Path, units: str, repo_url: str, files_ve
         "designs": designs,
         "flights": flights,            # simulation id -> data script with the full flight time series
         "flight_vars": flight_vars,    # variable key -> {label, SI unit}
+        "changelog": changelog or {},  # design file -> [entry, ...] newest first (ork_diff + optional narration)
     }
     site_dir.mkdir(parents=True, exist_ok=True)
     data = json.dumps(payload).replace("</", "<\\/")
@@ -1690,6 +1962,7 @@ def main():
     c = sub.add_parser("compare", parents=[common], help="Simulate before/after a base commit")
     c.add_argument("--base", default="", help="Base commit/ref (default: HEAD~1; all-zero SHAs fall back too)")
     c.add_argument("--all", action="store_true", help="Compare every file, not just the changed ones")
+    c.add_argument("--cache", default=None, help="Cache folder holding AI narrations of design changes (narration-<key>.md)")
     c.set_defaults(fn=cmd_compare)
     h = sub.add_parser("history", parents=[common], help="Simulate every committed version; Mermaid bar charts")
     h.add_argument("--cache", default=None, help="Folder caching per-version results by git blob id (skips re-simulation)")
@@ -1697,7 +1970,15 @@ def main():
     h.add_argument("--max-points", type=int, default=30, help="Versions per chart (the most recent ones)")
     h.add_argument("--site", default=None, help="Also write a static site (index.html + data.json) to this folder, for GitHub Pages")
     h.add_argument("--repo-url", default=None, help="GitHub repo URL for commit links in the site (default: from git remote origin)")
+    h.add_argument("--pending", action="append", default=None,
+                   help="Folder to write narration prompts into (default <results>/pending)")
+    h.add_argument("--narrate-backlog", type=int, default=3,
+                   help="At most this many un-narrated changelog entries get a prompt per run (newest first)")
     h.set_defaults(fn=cmd_history)
+    n = sub.add_parser("narrate", parents=[common], help="Merge AI-written change summaries (<key>.out.md) into the report")
+    n.add_argument("--cache", default=None, help="Cache folder to store narrations in")
+    n.add_argument("--pending", action="append", default=None, help="Extra folder(s) to scan for <key>.out.md")
+    n.set_defaults(fn=cmd_narrate)
     args = p.parse_args()
     sys.exit(args.fn(args))
 

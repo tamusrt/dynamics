@@ -69,7 +69,16 @@ jobs:
       - name: Fetch OpenRocket 24.12 (verified download, cached across runs)
         run: python -m orlab fetch 24.12
 
-      - name: Simulate before/after
+      # Per-version simulation results, design diffs and AI narrations, keyed by git blob id.
+      - name: Restore the history cache
+        uses: actions/cache@v4
+        with:
+          path: .or_ci_cache
+          key: openrocket-history-${{ github.sha }}
+          restore-keys: |
+            openrocket-history-
+
+      - name: Simulate before/after and diff the designs
         id: sim
         env:
           BASE: ${{ github.event.before || inputs.base }}
@@ -79,17 +88,8 @@ jobs:
             --config aero_modeling/sim_config.json \
             --base "$BASE" $ALL \
             --results or_ci_results \
-            --summary "$GITHUB_STEP_SUMMARY" \
+            --cache .or_ci_cache \
             --quiet
-
-      - name: Restore the per-version history cache
-        if: always()
-        uses: actions/cache@v4
-        with:
-          path: .or_ci_cache
-          key: openrocket-history-${{ github.sha }}
-          restore-keys: |
-            openrocket-history-
 
       - name: Performance history (Mermaid charts) for the changed designs
         if: always() && hashFiles('or_ci_results/targets.txt') != ''
@@ -100,9 +100,54 @@ jobs:
               --config aero_modeling/sim_config.json \
               --cache .or_ci_cache \
               --results or_ci_results/history \
-              --summary "$GITHUB_STEP_SUMMARY" \
+              --pending or_ci_results/pending \
               --quiet $targets
           fi
+
+      # ---- optional: GitHub Copilot writes a short plain-English summary of each design change ----
+      # Enabled by adding a repository secret COPILOT_GITHUB_TOKEN: a fine-grained personal access
+      # token with the "Copilot Requests" permission, from an account with a Copilot subscription.
+      # Without the secret these steps are skipped and the report carries the exact diff only.
+      - name: Is the Copilot narrator configured?
+        id: copilot
+        if: always()
+        env:
+          TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
+        run: echo "enabled=$([ -n "$TOKEN" ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+
+      - name: Node (for Copilot CLI)
+        if: always() && steps.copilot.outputs.enabled == 'true' && hashFiles('or_ci_results/pending/*.prompt.md') != ''
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Copilot narrates the design changes
+        if: always() && steps.copilot.outputs.enabled == 'true' && hashFiles('or_ci_results/pending/*.prompt.md') != ''
+        continue-on-error: true          # a narration problem must never fail the simulation check
+        env:
+          COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
+        run: |
+          npm install -g @github/copilot
+          repo="$PWD"
+          work="$(mktemp -d)"            # empty folder: the agent may only write files, and only here
+          for p in "$repo"/or_ci_results/pending/*.prompt.md; do
+            key="$(basename "$p" .prompt.md)"
+            prompt="$(cat "$p")"
+            ( cd "$work" && timeout 240 copilot -p "$prompt" --allow-tool=write --no-ask-user ) \
+              || echo "::warning::Copilot narration failed for $key"
+            if [ -s "$work/$key.out.md" ]; then cp "$work/$key.out.md" "$repo/or_ci_results/pending/"; fi
+          done
+
+      - name: Assemble the report (merges any narrations)
+        if: always() && hashFiles('or_ci_results/results.json') != ''
+        run: |
+          python design/openrocket_batch_sim/or_ci.py narrate \
+            --config aero_modeling/sim_config.json \
+            --results or_ci_results \
+            --cache .or_ci_cache \
+            --summary "$GITHUB_STEP_SUMMARY" \
+            --quiet
+          if [ -f or_ci_results/history/history.md ]; then cat or_ci_results/history/history.md >> "$GITHUB_STEP_SUMMARY"; fi
 
       - name: Build the history site for every design (main only)
         if: always() && github.ref == 'refs/heads/main'
@@ -111,6 +156,7 @@ jobs:
             --config aero_modeling/sim_config.json \
             --cache .or_ci_cache \
             --results or_ci_results/site_history \
+            --narrate-backlog 0 \
             --site site \
             --repo-url "${{ github.server_url }}/${{ github.repository }}" \
             --quiet
