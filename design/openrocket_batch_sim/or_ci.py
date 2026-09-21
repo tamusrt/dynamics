@@ -1398,12 +1398,16 @@ SITE_HTML = r"""<!doctype html>
   @media (prefers-color-scheme: dark) { :root { --bg:#0d1117; --fg:#e6edf3; --muted:#9198a1; --card:#161b22; --line:#30363d;
           --up:#3fb950; --down:#f85149; --flat:#6e7681; --accent:#58a6ff; --hover:#21262d; } }
   * { box-sizing:border-box; }
-  body { margin:0; background:var(--bg); color:var(--fg); font:14px/1.45 -apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif; }
-  header { padding:12px 16px; border-bottom:1px solid var(--line); display:flex; flex-wrap:wrap; gap:6px 16px; align-items:baseline; }
+  html, body { height:100%; }
+  body { margin:0; display:flex; flex-direction:column; overflow:hidden; background:var(--bg); color:var(--fg); font:14px/1.45 -apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif; }
+  header { flex:none; padding:12px 16px; border-bottom:1px solid var(--line); display:flex; flex-wrap:wrap; gap:6px 16px; align-items:baseline; }
   header h1 { font-size:18px; margin:0; } header .sub { color:var(--muted); font-size:13px; }
-  .layout { display:grid; grid-template-columns:300px 1fr; min-height:calc(100vh - 50px); }
+  .layout { flex:1; min-height:0; display:grid; grid-template-columns:300px 1fr; }
   nav { border-right:1px solid var(--line); background:var(--card); padding:10px 8px; overflow:auto; }
-  main { padding:14px 16px 32px; min-width:0; }
+  main { padding:14px 16px 24px; min-width:0; min-height:0; overflow:auto; display:flex; flex-direction:column; }
+  main > section { display:flex; flex-direction:column; flex:1; min-height:0; }
+  main > section[hidden] { display:none; }
+  main > section > * { flex:none; }
   .design { margin-bottom:6px; }
   .design > .head { display:flex; align-items:center; gap:6px; padding:5px 6px; border-radius:6px; cursor:pointer; font-weight:600; }
   .design > .head:hover { background:var(--hover); }
@@ -1442,8 +1446,8 @@ SITE_HTML = r"""<!doctype html>
   .tabs button { font-size:13px; padding:4px 12px; }
   .row select { max-width:260px; }
   .row .lbl { color:var(--muted); font-size:12px; margin-left:6px; }
-  .chartbox.tall { height:520px; }
-  .chartbox { position:relative; height:440px; background:var(--card); border:1px solid var(--line); border-radius:8px; padding:10px; }
+  .chartbox.tall { min-height:380px; }
+  .chartbox { flex:1 1 auto; min-height:320px; position:relative; background:var(--card); border:1px solid var(--line); border-radius:8px; padding:10px; }
   .empty { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; color:var(--muted); pointer-events:none; }
   .empty[hidden] { display:none; }   /* an author display rule would otherwise beat the hidden attribute */
   table { border-collapse:collapse; width:100%; margin-top:14px; font-size:13px; }
@@ -1454,7 +1458,7 @@ SITE_HTML = r"""<!doctype html>
   td .d { color:var(--muted); font-size:11px; margin-left:4px; } td .d.up { color:var(--up); } td .d.down { color:var(--down); }
   .legend { color:var(--muted); font-size:12px; margin-top:14px; }
   a { color:var(--accent); }
-  @media (max-width: 760px) { .layout { grid-template-columns:1fr; } nav { border-right:0; border-bottom:1px solid var(--line); max-height:45vh; } .chartbox { height:340px; } }
+  @media (max-width: 760px) { body { overflow:auto; } .layout { grid-template-columns:1fr; } nav { border-right:0; border-bottom:1px solid var(--line); max-height:45vh; } .chartbox, .chartbox.tall { min-height:340px; } }
 </style>
 </head>
 <body>
@@ -1864,6 +1868,8 @@ function update() {
   if (state.tab === 'flight') { buildFlightControls(); drawFlight(); }
   else if (state.tab === 'changelog') drawChangelog();
   else { buildMetrics(); draw(); drawTable(); }
+  const shown = state.tab === 'flight' ? fplot : state.tab === 'history' ? hplot : null;
+  if (shown && shown.data && Plotly.Plots) requestAnimationFrame(() => Plotly.Plots.resize(shown));
 }
 readHash(); buildNav(); update();
 window.addEventListener('hashchange', () => { readHash(); update(); });
