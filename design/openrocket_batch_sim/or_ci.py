@@ -1445,7 +1445,8 @@ SITE_HTML = r"""<!doctype html>
   .row .lbl { color:var(--muted); font-size:12px; margin-left:6px; }
   .chartbox.tall { height:520px; }
   .chartbox { position:relative; height:440px; background:var(--card); border:1px solid var(--line); border-radius:8px; padding:10px; }
-  .empty { display:flex; align-items:center; justify-content:center; height:100%; color:var(--muted); }
+  .empty { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; color:var(--muted); pointer-events:none; }
+  .empty[hidden] { display:none; }   /* an author display rule would otherwise beat the hidden attribute */
   table { border-collapse:collapse; width:100%; margin-top:14px; font-size:13px; }
   th, td { text-align:right; padding:5px 8px; border-bottom:1px solid var(--line); white-space:nowrap; font-variant-numeric:tabular-nums; }
   th:first-child, td:first-child { text-align:left; }
