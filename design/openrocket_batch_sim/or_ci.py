@@ -477,6 +477,68 @@ def derived_metrics(helper, sim, summary: dict) -> dict:
     return out
 
 
+# Flight variables that are constant or bookkeeping; left out of the website's flight plots.
+_SERIES_SKIP = {"computation_time", "time_step", "reference_area", "reference_length"}
+SERIES_DESCENT_STRIDE = 10   # ascent keeps every sample; after apogee every Nth (plus event samples)
+
+
+def capture_flight_series(helper, sim, length_m: float, ref_d: float) -> dict:
+    """Every OpenRocket flight variable of the run just made, for the website's flight plots.
+    Full resolution from launch to apogee; thinned under parachute, where nothing changes fast.
+    -> {'vars': {key: {'label', 'unit'}}, 'cols': {key: [floats|None]}, 'events': {NAME: [t, ...]}}"""
+    import numpy as np
+    from orlab import FlightDataType as F
+    cols, meta = {}, {}
+    for t in F:
+        key = t.name[5:].lower() if t.name.startswith("TYPE_") else t.name.lower()
+        if key in _SERIES_SKIP:
+            continue
+        try:
+            jt = helper.translate_flight_data_type(t)
+            a = np.asarray(helper.get_timeseries(sim, [t])[t], dtype=float)
+        except Exception:
+            continue
+        if a.size == 0 or np.isnan(a).all():
+            continue
+        try:
+            unit = str(jt.getUnitGroup().getSIUnit().getUnit()).replace("\u200b", "").strip()
+        except Exception:
+            unit = ""
+        cols[key] = a
+        meta[key] = {"label": str(jt.getName()), "unit": unit}
+    if "time" not in cols:
+        return {}
+    if all(k in cols for k in ("air_pressure", "air_temperature", "velocity_total")):
+        with np.errstate(invalid="ignore", divide="ignore"):
+            cols["dynamic_pressure"] = 0.5 * (cols["air_pressure"] / (R_AIR * cols["air_temperature"])) * cols["velocity_total"] ** 2
+        meta["dynamic_pressure"] = {"label": "Dynamic pressure", "unit": "Pa"}
+    if "stability" in cols:
+        meta["stability"] = {"label": "Stability margin", "unit": "cal"}
+        if length_m and ref_d and not (math.isnan(length_m) or math.isnan(ref_d)):
+            cols["stability_pct_length"] = cols["stability"] * ref_d / length_m * 100.0
+            meta["stability_pct_length"] = {"label": "Stability margin, % of length", "unit": "% L"}
+    events = {}
+    try:
+        for ev, times in helper.get_events(sim).items():
+            events[getattr(ev, "name", str(ev))] = [round(float(x), 4) for x in times]
+    except Exception:
+        pass
+    t = cols["time"]
+    t_apogee = events.get("APOGEE", [float(t[-1])])[0]
+    keep = set(np.where(t <= t_apogee)[0].tolist())
+    keep.update(np.where(t > t_apogee)[0][::SERIES_DESCENT_STRIDE].tolist())
+    for times in events.values():                      # never drop the sample an event sits on
+        for te in times:
+            keep.add(int(np.argmin(np.abs(t - te))))
+    keep.add(len(t) - 1)
+    idx = np.array(sorted(keep))
+
+    def clean(a):
+        return [None if (x != x or x in (float("inf"), float("-inf"))) else float(f"{x:.6g}") for x in a[idx].tolist()]
+
+    return {"vars": meta, "cols": {k: clean(v) for k, v in cols.items()}, "events": events}
+
+
 def check_limits(metrics: dict, limits: dict, units: str = "metric"):
     """Limits are written in the config's display units; metrics are SI."""
     out = []
@@ -495,7 +557,7 @@ def check_limits(metrics: dict, limits: dict, units: str = "metric"):
 
 
 def run_ork(helper, cfg: Config, snap: Snapshot, root: Path, ork_rel: str, seed: int, log=print, fallback=None,
-            cfg_key: str = None):
+            cfg_key: str = None, capture_series: bool = False):
     """Run every simulation in one .ork (as found in `snap`). Returns a list of record dicts.
     `fallback` is a Snapshot to take motor files from when `snap` lacks them (a base commit
     that predates the thrust-curve file). `cfg_key` overrides the config-relative path used
@@ -527,13 +589,14 @@ def run_ork(helper, cfg: Config, snap: Snapshot, root: Path, ork_rel: str, seed:
         variants = scfg.get("motor_variants") or fcfg.get("motor_variants") or {None: None}
         for vlabel, voverride in variants.items():
             records.append(_run_one(helper, cfg, snap, root, ork_rel, base_rec, info, fcfg, scfg, sim, i,
-                                    sim_name, configid, vlabel, voverride, seed, log, fallback))
+                                    sim_name, configid, vlabel, voverride, seed, log, fallback, capture_series))
     return records
 
 
 def _run_one(helper, cfg, snap, root, ork_rel, base_rec, info, fcfg, scfg, sim, i, sim_name, configid,
-             vlabel, voverride, seed, log, fallback):
-    """Resolve motors, run one simulation (one motor variant), return its record."""
+             vlabel, voverride, seed, log, fallback, capture_series=False):
+    """Resolve motors, run one simulation (one motor variant), return its record.
+    With capture_series the record also carries the full flight time series under 'series'."""
     label = sim_name if vlabel is None else f"{sim_name} [{vlabel}]"
     rec = {**base_rec, "sim_index": i, "sim_name": label, "status": "OK", "metrics": {}, "notes": "",
            "motor_source": "", "motor_file": "", "motor": "", "motors": [], "warnings": "", "violations": []}
@@ -597,6 +660,8 @@ def _run_one(helper, cfg, snap, root, ork_rel, base_rec, info, fcfg, scfg, sim, 
         rec["metrics"] = {k: _num(summary.get(k)) for k in METRIC_KEYS}
         rec["warnings"] = "; ".join(str(w) for w in (summary.get("warnings") or ()))[:400]
         rec["violations"] = check_limits(rec["metrics"], cfg.limits_for(fcfg, scfg), cfg.units)
+        if capture_series and "unresolved" not in rec["motor_source"]:
+            rec["series"] = capture_flight_series(helper, sim, length_m, ref_d)
         log(f"  [{snap.label}] {ork_rel} :: {label} ({rec['motor'] or 'no motor'}, {rec['motor_source']}) "
             f"apogee={rec['metrics']['apogee']:.0f} m  {time.time()-t0:.1f}s")
     except Exception as e:
@@ -1015,7 +1080,7 @@ def cmd_history(args):
         return cache_salt + "-" + hashlib.sha1(entry.encode()).hexdigest()[:8]
 
     # plan: (file, version entry, blob) for every version; look up the cache first
-    plan, cached, files_versions = [], {}, {}
+    plan, cached, files_versions, want_series = [], {}, {}, set()
     for f in files:
         versions = git_file_history(root, f, args.max_commits)
         for v in versions:
@@ -1027,13 +1092,20 @@ def cmd_history(args):
             if not versions or versions[-1]["blob"] != wt_blob:
                 versions.append({"sha": None, "short": "working", "time": int(time.time()), "author": "",
                                  "message": "(uncommitted working tree)", "path": f, "blob": wt_blob})
+        # flight plots on the site need the full time series of the newest two versions
+        for v in (versions[-2:] if args.site else []):
+            want_series.add((f, v["blob"]))
         for v in versions:
             key = (f, v["blob"])
             hit = cache_dir / f"{v['blob']}-{salt_for(f)}.json" if (cache_dir and v["blob"]) else None
             if hit and hit.is_file():
                 try:
-                    cached[key] = json.loads(hit.read_text(encoding="utf-8"))
-                    continue
+                    recs = json.loads(hit.read_text(encoding="utf-8"))
+                    has_series = all("series" in r for r in recs if r.get("status") == "OK"
+                                     and "unresolved" not in (r.get("motor_source") or ""))
+                    if key not in want_series or has_series:
+                        cached[key] = recs
+                        continue
                 except Exception:
                     pass
             plan.append((f, v))
@@ -1050,7 +1122,8 @@ def cmd_history(args):
             for f, v in todo:
                 snap = head if v["sha"] is None else Snapshot(root, v["sha"])
                 cfg_key = rel_posix(root / f, cfg.dir)  # config is keyed by the CURRENT name
-                recs = run_ork(helper, cfg, snap, root, v["path"], cfg.seed, fallback=head, cfg_key=cfg_key)
+                recs = run_ork(helper, cfg, snap, root, v["path"], cfg.seed, fallback=head, cfg_key=cfg_key,
+                               capture_series=(f, v["blob"]) in want_series)
                 results[(f, v["blob"])] = recs
                 if cache_dir and v["blob"]:
                     (cache_dir / f"{v['blob']}-{salt_for(f)}.json").write_text(json.dumps(recs), encoding="utf-8")
@@ -1064,7 +1137,8 @@ def cmd_history(args):
                 sim = rec.get("sim_name") or f"#{rec.get('sim_index')}"
                 row = {"label": f"{date[5:]} {v['short']}", "short": v["short"], "date": date, "author": v["author"],
                        "message": v["message"], "status": rec["status"], "metrics": rec.get("metrics") or {},
-                       "note": ("motor unresolved" if "unresolved" in (rec.get("motor_source") or "") else "")}
+                       "note": ("motor unresolved" if "unresolved" in (rec.get("motor_source") or "") else ""),
+                       "flight": rec.get("series") if (f, v["blob"]) in want_series else None}
                 series.setdefault((f, sim), []).append(row)
                 csv_rows.append({"file": f, "path_at_commit": v["path"], "sim_name": sim, "commit": v["sha"] or "",
                                  "short": v["short"], "date": date, "author": v["author"], "message": v["message"],
@@ -1143,6 +1217,11 @@ SITE_HTML = r"""<!doctype html>
   .row { display:flex; flex-wrap:wrap; gap:6px; align-items:center; margin-bottom:10px; }
   .row .spacer { flex:1; }
   .toggle { color:var(--muted); display:flex; align-items:center; gap:5px; }
+  .tabs { display:flex; gap:4px; }
+  .tabs button { font-size:13px; padding:4px 12px; }
+  .row select { max-width:260px; }
+  .row .lbl { color:var(--muted); font-size:12px; margin-left:6px; }
+  .chartbox.tall { height:520px; }
   .chartbox { position:relative; height:440px; background:var(--card); border:1px solid var(--line); border-radius:8px; padding:10px; }
   .empty { display:flex; align-items:center; justify-content:center; height:100%; color:var(--muted); }
   table { border-collapse:collapse; width:100%; margin-top:14px; font-size:13px; }
@@ -1158,7 +1237,8 @@ SITE_HTML = r"""<!doctype html>
 </head>
 <body>
 <header>
-  <h1>OpenRocket performance history</h1>
+  <h1>OpenRocket performance</h1>
+  <div class="tabs"><button id="tab-history">History</button><button id="tab-flight">Flight plots</button></div>
   <span class="sub" id="sub"></span>
   <label class="sub" style="margin-left:auto">units <select id="units"><option value="metric">metric (m, m/s, kPa)</option><option value="imperial">imperial (ft, ft/s, psi)</option></select></label>
   <label class="sub">stability <select id="stab"><option value="cal">calibers</option><option value="pct">% of body length</option></select></label>
@@ -1166,10 +1246,19 @@ SITE_HTML = r"""<!doctype html>
 <div class="layout">
   <nav id="nav"></nav>
   <main>
+   <section id="view-flight" hidden>
+    <div class="row" id="fpresets"></div>
+    <div class="row" id="fcontrols"></div>
+    <div class="chartbox tall"><canvas id="fcv"></canvas><div class="empty" id="fempty" hidden>Select simulations in the list.</div></div>
+    <p class="legend" id="finfo"></p>
+    <p class="legend">Any flight variable against any other, from the latest committed version of each ticked simulation: full resolution through apogee, thinned under parachute. Triangles mark launch-rod exit, burnout, apogee and deployment. A second Y variable gets its own right-hand axis when its unit differs. <b>Previous version</b> overlays the commit before as a faint dashed line. Simulated headlessly with OpenRocket 24.12, wind turbulence off, fixed seed; to change conditions, change the simulation in the <code>.ork</code> and push.</p>
+   </section>
+   <section id="view-history">
     <div class="row" id="metrics"></div>
     <div class="chartbox"><canvas id="cv"></canvas><div class="empty" id="empty" hidden>Select simulations in the list.</div></div>
     <div id="latest"></div>
     <p class="legend">Three views: <b>Absolute</b> and <b>Δ line</b> plot each simulation over commit date; <b>Δ bars</b> puts commits on the x-axis with one bar per commit, green for an increase and red for a decrease from the previous version (outlined in the simulation's colour when several are ticked). Hover for the commit, author, message and change; click to open the commit on GitHub. Tick several simulations to compare them (wind cases, engine curves, designs). Views are linkable: the URL updates as you select. Simulated headlessly with OpenRocket 24.12, wind turbulence off, fixed seed. Generated by <code>or_ci.py history --site</code>.</p>
+   </section>
   </main>
 </div>
 <script id="data" type="application/json">__DATA__</script>
@@ -1187,7 +1276,9 @@ if (DATA.repo) { const a = document.createElement('a'); a.href = DATA.repo; a.te
 const ALL = [];  // {id, file, sim, rows}
 for (const [file, sims] of Object.entries(DATA.designs)) for (const [sim, rows] of Object.entries(sims)) ALL.push({ id: `${file}|${sim}`, file, sim, rows });
 const VIEWS = [['abs', 'Absolute'], ['dline', 'Δ line'], ['dbar', 'Δ bars']];
-const state = { metric: DATA.metrics[0].key, view: 'abs', sel: new Set(), units: DATA.default_units || 'metric', stab: DATA.default_stability || 'cal' };
+const state = { metric: DATA.metrics[0].key, view: 'abs', sel: new Set(), units: DATA.default_units || 'metric', stab: DATA.default_stability || 'cal',
+                tab: 'history', fx: 'altitude', fy: 'stability', fy2: '', fapo: true, fprev: false };
+const FVARS = DATA.flight_vars || {};
 const unitSel = document.getElementById('units');
 unitSel.onchange = () => { state.units = unitSel.value; update(); };
 const stabSel = document.getElementById('stab');
@@ -1203,6 +1294,12 @@ function readHash() {
   state.view = VIEWS.some(v => v[0] === p.get('view')) ? p.get('view') : (p.get('delta') === '1' ? 'dline' : 'abs');
   if (p.get('units') === 'metric' || p.get('units') === 'imperial') state.units = p.get('units');
   if (p.get('stab') === 'cal' || p.get('stab') === 'pct') state.stab = p.get('stab');
+  state.tab = p.get('tab') === 'flight' ? 'flight' : 'history';
+  if (FVARS[p.get('fx')]) state.fx = p.get('fx');
+  if (FVARS[p.get('fy')]) state.fy = p.get('fy');
+  state.fy2 = FVARS[p.get('fy2')] ? p.get('fy2') : '';
+  if (p.has('apo')) state.fapo = p.get('apo') !== '0';
+  state.fprev = p.get('prev') === '1';
   { const m = DATA.metrics.find(x => x.key === state.metric); if (m && m.stab && m.stab !== state.stab && m.pair) state.metric = m.pair; }
   const s = p.get('sel');
   // names may contain '%' ("Seymour_10 [85%]"); a link re-encoded by a chat app must not crash the page
@@ -1212,7 +1309,9 @@ function readHash() {
 }
 function writeHash() {
   const p = new URLSearchParams();
-  p.set('metric', state.metric); p.set('view', state.view); p.set('units', state.units); p.set('stab', state.stab);
+  p.set('tab', state.tab); p.set('units', state.units); p.set('stab', state.stab);
+  if (state.tab === 'flight') { p.set('fx', state.fx); p.set('fy', state.fy); if (state.fy2) p.set('fy2', state.fy2); p.set('apo', state.fapo ? '1' : '0'); if (state.fprev) p.set('prev', '1'); }
+  else { p.set('metric', state.metric); p.set('view', state.view); }
   p.set('sel', [...state.sel].map(encodeURIComponent).join(','));
   history.replaceState(null, '', '#' + p.toString());
 }
@@ -1387,7 +1486,120 @@ function drawTable() {
   box.innerHTML = h + '</tbody></table>';
 }
 
-function update() { unitSel.value = state.units; stabSel.value = state.stab; assignColors(); writeHash(); refreshNav(); buildMetrics(); draw(); drawTable(); }
+// ---- flight plots: any variable against any other, latest version of each ticked simulation ----
+const FLIGHTS = {};            // id -> {versions: [{short, sha, date, message, cols, events}, ...]} newest first
+const flightRequested = new Set();
+window.__flight = (id, payload) => { FLIGHTS[id] = payload; if (state.tab === 'flight') update(); };
+function ensureFlight(id) {   // data files are scripts, not fetch(), so the page also works from file://
+  if (FLIGHTS[id] || flightRequested.has(id) || !(DATA.flights || {})[id]) return;
+  flightRequested.add(id);
+  const s = document.createElement('script'); s.src = DATA.flights[id]; document.head.appendChild(s);
+}
+const UNIT_METRIC = { 'Pa': ['kPa', 1e-3], 'rad': ['°', 57.29578], 'rad/s': ['°/s', 57.29578] };
+const UNIT_IMPERIAL = { 'm': ['ft', 3.28084], 'm/s': ['ft/s', 3.28084], 'm/s²': ['ft/s²', 3.28084], 'N': ['lbf', 0.2248089], 'kg': ['lb', 2.2046226],
+  'Pa': ['psi', 1.450377e-4], 'kg/m³': ['lb/ft³', 0.062428], 'm²': ['ft²', 10.76391], 'kg·m²': ['lb·ft²', 23.73036],
+  'rad': ['°', 57.29578], 'rad/s': ['°/s', 57.29578] };
+function fvar(key) { const m = FVARS[key]; const c = (state.units === 'imperial' ? UNIT_IMPERIAL : UNIT_METRIC)[m.unit];
+  return { key, label: m.label, unit: c ? c[0] : m.unit, factor: c ? c[1] : 1 }; }
+const axisText = v => v.label + (v.unit ? ` (${v.unit})` : '');
+const PRESETS = [
+  ['Stability vs altitude', 'altitude', 'stability', '', true], ['Velocity & Mach vs time', 'time', 'velocity_total', 'mach_number', true],
+  ['Cd vs Mach', 'mach_number', 'drag_coeff', '', true], ['Thrust & mass vs time', 'time', 'thrust_force', 'mass', true],
+  ['CP & CG vs time', 'time', 'cp_location', 'cg_location', true], ['Dynamic pressure vs altitude', 'altitude', 'dynamic_pressure', '', true],
+  ['AoA vs time', 'time', 'aoa', '', true], ['Altitude vs time (whole flight)', 'time', 'altitude', '', false]];
+const MARKED_EVENTS = [['LAUNCHROD', 'rod exit'], ['BURNOUT', 'burnout'], ['APOGEE', 'apogee'], ['RECOVERY_DEVICE_DEPLOYMENT', 'deployment']];
+
+function buildFlightControls() {
+  const pre = document.getElementById('fpresets'); pre.innerHTML = '';
+  for (const [name, x, y0, y2, apo] of PRESETS) {
+    // the stability preset follows the header's calibers / % of length choice
+    const y = (y0 === 'stability' && state.stab === 'pct' && FVARS.stability_pct_length) ? 'stability_pct_length' : y0;
+    if (!FVARS[x] || !FVARS[y] || (y2 && !FVARS[y2])) continue;
+    const b = document.createElement('button'); b.textContent = name;
+    b.className = (state.fx === x && state.fy === y && state.fy2 === y2) ? 'on' : '';
+    b.onclick = () => { state.fx = x; state.fy = y; state.fy2 = y2; state.fapo = apo; update(); }; pre.appendChild(b);
+  }
+  const row = document.getElementById('fcontrols'); row.innerHTML = '';
+  const keys = Object.keys(FVARS).sort((a, b) => FVARS[a].label.localeCompare(FVARS[b].label));
+  const addSelect = (text, value, allowNone, onpick) => {
+    const l = document.createElement('span'); l.className = 'lbl'; l.textContent = text; row.appendChild(l);
+    const s = document.createElement('select');
+    if (allowNone) { const o = document.createElement('option'); o.value = ''; o.textContent = '(none)'; s.appendChild(o); }
+    for (const k of keys) { const o = document.createElement('option'); o.value = k; o.textContent = axisText(fvar(k)); s.appendChild(o); }
+    s.value = value; s.onchange = () => { onpick(s.value); update(); }; row.appendChild(s);
+  };
+  addSelect('X', state.fx, false, v => state.fx = v);
+  addSelect('Y', state.fy, false, v => state.fy = v);
+  addSelect('Y2', state.fy2, true, v => state.fy2 = v);
+  const sp = document.createElement('span'); sp.className = 'spacer'; row.appendChild(sp);
+  const addCheck = (text, checked, onpick) => { const l = document.createElement('label'); l.className = 'toggle';
+    const c = document.createElement('input'); c.type = 'checkbox'; c.checked = checked; c.onchange = () => { onpick(c.checked); update(); };
+    l.append(c, document.createTextNode(text)); row.appendChild(l); };
+  addCheck('ascent only', state.fapo, v => state.fapo = v);
+  addCheck('previous version', state.fprev, v => state.fprev = v);
+}
+
+let fchart = null;
+const fcv = document.getElementById('fcv'), fempty = document.getElementById('fempty'), finfo = document.getElementById('finfo');
+function flightPoints(ver, xk, yk, xf, yf) {
+  const t = ver.cols.time, xs = ver.cols[xk], ys = ver.cols[yk]; if (!t || !xs || !ys) return [];
+  const tApo = (ver.events.APOGEE || [Infinity])[0], out = [];
+  for (let i = 0; i < t.length; i++) { if (state.fapo && t[i] > tApo) break; if (xs[i] == null || ys[i] == null) continue; out.push({ x: xs[i] * xf, y: ys[i] * yf, t: t[i] }); }
+  return out;
+}
+function drawFlight() {
+  const sel = ALL.filter(a => state.sel.has(a.id)); sel.forEach(a => ensureFlight(a.id));
+  const X = fvar(state.fx), Y = fvar(state.fy), Y2 = state.fy2 ? fvar(state.fy2) : null;
+  const twoAxes = Y2 && Y2.unit !== Y.unit;
+  const sets = [], notes = [];
+  for (const a of sel) {
+    const fl = FLIGHTS[a.id], col = colorOf.get(a.id);
+    if (!fl) { notes.push(`${simLabel(a)}: ${(DATA.flights || {})[a.id] ? 'loading…' : 'no flight data (simulation failed or motor unresolved)'}`); continue; }
+    const vers = state.fprev ? fl.versions.slice(0, 2) : fl.versions.slice(0, 1);
+    notes.push(`${simLabel(a)}: ${vers.map(v => `${v.short} (${v.date})`).join(' vs ')}`);
+    vers.forEach((ver, vi) => {
+      [[Y, 'y'], [Y2, twoAxes ? 'y2' : 'y']].forEach(([V, axis], yi) => {
+        if (!V) return;
+        const pts = flightPoints(ver, X.key, V.key, X.factor, V.factor); if (!pts.length) return;
+        sets.push({ label: `${simLabel(a)} · ${V.label}${vi ? ' (previous ' + ver.short + ')' : ''}`, data: pts, yAxisID: axis, showLine: true, pointRadius: 0, pointHitRadius: 6,
+                    borderColor: col + (vi ? '80' : ''), backgroundColor: col, borderWidth: vi ? 1.5 : 2, borderDash: vi ? [3, 3] : (yi ? [7, 4] : []), tension: 0, fv: V });
+      });
+      if (vi) return;   // event markers on the latest version's first Y only
+      const base = flightPoints(ver, X.key, Y.key, X.factor, Y.factor);
+      const marks = [];
+      for (const [ev, text] of MARKED_EVENTS) { const te = (ver.events[ev] || [])[0]; if (te == null || !base.length) continue;
+        let best = base[0]; for (const p of base) if (Math.abs(p.t - te) < Math.abs(best.t - te)) best = p;
+        if (Math.abs(best.t - te) < 1.0) marks.push({ x: best.x, y: best.y, t: te, ev: text }); }
+      if (marks.length) sets.push({ label: `${simLabel(a)} · events`, data: marks, yAxisID: 'y', showLine: false, pointStyle: 'triangle', pointRadius: 7, pointHoverRadius: 9,
+                                    borderColor: col, backgroundColor: css('--bg'), borderWidth: 2, fv: Y, isEvents: true });
+    });
+  }
+  finfo.textContent = notes.join('   |   ');
+  fempty.hidden = sets.length > 0; fempty.textContent = sel.length ? 'Loading flight data…' : 'Select simulations in the list.';
+  if (fchart) fchart.destroy();
+  if (!sets.length) { fchart = null; return; }
+  const scales = { x: { type: 'linear', title: { display: true, text: axisText(X) } },
+                   y: { position: 'left', title: { display: true, text: axisText(Y) + (Y2 && !twoAxes ? '  /  ' + axisText(Y2) : '') } } };
+  if (twoAxes) scales.y2 = { position: 'right', title: { display: true, text: axisText(Y2) + '  (dashed)' }, grid: { drawOnChartArea: false } };
+  fchart = new Chart(fcv, {
+    type: 'scatter', data: { datasets: sets },
+    options: { responsive: true, maintainAspectRatio: false, animation: false, parsing: false, interaction: { mode: 'nearest', intersect: false },
+      plugins: { legend: { display: true, position: 'top', labels: { boxWidth: 14, filter: item => !/events$/.test(item.text) } },
+        tooltip: { callbacks: { label: item => { const p = item.raw, ds = item.dataset;
+          return `${p.ev ? p.ev + ' · ' : ''}${ds.label}: ${Number(p.y).toPrecision(5)}${ds.fv.unit ? ' ' + ds.fv.unit : ''} at ${X.label} ${Number(p.x).toPrecision(5)}${X.unit ? ' ' + X.unit : ''} (t = ${Number(p.t).toFixed(2)} s)`; } } } },
+      scales } });
+}
+
+const tabH = document.getElementById('tab-history'), tabF = document.getElementById('tab-flight');
+tabH.onclick = () => { state.tab = 'history'; update(); };
+tabF.onclick = () => { state.tab = 'flight'; update(); };
+function update() {
+  unitSel.value = state.units; stabSel.value = state.stab; assignColors(); writeHash(); refreshNav();
+  const flight = state.tab === 'flight';
+  tabH.className = flight ? '' : 'on'; tabF.className = flight ? 'on' : '';
+  document.getElementById('view-history').hidden = flight; document.getElementById('view-flight').hidden = !flight;
+  if (flight) { buildFlightControls(); drawFlight(); } else { buildMetrics(); draw(); drawTable(); }
+}
 readHash(); buildNav(); update();
 window.addEventListener('hashchange', () => { readHash(); update(); });
 </script>
@@ -1401,8 +1613,12 @@ def write_site(series: dict, site_dir: Path, units: str, repo_url: str, files_ve
     Values are emitted in SI with both unit systems' specs, and both stability forms (calibers and
     % of length); the page converts and switches client-side."""
     import datetime as dt
+    import hashlib
+    import shutil
     site_keys = PRIMARY_KEYS + list(STABILITY_PAIRS.values())
-    designs = {}
+    designs, flights, flight_vars = {}, {}, {}
+    site_dir.mkdir(parents=True, exist_ok=True)
+    shutil.rmtree(site_dir / "flights", ignore_errors=True)   # stale simulations must not linger
     for (file, sim), rows in series.items():
         out_rows = []
         # map short sha -> full sha via files_versions
@@ -1417,6 +1633,20 @@ def write_site(series: dict, site_dir: Path, units: str, repo_url: str, files_ve
                 "m": {k: (None if math.isnan(m.get(k, math.nan)) else round(m[k], 4)) for k in site_keys},
             })
         designs.setdefault(file, {})[sim] = out_rows
+        # flight time series of the newest versions -> flights/<hash>.js (a script, so it loads from file:// too)
+        vers = [{"short": r["short"], "sha": shas.get(r["short"]) or "", "date": r["date"], "message": r["message"],
+                 "cols": r["flight"]["cols"], "events": r["flight"]["events"]}
+                for r in reversed(rows) if r.get("flight") and r["status"] == "OK"][:2]
+        if vers:
+            sim_id = f"{file}|{sim}"
+            name = "flights/" + hashlib.sha1(sim_id.encode("utf-8")).hexdigest()[:16] + ".js"
+            flights[sim_id] = name
+            for r in rows:
+                if r.get("flight"):
+                    flight_vars.update(r["flight"]["vars"])
+            (site_dir / "flights").mkdir(parents=True, exist_ok=True)
+            (site_dir / name).write_text("window.__flight(" + json.dumps(sim_id) + ", " + json.dumps({"versions": vers}, separators=(",", ":")) + ");\n",
+                                         encoding="utf-8")
     payload = {
         "generated": dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
         "default_units": units, "default_stability": stability, "repo": repo_url,
@@ -1428,6 +1658,8 @@ def write_site(series: dict, site_dir: Path, units: str, repo_url: str, files_ve
                     for (k, label, mu, md, _), (_, _, iu, idec, f)
                     in zip([spec_for(k, "metric") for k in site_keys], [spec_for(k, "imperial") for k in site_keys])],
         "designs": designs,
+        "flights": flights,            # simulation id -> data script with the full flight time series
+        "flight_vars": flight_vars,    # variable key -> {label, SI unit}
     }
     site_dir.mkdir(parents=True, exist_ok=True)
     data = json.dumps(payload).replace("</", "<\\/")

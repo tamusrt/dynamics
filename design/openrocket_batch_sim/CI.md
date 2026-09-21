@@ -114,6 +114,15 @@ Paste `or_ci_results/history/history.md` into any GitHub issue, PR, or a Markdow
 
 On every push to `main` the workflow also rebuilds the full history for **every** configured design and publishes it as a static site through GitHub Pages (Actions deployment, so nothing is committed back). The URL is shown on the workflow run under the `deploy-pages` job and in the repo's Settings → Pages. The page is a sidebar tree of designs → simulations (each with its latest value for the chosen metric, coloured by its last change) and one large chart on the right. Tick any number of simulations to overlay them on the same axes, across designs too: the SOL_4_30 wind cases, or Lumina's 85% and 95% curves. Buttons switch the metric, and a three-way **view** switch chooses how it's drawn: *Absolute* and *Δ line* plot each simulation over commit date, while *Δ bars* puts commits on the x-axis with one bar per commit, green for an increase and red for a decrease from the previous version (outlined in each simulation's colour when several are ticked). Hovering shows the commit, author, message and change, and clicking opens the commit on GitHub. A table below lists the latest values for the selection. The selection, metric and delta toggle live in the URL hash, so a view can be linked from Discord or an issue. Everything renders in the config's units.
 
+### Flight plots tab
+
+The site's second tab plots any OpenRocket flight variable against any other for the latest committed version of each ticked simulation: stability versus altitude, drag coefficient versus Mach, CP and CG versus time, and so on. About 56 variables are available per flight (everything OpenRocket records, plus dynamic pressure and stability as a percentage of length), with OpenRocket's own names and units, converted by the units dropdown.
+
+- **Fidelity.** Every sample from launch to apogee is kept at OpenRocket's native time step; only the descent under parachute is thinned (every tenth sample, never dropping a sample an event sits on). Values carry six significant digits.
+- **Controls.** X, Y and an optional second Y (which gets a right-hand axis when its unit differs), one-click presets, *ascent only*, and *previous version* to overlay the commit before as a faint dashed line. Triangles mark rod exit, burnout, apogee and deployment. Tick several simulations to compare wind cases or engine curves. The whole view lives in the URL.
+- **How it's produced.** `history --site` captures the time series for the two newest versions of each design (cached by blob like everything else) and writes one data file per simulation under `site/flights/`, loaded only when that simulation is ticked. They are plain scripts rather than `fetch`ed JSON so the page also works opened from disk.
+- **What it can't do.** It plots what CI simulated. To see a different wind, rail or motor, change the simulation in the `.ork` (or add one) and push.
+
 One-time setup, already done via the API: Settings → Pages → Source = **GitHub Actions**. Pages requires a public repo on GitHub's free plan.
 
 To build the site locally (open `or_ci_results/site/index.html` in a browser):
