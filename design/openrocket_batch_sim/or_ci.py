@@ -1392,6 +1392,7 @@ SITE_HTML = r"""<!doctype html>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>OpenRocket performance history</title>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<script src="https://cdn.plot.ly/plotly-basic-2.35.2.min.js" charset="utf-8"></script>
 <style>
   :root { color-scheme: light dark; --bg:#fff; --fg:#1f2328; --muted:#59636e; --card:#f6f8fa; --line:#d0d7de;
           --up:#1a7f37; --down:#cf222e; --flat:#8c959f; --accent:#0969da; --hover:#eaeef2; }
@@ -1470,9 +1471,9 @@ SITE_HTML = r"""<!doctype html>
    <section id="view-flight" hidden>
     <div class="row" id="fpresets"></div>
     <div class="row" id="fcontrols"></div>
-    <div class="chartbox tall"><canvas id="fcv"></canvas><div class="empty" id="fempty" hidden>Select simulations in the list.</div></div>
+    <div class="chartbox tall"><div id="fplot" style="position:absolute;inset:10px"></div><div class="empty" id="fempty" hidden>Select simulations in the list.</div></div>
     <p class="legend" id="finfo"></p>
-    <p class="legend">Any flight variable against any other, from the latest committed version of each ticked simulation: full resolution through apogee, thinned under parachute. Triangles mark launch-rod exit, burnout, apogee and deployment. A second Y variable gets its own right-hand axis when its unit differs. <b>Previous version</b> overlays the commit before as a faint dashed line. Simulated headlessly with OpenRocket 24.12, wind turbulence off, fixed seed; to change conditions, change the simulation in the <code>.ork</code> and push.</p>
+    <p class="legend">Any flight variable against any other, from the latest committed version of each ticked simulation: full resolution through apogee, thinned under parachute. Triangles mark launch-rod exit, burnout, apogee and deployment. A second Y variable gets its own right-hand axis when its unit differs. Drag to zoom, double-click to reset, scroll to zoom, click legend entries to hide traces, and use the camera button to save a PNG. <b>Previous version</b> overlays the commit before as a faint dashed line. Simulated headlessly with OpenRocket 24.12, wind turbulence off, fixed seed; to change conditions, change the simulation in the <code>.ork</code> and push.</p>
    </section>
    <section id="view-changelog" hidden>
     <div id="clog"></div>
@@ -1764,55 +1765,61 @@ function buildFlightControls() {
   addCheck('previous version', state.fprev, v => state.fprev = v);
 }
 
-let fchart = null;
-const fcv = document.getElementById('fcv'), fempty = document.getElementById('fempty'), finfo = document.getElementById('finfo');
-function flightPoints(ver, xk, yk, xf, yf) {
-  const t = ver.cols.time, xs = ver.cols[xk], ys = ver.cols[yk]; if (!t || !xs || !ys) return [];
-  const tApo = (ver.events.APOGEE || [Infinity])[0], out = [];
-  for (let i = 0; i < t.length; i++) { if (state.fapo && t[i] > tApo) break; if (xs[i] == null || ys[i] == null) continue; out.push({ x: xs[i] * xf, y: ys[i] * yf, t: t[i] }); }
+const fplot = document.getElementById('fplot'), fempty = document.getElementById('fempty'), finfo = document.getElementById('finfo');
+function flightPoints(ver, xk, yk, xf, yf) {   // -> {x:[], y:[], t:[]} in display units, ascent-only when asked
+  const t = ver.cols.time, xs = ver.cols[xk], ys = ver.cols[yk]; const out = { x: [], y: [], t: [] };
+  if (!t || !xs || !ys) return out;
+  const tApo = (ver.events.APOGEE || [Infinity])[0];
+  for (let i = 0; i < t.length; i++) { if (state.fapo && t[i] > tApo) break; if (xs[i] == null || ys[i] == null) continue; out.x.push(xs[i] * xf); out.y.push(ys[i] * yf); out.t.push(t[i]); }
   return out;
 }
+const isDark = () => window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
 function drawFlight() {
   const sel = ALL.filter(a => state.sel.has(a.id)); sel.forEach(a => ensureFlight(a.id));
   const X = fvar(state.fx), Y = fvar(state.fy), Y2 = state.fy2 ? fvar(state.fy2) : null;
   const twoAxes = Y2 && Y2.unit !== Y.unit;
-  const sets = [], notes = [];
+  const traces = [], notes = [];
+  const hover = (label, V) => `${label}<br>${V.label}: %{y:.5g}${V.unit ? ' ' + V.unit : ''}<br>${X.label}: %{x:.5g}${X.unit ? ' ' + X.unit : ''}<br>t = %{customdata:.2f} s<extra></extra>`;
   for (const a of sel) {
     const fl = FLIGHTS[a.id], col = colorOf.get(a.id);
-    if (!fl) { notes.push(`${simLabel(a)}: ${(DATA.flights || {})[a.id] ? 'loading…' : 'no flight data (simulation failed or motor unresolved)'}`); continue; }
+    if (!fl) { notes.push(`${simLabel(a)}: ${(DATA.flights || {})[a.id] ? 'loading\u2026' : 'no flight data (simulation failed or motor unresolved)'}`); continue; }
     const vers = state.fprev ? fl.versions.slice(0, 2) : fl.versions.slice(0, 1);
     notes.push(`${simLabel(a)}: ${vers.map(v => `${v.short} (${v.date})`).join(' vs ')}`);
     vers.forEach((ver, vi) => {
       [[Y, 'y'], [Y2, twoAxes ? 'y2' : 'y']].forEach(([V, axis], yi) => {
         if (!V) return;
-        const pts = flightPoints(ver, X.key, V.key, X.factor, V.factor); if (!pts.length) return;
-        sets.push({ label: `${simLabel(a)} · ${V.label}${vi ? ' (previous ' + ver.short + ')' : ''}`, data: pts, yAxisID: axis, showLine: true, pointRadius: 0, pointHitRadius: 6,
-                    borderColor: col + (vi ? '80' : ''), backgroundColor: col, borderWidth: vi ? 1.5 : 2, borderDash: vi ? [3, 3] : (yi ? [7, 4] : []), tension: 0, fv: V });
+        const p = flightPoints(ver, X.key, V.key, X.factor, V.factor); if (!p.x.length) return;
+        const label = `${simLabel(a)} \u00b7 ${V.label}${vi ? ' (previous ' + ver.short + ')' : ''}`;
+        traces.push({ type: 'scatter', mode: 'lines', name: label, x: p.x, y: p.y, customdata: p.t, yaxis: axis,
+                      line: { color: col, width: vi ? 1.5 : 2, dash: vi ? 'dot' : (yi ? 'dash' : 'solid') }, opacity: vi ? 0.55 : 1,
+                      hovertemplate: hover(label, V) });
       });
       if (vi) return;   // event markers on the latest version's first Y only
       const base = flightPoints(ver, X.key, Y.key, X.factor, Y.factor);
-      const marks = [];
-      for (const [ev, text] of MARKED_EVENTS) { const te = (ver.events[ev] || [])[0]; if (te == null || !base.length) continue;
-        let best = base[0]; for (const p of base) if (Math.abs(p.t - te) < Math.abs(best.t - te)) best = p;
-        if (Math.abs(best.t - te) < 1.0) marks.push({ x: best.x, y: best.y, t: te, ev: text }); }
-      if (marks.length) sets.push({ label: `${simLabel(a)} · events`, data: marks, yAxisID: 'y', showLine: false, pointStyle: 'triangle', pointRadius: 7, pointHoverRadius: 9,
-                                    borderColor: col, backgroundColor: css('--bg'), borderWidth: 2, fv: Y, isEvents: true });
+      const m = { x: [], y: [], t: [], text: [] };
+      for (const [ev, text] of MARKED_EVENTS) { const te = (ver.events[ev] || [])[0]; if (te == null || !base.t.length) continue;
+        let best = 0; for (let i = 1; i < base.t.length; i++) if (Math.abs(base.t[i] - te) < Math.abs(base.t[best] - te)) best = i;
+        if (Math.abs(base.t[best] - te) < 1.0) { m.x.push(base.x[best]); m.y.push(base.y[best]); m.t.push(te); m.text.push(text); } }
+      if (m.x.length) traces.push({ type: 'scatter', mode: 'markers', name: `${simLabel(a)} \u00b7 events`, x: m.x, y: m.y, customdata: m.t, text: m.text, yaxis: 'y',
+                                    marker: { symbol: 'triangle-up', size: 12, color: css('--bg'), line: { color: col, width: 2 } }, showlegend: false,
+                                    hovertemplate: `<b>%{text}</b><br>${simLabel(a)}<br>${Y.label}: %{y:.5g}${Y.unit ? ' ' + Y.unit : ''}<br>${X.label}: %{x:.5g}${X.unit ? ' ' + X.unit : ''}<br>t = %{customdata:.2f} s<extra></extra>` });
     });
   }
   finfo.textContent = notes.join('   |   ');
-  fempty.hidden = sets.length > 0; fempty.textContent = sel.length ? 'Loading flight data…' : 'Select simulations in the list.';
-  if (fchart) fchart.destroy();
-  if (!sets.length) { fchart = null; return; }
-  const scales = { x: { type: 'linear', title: { display: true, text: axisText(X) } },
-                   y: { position: 'left', title: { display: true, text: axisText(Y) + (Y2 && !twoAxes ? '  /  ' + axisText(Y2) : '') } } };
-  if (twoAxes) scales.y2 = { position: 'right', title: { display: true, text: axisText(Y2) + '  (dashed)' }, grid: { drawOnChartArea: false } };
-  fchart = new Chart(fcv, {
-    type: 'scatter', data: { datasets: sets },
-    options: { responsive: true, maintainAspectRatio: false, animation: false, parsing: false, interaction: { mode: 'nearest', intersect: false },
-      plugins: { legend: { display: true, position: 'top', labels: { boxWidth: 14, filter: item => !/events$/.test(item.text) } },
-        tooltip: { callbacks: { label: item => { const p = item.raw, ds = item.dataset;
-          return `${p.ev ? p.ev + ' · ' : ''}${ds.label}: ${Number(p.y).toPrecision(5)}${ds.fv.unit ? ' ' + ds.fv.unit : ''} at ${X.label} ${Number(p.x).toPrecision(5)}${X.unit ? ' ' + X.unit : ''} (t = ${Number(p.t).toFixed(2)} s)`; } } } },
-      scales } });
+  fempty.hidden = traces.length > 0; fempty.textContent = sel.length ? 'Loading flight data\u2026' : 'Select simulations in the list.';
+  if (!traces.length) { if (window.Plotly) Plotly.purge(fplot); return; }
+  const dark = isDark(), fg = css('--fg'), grid = dark ? '#30363d' : '#d0d7de';
+  const layout = {
+    paper_bgcolor: 'rgba(0,0,0,0)', plot_bgcolor: 'rgba(0,0,0,0)', font: { color: fg, size: 12 },
+    margin: { l: 60, r: twoAxes ? 60 : 20, t: 30, b: 50 }, hovermode: 'closest', dragmode: 'zoom',
+    legend: { orientation: 'h', y: 1.06, x: 0 },
+    xaxis: { title: { text: axisText(X) }, gridcolor: grid, zeroline: false, automargin: true },
+    yaxis: { title: { text: axisText(Y) + (Y2 && !twoAxes ? '  /  ' + axisText(Y2) : '') }, gridcolor: grid, zeroline: false, automargin: true },
+  };
+  if (twoAxes) layout.yaxis2 = { title: { text: axisText(Y2) + '  (dashed)' }, overlaying: 'y', side: 'right', showgrid: false, zeroline: false, automargin: true };
+  const config = { responsive: true, displaylogo: false, scrollZoom: true, modeBarButtonsToRemove: ['lasso2d', 'select2d'],
+                   toImageButtonOptions: { format: 'png', filename: `${state.fy}_vs_${state.fx}`, scale: 2 } };
+  Plotly.react(fplot, traces, layout, config);
 }
 
 // ---- changelog: what changed in each design file, commit by commit ----
@@ -1867,6 +1874,7 @@ function update() {
     document.getElementById('view-' + name).hidden = state.tab !== name;
   }
   if (state.tab === 'flight') { buildFlightControls(); drawFlight(); }
+  else if (window.Plotly && fplot.data) Plotly.purge(fplot);
   else if (state.tab === 'changelog') drawChangelog();
   else { buildMetrics(); draw(); drawTable(); }
 }
