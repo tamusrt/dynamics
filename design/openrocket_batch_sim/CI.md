@@ -96,6 +96,25 @@ Max velocity, acceleration, rod-exit speed, time to apogee, deployment speed, de
 - **"new"** in the Δ column means the file did not exist at the base commit.
 - **Motor** shows the designation that actually flew and the rule that picked it (`config`, `config-default`, `file`, `auto`, `unresolved`).
 
+## Design changelog
+
+An `.ork` is a zip around XML, and git shows it as an opaque binary. The check unpacks both versions and reports exactly what changed, in words, at the top of the commit comment under **What changed**, and as a **Changelog** tab on the site (newest first per design, with the performance change of each ticked simulation as coloured chips, and every changed field in a collapsible table).
+
+`ork_diff.py` does this with the standard library only, no OpenRocket. Components are matched by the UUID OpenRocket stores for each one, so a rename or a move to another parent is reported as such rather than as a delete and an add. Cosmetic fields, internal ids, stored flight results and differences below display precision are ignored; a motor swap is reported as one change. Lengths read in inches or millimetres and masses in pounds or kilograms per the `units` setting. It also runs on its own:
+
+```
+python design/openrocket_batch_sim/ork_diff.py old.ork new.ork --units imperial --table
+```
+
+### Optional: a Copilot-written summary
+
+A 98-field commit becomes about 17 bullet lines; a model can turn those into three sentences. When the repository has a secret named **`COPILOT_GITHUB_TOKEN`**, the workflow installs [GitHub Copilot CLI](https://docs.github.com/en/copilot/how-tos/copilot-cli/automate-with-actions), hands it the structured diff and the simulated before/after numbers, and adds its paragraph as a quote above the bullets. Without the secret those steps are skipped and nothing else changes. (GitHub Models, the keyless route, was retired by GitHub on 2026-07-30, which is why a token is needed.)
+
+- **The token**: a fine-grained personal access token with the **Copilot Requests** permission, created by someone whose account has GitHub Copilot (GitHub Education has offered it free to verified students; check what your plan includes). Narrations draw on that person's Copilot usage allowance, so check the plan's limits. Add it under Settings → Secrets and variables → Actions → New repository secret.
+- **What the model sees**: only the diff, the commit line and the performance numbers, never the repository. It runs in an empty scratch folder with the file-write tool as its only permission, no shell, and its output is stripped of headings and code fences and capped in length.
+- **What it is for**: reading convenience. The exact diff is always shown underneath and is the record; the prompt forbids guessing at intent or inventing numbers.
+- **Cost control**: each summary is cached by the before/after blob pair, so it is written once. A push narrates its own change plus at most three older un-narrated entries of the same designs (`--narrate-backlog`), so a backfill never floods the account.
+
 ## Performance history charts
 
 Below the before/after table, the commit comment and job summary carry a **Performance history** section for each changed design: one Mermaid bar chart per tracked metric showing the change from the previous committed version (green up, red down; bar height is the size of the change), and a table with date, author, commit message and every tracked metric per version. GitHub draws Mermaid charts inline, so nothing is committed back to the repo and nothing is published outside it.
