@@ -25,8 +25,14 @@
     "velocity_off_rod": {"min": 50.0}
   },
   "files": {
-    "IREC_2027/2027_OR.ork": {
+    "IREC_2027/OR/2027_OR.ork": {
       "default_motor": "IREC_2027/Thrust Curves/IGNIS_2027.rse"
+    },
+    "IREC_2027/OR/Invictus_ReferenceOR.ork": {
+      "default_motors": {
+        "Ox Tank": "IREC_2027/Thrust Curves/Invictus_Curves_Latest/OXTank.eng",
+        "Combustion Chamber": "IREC_2027/Thrust Curves/Invictus_Curves_Latest/CC.eng"
+      }
     },
     "LUMINA/OpenRocket/Lumina.ork": {
       "motor_variants": {
