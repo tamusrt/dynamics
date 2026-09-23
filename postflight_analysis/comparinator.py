@@ -17,6 +17,7 @@ import pint
 from collections import defaultdict
 import load_data as ld
 import hybrid_engine_cg as eng
+import rocket_geometry as geo
 
 sol_ignis = {
     "baseline": {
@@ -135,13 +136,13 @@ def calculate(data_dict, cutoff_dict, rocket):
     ork_fd = ork_bundle.ork_fd.magnitude
     ork_cd = ork_bundle.ork_cd.magnitude
 
-    stride = 50  # tune this — e.g. 120,000/50 ≈ 2,400 points, plenty for a smooth CG/Iyy curve
-    coarse_time = time[::stride]
-    coarse_cgs = faa.total_cg(rocket, coarse_time)[1]
-    coarse_iyy = faa.total_iyy(rocket, coarse_time, coarse_cgs)
+    #stride = 50  # tune this — e.g. 120,000/50 ≈ 2,400 points, plenty for a smooth CG/Iyy curve
+    #coarse_time = time[::stride]
+    #coarse_cgs = geo.total_cg(rocket, coarse_time)[1]
+    #coarse_iyy = geo.total_iyy(rocket, coarse_time, coarse_cgs)
 
-    calc["cgs"] = np.interp(time, coarse_time, coarse_cgs)
-    calc["iyy"] = np.interp(time, coarse_time, coarse_iyy)
+    #calc["cgs"] = np.interp(time, coarse_time, coarse_cgs)
+    #calc["iyy"] = np.interp(time, coarse_time, coarse_iyy)
     # stages of flight
     #engine = [p for p in rocket if isinstance(p, faa.Engine)][0]
     #engine.set_curve(thrusts=spec_thrust, times=time)
@@ -173,8 +174,8 @@ def calculate(data_dict, cutoff_dict, rocket):
     calc["thrust_ras"] = thrust
     calc["thrust_spec"] = spec_thrust
     calc["altitude"] = altitude
-    #calc["cgs"] = faa.total_cg(rocket, calc["time"])[1]
-    #calc["iyy"] = faa.total_iyy(rocket, calc["time"], calc["cgs"])
+    calc["cgs"] = geo.total_cg(rocket, calc["time"])[1]
+    calc["iyy"] = geo.total_iyy(rocket, calc["time"], calc["cgs"])
     calc["sm"] = faa.stability(time, calc["iyy"], gyro_y, calc["fn"])
 
     #calc["sm2"] = faa.stability1(faa.frequency(calc["aoa"], sample_rate, calc["time"]), calc["iyy"], calc["accel_v"], calc["density"], calc["aoa"], calc["fn"])
@@ -294,7 +295,7 @@ def graph2(data, areas, build_data_fn=None, windows=(31, 51, 71, 91, 111),
         '''Index of the first sample after which `arr` stays >= threshold for at
         least `hold` consecutive samples. Ignores brief noise spikes that cross
         threshold only momentarily. Returns 0 if never found (no masking applied).'''
-        arr = np.asarray(arr, float)
+        arr= np.asarray(arr, float)
         above = np.abs(arr) >= threshold
         for i in range(len(above) - hold):
             if above[i:i + hold].all():
@@ -636,7 +637,7 @@ def main():
     
     folder = Path(BASE_DIR) / rocket_name / flight   # match load()'s own folder construction
     data = ld.load(rocket_name, flight)
-    #data = resolve_duplicates(data, folder)
+    data = resolve_duplicates(data, folder)
 
     
     def find_bundle(data, substr):
@@ -672,7 +673,7 @@ def main():
     thrusts_array = thrust_bundle.spec_thrust.magnitude
     times_array = thrust_bundle.time.magnitude
     engine_used = build_hybrid(sol_ignis["high_of"], times_array, find_bundle(interpolated_data, "set"))
-    rocket = faa.Rocket.from_file(candidates[0], engine=engine_used)
+    rocket = geo.Rocket.from_file(candidates[0], engine=engine_used)
 
     graph_values, cutoff_dict = calculate(interpolated_data, cutoff_dict, rocket)
     graph2(graph_values, cutoff_dict)

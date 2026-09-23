@@ -278,8 +278,9 @@ class Rocket:
             for stage in sub.findall("stage"):
                 _walk_children(stage, parent_front=0.0, parent_length=0.0,
                                 current_radius=0.0, parts=parts, fins=fins)
-
-        return cls(name, parts, fins, engine=engine if engine is not None else engine1)
+        if engine is None:
+            return cls(name, parts, fins)
+        return cls(name, parts, fins, engine=engine)   
 
     # -- static (structural-only) quantities, unchanged --------------
     @property
@@ -511,7 +512,7 @@ def total_cg(rocket: "Rocket", times) -> tuple:
     """Returns (masses, cgs) as numpy arrays over the given time array."""
     times = np.asarray(times, dtype=float)
     masses = np.array([rocket.mass_at(t) for t in times])
-    cgs = np.array([rocket.cg_at(t) for t in times])
+    cgs = rocket.cg_at(times)
     return masses, cgs
 
 

@@ -259,8 +259,9 @@ class ArrayBundle:
     units dict is given), accessible by alias name either as an attribute
     (bundle.time) or a key (bundle['time'])."""
 
-    def __init__(self, df: pd.DataFrame, units: dict | None = None):
+    def __init__(self, df: pd.DataFrame, units: dict | None = None, group: str | None = None):
         self._columns = list(df.columns)
+        self.group = group
         units = units or {}
         for col in df.columns:
             arr = df[col].to_numpy()
@@ -290,6 +291,13 @@ class ArrayBundle:
     def __repr__(self):
         return f"ArrayBundle(columns={self._columns})"
 
+def find_by_group(bundles, group):
+    '''Return the first bundle in `bundles` whose alias group matches, e.g.
+    find_by_group(new_bundles, "accel") regardless of what the CSV was named.'''
+    matches = [b for b in bundles.values() if getattr(b, "group", None) == group]
+    if not matches:
+        raise KeyError(f"No dataset with alias group '{group}'")
+    return matches[0]
 
 def load_file(path: Path, format: str | None = None) -> ArrayBundle:
     fmt = _detect_format(path.stem, format=format)
@@ -329,7 +337,7 @@ def load_file(path: Path, format: str | None = None) -> ArrayBundle:
         if len(df) and df[time_col].iloc[0] > 0:
             df[time_col] = df[time_col] - df[time_col].iloc[0]
 
-    return ArrayBundle(df, units=UNITS.get(group))
+    return ArrayBundle(df, units=UNITS.get(group), group=group)
 
 
 def load(rocket, flight, format=None, base_dir=r"G:\Shared drives\TAMU-SRT\srt_general\9_flight_data"):
@@ -381,16 +389,13 @@ def interpolate(data):
     new_bundles = {}
     cutoffs = {}
 
-    # only bundles with a "time" column can be aligned this way
     timed = {key: bundle for key, bundle in data.items() if "time" in bundle.columns}
     if not timed:
         raise ValueError("None of the given datasets have a 'time' column to align on")
-    # time values should be standardized
     for bundle in timed.values():
         bundle.time = to_imperial(bundle.time)
-    
-    # finest time step across all datasets
-    exclude = [] # problematic high frequency pieces not being used 
+
+    exclude = []
     step = min(np.diff(_magnitude(bundle.time)).min() for bundle in timed.values() if bundle not in exclude)
 
     for key, bundle in timed.items():
@@ -413,14 +418,14 @@ def interpolate(data):
             interp_func = interp1d(time_val, col_val, kind="linear")
             interp_cols[col] = interp_func(new_time)
 
-        new_bundles[key] = ArrayBundle(pd.DataFrame(interp_cols), units=units_here)
-        # real (pre-padding) length of the interpolated series
+        new_bundles[key] = ArrayBundle(pd.DataFrame(interp_cols), units=units_here, group=bundle.group)
         cutoffs[key] = len(new_time)
 
-    length = max(len(bundle) for bundle in new_bundles.values())
+    accel_bundle = find_by_group(new_bundles, "accel")
+    apogee_index = int(np.argmax(_magnitude(accel_bundle.altitude)))
 
     for key, bundle in new_bundles.items():
-        pad_amount = length - len(bundle)
+        pad_amount = apogee_index - len(bundle)
         if pad_amount > 0:
             cols = {}
             units_here = {}
@@ -433,6 +438,6 @@ def interpolate(data):
             df = pd.DataFrame(cols)
             padding = pd.DataFrame(0, index=range(pad_amount), columns=df.columns)
             padded = pd.concat([df, padding], ignore_index=True)
-            new_bundles[key] = ArrayBundle(padded, units=units_here)
+            new_bundles[key] = ArrayBundle(padded, units=units_here, group=bundle.group)
 
     return new_bundles, cutoffs
