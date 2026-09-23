@@ -154,7 +154,6 @@ UNITS = {
         "ork_cd":"dimensionless"
     },
     "set": {
-        "time": "ns",
         "thrust": "N",
         "chamber_pressure": "psi",
         "injector_pressure": "psi",
@@ -313,14 +312,22 @@ def load_file(path: Path, format: str | None = None) -> ArrayBundle:
         if missing:
             raise ValueError(f"{path.name} is missing expected columns: {missing}")
         df = df[wanted]
-
     if group in ALIASES:
         rename_map = {raw: alias for alias, raw in ALIASES[group].items() if raw in df.columns}
         df = df.rename(columns=rename_map)
 
+    # convert any non-second raw time units to seconds BEFORE ArrayBundle
+    # force-tags every "time" column as TIME_UNIT ("s")
+    RAW_TIME_UNIT = {"set": "ns"}   # add other groups here if they're ever not already in seconds
     time_col = TIME_ALIAS.get(group)
+    raw_unit = RAW_TIME_UNIT.get(group)
+    if raw_unit and time_col in df.columns:
+        df[time_col] = Q_(df[time_col].to_numpy(), raw_unit).to("s").magnitude
+
     if time_col and time_col in df.columns:
         df = df[df[time_col] >= 0].reset_index(drop=True)
+        if len(df) and df[time_col].iloc[0] > 0:
+            df[time_col] = df[time_col] - df[time_col].iloc[0]
 
     return ArrayBundle(df, units=UNITS.get(group))
 
@@ -378,7 +385,10 @@ def interpolate(data):
     timed = {key: bundle for key, bundle in data.items() if "time" in bundle.columns}
     if not timed:
         raise ValueError("None of the given datasets have a 'time' column to align on")
-
+    # time values should be standardized
+    for bundle in timed.values():
+        bundle.time = to_imperial(bundle.time)
+    
     # finest time step across all datasets
     exclude = [] # problematic high frequency pieces not being used 
     step = min(np.diff(_magnitude(bundle.time)).min() for bundle in timed.values() if bundle not in exclude)
