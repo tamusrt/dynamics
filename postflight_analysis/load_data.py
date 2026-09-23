@@ -28,17 +28,13 @@ radius = 3
 
 BASE_DIR = r"G:\Shared drives\TAMU-SRT\srt_general\9_flight_data"
 
-#ROCKET_PATHS = {
-#    "morpheus": r"G:\Shared drives\TAMU-SRT\srt_general\9_flight_data\Morpheus\04232025_lone_star_cup\morph.xml",
-    # add other rockets here as needed
-#}
 sol_ignis = eng.Engine2(eng.EngineComponent2(name="ox_tank", dry_mass=8.0, prop_mass=40, offset=10.0, length=24.0),
                         eng.EngineComponent2(name="plumbing", dry_mass=2.0, offset=10.0, length=2.0),
                         eng.EngineComponent2(name="fuel_grain", dry_mass=3.0, prop_mass=0.1, offset=36.0, length=12.0), length=38, offset=0.0)
 
 ROCKET_ENGINES = {
     "morpheus": sol_ignis,  
-    "sol_invictus": sol_ignis # the faa.Engine instance built at module scope
+    "sol_invictus": sol_ignis 
 }
 # Real, on-disk file "types" -> which raw columns to keep, in order.
 # Note: br_accel and bj_accel share the exact same schema, so they both
@@ -159,10 +155,10 @@ UNITS = {
     },
     "set": {
         "time": "ns",
-        "thrust": "sensors/thrust.value",
-        "chamber_pressure": "sensors/chamber_pressure.value",
-        "injector_pressure": "sensors/injector_pressure.value",
-        "run_tank_pressure": "sensors/run_tank_pressure.value"
+        "thrust": "N",
+        "chamber_pressure": "psi",
+        "injector_pressure": "psi",
+        "run_tank_pressure": "psi"
     }
 }
 TIME_UNIT = "s"
