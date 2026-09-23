@@ -18,9 +18,42 @@ from collections import defaultdict
 import load_data as ld
 import hybrid_engine_cg as eng
 
-sol_ignis = eng.Engine2(eng.EngineComponent2(name="ox_tank", dry_mass=8.0, prop_mass=40, offset=10.0, length=24.0),
-                        eng.EngineComponent2(name="plumbing", dry_mass=2.0, offset=10.0, length=2.0),
-                        eng.EngineComponent2(name="fuel_grain", dry_mass=3.0, prop_mass=0.1, offset=36.0, length=12.0), length=38, offset=0.0)
+sol_ignis = {
+    "baseline": {
+        "ox_mdot": 1.45,
+        "fuel_mdot": 1.45,
+        "tank": {
+            "dry_mass": 8.0, "offset": 10.0, "length": 24.0, "radius": 2.0,
+            "volume_in3": math.pi * 2.0**2 * 30.0,
+            "initial_ox_mass_lbm": 40.0,
+            "liquid_temp_F": 65.0,
+        },
+        "grain": {
+            "dry_mass": 3.0, "offset": 36.0, "length": 12.0, "radius": 1.5,
+            "outer_radius_in": 1.4, "initial_port_radius_in": 0.4,
+            "length_in": 12.0, "fuel_density_lbm_in3": 0.0417,
+        },
+        "plumbing": {"dry_mass": 2.0, "offset": 34.0, "length": 2.0},
+        "engine": {"length_in": 50.0, "offset_in": 0.0},
+    },
+    "high_of": {
+        "ox_mdot": 1.75,
+        "fuel_mdot": 1.10,
+        "tank": {
+            "dry_mass": 8.0, "offset": 10.0, "length": 24.0, "radius": 2.0,
+            "volume_in3": math.pi * 2.0**2 * 32.0,
+            "initial_ox_mass_lbm": 42.0,
+            "liquid_temp_F": 70.0,
+        },
+        "grain": {
+            "dry_mass": 3.0, "offset": 36.0, "length": 12.0, "radius": 1.5,
+            "outer_radius_in": 1.4, "initial_port_radius_in": 0.45,
+            "length_in": 12.0, "fuel_density_lbm_in3": 0.0417,
+        },
+        "plumbing": {"dry_mass": 2.0, "offset": 34.0, "length": 2.0},
+        "engine": {"length_in": 50.0, "offset_in": 0.0},
+    },
+}
 
 ROCKET_ENGINES = {
     "morpheus": sol_ignis,  
@@ -480,11 +513,8 @@ def graph2(data, areas, build_data_fn=None, windows=(31, 51, 71, 91, 111),
     return fig1, fig1b, fig2, fig3, fig4
 
 def available_rockets(base_dir=BASE_DIR):
-    """Rocket folders present under base_dir, alphabetically.
-    Falls back to the configured ROCKET_PATHS keys if the drive isn't reachable."""
+    """Rocket folders present under base_dir, alphabetically."""
     root = Path(base_dir)
-    if not root.is_dir():
-        return sorted(ROCKET_PATHS)
     return sorted(p.name for p in root.iterdir() if p.is_dir() and not p.name.startswith("."))
 
 
@@ -531,6 +561,53 @@ def _choose(label, options, notes=None):
                 return opt
         print("Not one of the listed options - try again.")
 
+def build_hybrid(cfg: dict, t: np.ndarray, df):
+    ox_pressure = df['run_tank_pressure']
+    ox_mdot = np.full_like(t, cfg["ox_mdot"])
+
+    fuel_mdot = np.full_like(t, cfg["fuel_mdot"])
+
+    tc = cfg["tank"]
+    tank_casing = eng.EngineComponent(
+        name="ox_tank_casing",
+        dry_mass=tc["dry_mass"], offset=tc["offset"],
+        length=tc["length"], radius=tc["radius"],
+    )
+    tank = eng.OxidizerTank(
+        casing=tank_casing,
+        volume_in3=tc["volume_in3"],
+        initial_ox_mass_lbm=tc["initial_ox_mass_lbm"],
+        liquid_temp_F=tc["liquid_temp_F"],
+        times_s=t, pressure_psi=ox_pressure, mdot_lbm_s=ox_mdot,
+    )
+
+    gc = cfg["grain"]
+    grain_casing = eng.EngineComponent(
+        name="grain_casing",
+        dry_mass=gc["dry_mass"], offset=gc["offset"],
+        length=gc["length"], radius=gc["radius"],
+    )
+    grain = eng.FuelGrain(
+        casing=grain_casing,
+        outer_radius_in=gc["outer_radius_in"],
+        initial_port_radius_in=gc["initial_port_radius_in"],
+        length_in=gc["length_in"],
+        fuel_density_lbm_in3=gc["fuel_density_lbm_in3"],
+        times_s=t, mdot_lbm_s=fuel_mdot,
+    )
+
+    pc = cfg["plumbing"]
+    plumbing = eng.EngineComponent(
+        name="plumbing", dry_mass=pc["dry_mass"],
+        offset=pc["offset"], length=pc["length"],
+    )
+
+    ec = cfg["engine"]
+    return eng.Engine(
+        tank=tank, plumbing=plumbing, grain=grain,
+        length_in=ec["length_in"], offset_in=ec["offset_in"],
+    )
+
 def main():
     print(f"    .\n   .'.\n   |o|   Welcome to Comparinator!™\n  .'o'.  \033[3mFor all your comparing needs\033[0m\n  |.-.|\n  '   '\n   ( )\n    )\n   ( )")
     
@@ -556,21 +633,17 @@ def main():
     engine_key = engine_name.strip().lower()
     if engine_key not in ROCKET_ENGINES:
         raise ValueError(f"Unknown engine '{engine_name}'. Known: {list(ROCKET_ENGINES)}")
+    
+    folder = Path(BASE_DIR) / rocket_name / flight   # match load()'s own folder construction
+    data = ld.load(rocket_name, flight)
+    #data = resolve_duplicates(data, folder)
 
+    
     def find_bundle(data, substr):
         matches = [v for k, v in data.items() if substr in k.lower()]
         if not matches:
             raise KeyError(f"No dataset found containing '{substr}' in its key")
         return matches[0]
-    
-    folder = Path(BASE_DIR) / rocket_name / flight   # match load()'s own folder construction
-    data = ld.load(rocket_name, flight)
-    data = resolve_duplicates(data, folder)
-
-    thrust_bundle = find_bundle(data, "thrust") # repetitive, but the intention is to initialize the engine component
-
-    thrusts_array = thrust_bundle.spec_thrust.magnitude
-    times_array = thrust_bundle.time.magnitude
 
     flight_dir = Path(BASE_DIR) / rocket_name / flight
     candidates = [f for f in flight_dir.iterdir() if f.name.lower().endswith('.xml')]
@@ -580,10 +653,6 @@ def main():
     if len(candidates) > 1:
         raise ValueError(f"Multiple suitable XML files found in {flight_dir}: {candidates}")
     
-    rocket = faa.Rocket.from_file(candidates[0], engine=ROCKET_ENGINES[engine_key])
-
-    rocket.engine.set_curve(thrusts_array, times_array) # check if this matches up
-    
     for key, bundle in data.items():
         for col in bundle.columns:
             val = getattr(bundle, col)
@@ -592,10 +661,19 @@ def main():
                 print(f"{key}.{col}: non-numeric, sample = {raw[0]!r}")
 
     interpolated_data, cutoff_dict = ld.interpolate(data)
+
     for entry in interpolated_data:
         bundle = interpolated_data[entry]
         df = pd.DataFrame({col: getattr(bundle, col) for col in bundle.columns})
         df.to_csv(f"interp_{entry}.csv", index=False)
+    
+    thrust_bundle = find_bundle(interpolated_data, "thrust") # repetitive, but the intention is to initialize the engine component
+    set_bundle = find_bundle(interpolated_data, "set")
+    thrusts_array = thrust_bundle.spec_thrust.magnitude
+    times_array = thrust_bundle.time.magnitude
+    engine_used = build_hybrid(sol_ignis["high_of"], times_array, find_bundle(interpolated_data, "set"))
+    rocket = faa.Rocket.from_file(candidates[0], engine=engine_used)
+
     graph_values, cutoff_dict = calculate(interpolated_data, cutoff_dict, rocket)
     graph2(graph_values, cutoff_dict)
 
