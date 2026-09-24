@@ -438,6 +438,23 @@ class Engine:
 
         scalar_in = np.isscalar(t) or np.asarray(t).ndim == 0
         return float(cg[0]) if scalar_in else cg               # <-- scalar in, scalar out
+    
+    def iyy_at(self, t, cg_at: float) -> float:
+            """Engine's contribution to pitch Iyy about rocket_cg, at time t."""
+            self._check_ready()
+            frac = self._frac_at(t)
+            tank_mass = self.tank.dry_mass + self.tank.prop_mass * (1 - frac)
+            grain_mass = self.grain.dry_mass + self.grain.prop_mass * (1 - frac)
+            plumbing_mass = self.plumbing.dry_mass
+
+            total = 0.0
+            for comp, m in ((self.tank, tank_mass),
+                            (self.grain, grain_mass),
+                            (self.plumbing, plumbing_mass)):
+                cg_local = self.offset + comp.cg_offset()
+                d = cg_local - rocket_cg
+                total += self._rod_iyy(m, comp.length) + m * d ** 2
+            return total
 
 @dataclass
 class EngineComponent2:
@@ -453,7 +470,6 @@ class EngineComponent2:
     def cg_offset(self) -> float:
         # assuming uniform density
         return self.offset + self.length / 2
-
 @dataclass
 class Engine2:
     tank:      EngineComponent   # oxidizer
@@ -560,7 +576,7 @@ class Engine2:
             d = cg_local - rocket_cg
             total += self._rod_iyy(m, comp.length) + m * d ** 2
         return total
-
+#WERE JUST HERE TO COMPARE
 
 def main():
     path1 = Path(r"G:\Shared drives\TAMU-SRT\srt_general\9_flight_data\Morpheus\04232025_lone_star_cup\SPEC_thrust.csv")
