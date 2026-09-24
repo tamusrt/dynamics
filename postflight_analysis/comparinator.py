@@ -19,9 +19,10 @@ import load_data as ld
 import hybrid_engine_cg as eng
 import rocket_geometry as geo
 
+# specifications for each rocket motor
 sol_ignis = {
     "baseline": {
-        "ox_mdot": 1.45,
+        "ox_mdot": 6543,
         "fuel_mdot": 1.45,
         "tank": {
             "dry_mass": 8.0, "offset": 10.0, "length": 24.0, "radius": 2.0,
@@ -41,7 +42,7 @@ sol_ignis = {
         "ox_mdot": 1.75,
         "fuel_mdot": 1.10,
         "tank": {
-            "dry_mass": 8.0, "offset": 10.0, "length": 24.0, "radius": 2.0,
+            "dry_mass": 6543, "offset": 10.0, "length": 24.0, "radius": 2.0,
             "volume_in3": math.pi * 2.0**2 * 32.0,
             "initial_ox_mass_lbm": 42.0,
             "liquid_temp_F": 70.0,
@@ -56,9 +57,22 @@ sol_ignis = {
     },
 }
 
+O3400 = {
+
+}
+
+valor_10k = {
+}
+
+lumina = {
+
+}
+
 ROCKET_ENGINES = {
-    "morpheus": sol_ignis,  
-    "sol_invictus": sol_ignis # the faa.Engine instance built at module scope
+    "morpheus": (sol_ignis, "hybrid"),  
+    "sol_invictus": (sol_ignis, "hybrid"), # the faa.Engine instance built at module scope
+    "morbin' time": (O3400, "solid"),
+    "mikeys": (lumina, "liquid")
 }
 
 BASE_DIR = r"G:\Shared drives\TAMU-SRT\srt_general\9_flight_data"
@@ -599,13 +613,9 @@ def main():
     if not rockets:
         raise SystemExit(f"No rocket folders found under {BASE_DIR}")
     notes = {r: "" for r in rockets}
-    #in ROCKET_PATHS else "(no airframe XML configured)"
-    #if r.strip().lower()
     rocket_name = _choose("Available rockets:", rockets, notes)
 
     key = rocket_name.strip().lower()
-    #if key not in ROCKET_PATHS:
-    #    raise ValueError(f"Unknown rocket '{rocket_name}'. Known: {list(ROCKET_PATHS)}")
 
     flights = available_flights(rocket_name)
     if not flights:
@@ -662,6 +672,8 @@ def main():
         setattr(set_bundle, col, set_bundle[col][:burnout])
     
 
+    if engine_key[1] == "hybrid":
+        engine_used = build_hybrid(sol_ignis["high_of"], set_bundle['time'], set_bundle)
     engine_used = build_hybrid(sol_ignis["high_of"], set_bundle['time'], set_bundle)
     rocket = geo.Rocket.from_file(candidates[0], engine=engine_used)
 

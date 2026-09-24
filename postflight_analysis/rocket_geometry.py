@@ -253,16 +253,18 @@ class FinSet:
 # --------------------------------------------------------------------------
 # the parser
 # --------------------------------------------------------------------------
+
 class Rocket:
     def __init__(self, name: str, parts: List[BodyPart], fins: List[FinSet],
                  engine: Optional[eng.Engine] = None):
         self.name = name
         self.parts: List[BodyPart] = parts
         self.fins: List[FinSet] = fins
-        self.engine: Optional[eng.Engine] = engine   
+        self.engine: Optional[eng.Engine] = engine 
+        print(engine)
 
     @classmethod
-    def from_file(cls, path: str, engine: Optional[Engine] = None) -> "Rocket":
+    def from_file(cls, path: str, engine: Optional[eng.Engine] = None) -> "Rocket":
         tree = ET.parse(path)
         root = tree.getroot()
         rocket_el = root.find("rocket")
@@ -280,6 +282,7 @@ class Rocket:
                                 current_radius=0.0, parts=parts, fins=fins)
         if engine is None:
             return cls(name, parts, fins)
+        print("hewwo", engine)
         return cls(name, parts, fins, engine=engine)   
 
     # -- static (structural-only) quantities, unchanged --------------
@@ -306,18 +309,20 @@ class Rocket:
         engine_mass = self.engine.mass_at(t) if self.engine is not None else 0.0
         return structural + engine_mass
 
-    def cg_at(self, t: float = 0.0) -> float:
-        structural_mass = sum(p.mass for p in self.parts) + sum(f.mass for f in self.fins)
+    def cg_at(self, t: float = 0.0):
+        """CG location (m) measured from the nose, engine included, at time t.
+        t may be a scalar or an array; the return matches its shape."""
         structural_moment = (sum(p.mass * p.cg for p in self.parts)
-                              + sum(f.mass * f.cg for f in self.fins))
+                            + sum(f.mass * f.cg for f in self.fins))
+        total_mass = self.mass_at(t)
+        total_moment = structural_moment
         if self.engine is not None:
-            em = self.engine.mass_at(t)
-            ecg = self.engine.cg_at(t)
-            total_mass = structural_mass + em
-            total_moment = structural_moment + em * ecg
-        else:
-            total_mass, total_moment = structural_mass, structural_moment
-        return total_moment / total_mass if total_mass else 0.0
+            total_moment = total_moment + self.engine.mass_at(t) * self.engine.cg_at(t)
+
+        total_mass = np.asarray(total_mass, dtype=float)
+        total_moment = np.asarray(np.broadcast_to(total_moment, total_mass.shape), dtype=float)
+        return np.divide(total_moment, total_mass,
+                        out=np.zeros_like(total_mass), where=total_mass != 0)
 
     def iyy_at(self, t: float = 0.0, cg: float | None = None) -> float:
         """Pitch-axis Iyy (kg*m^2) about the instantaneous cg, engine included."""

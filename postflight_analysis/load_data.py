@@ -421,7 +421,7 @@ def interpolate(data):
         new_bundles[key] = ArrayBundle(pd.DataFrame(interp_cols), units=units_here, group=bundle.group)
         cutoffs[key] = len(new_time)
 
-    accel_bundle = find_by_group(new_bundles, "accel")
+    accel_bundle = w_by_group(new_bundles, "accel")
     apogee_index = int(np.argmax(_magnitude(accel_bundle.altitude)))
 
     for key, bundle in new_bundles.items():
