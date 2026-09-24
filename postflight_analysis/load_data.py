@@ -291,7 +291,7 @@ class ArrayBundle:
     def __repr__(self):
         return f"ArrayBundle(columns={self._columns})"
 
-def find_by_group(bundles, group):
+def w_by_group(bundles, group):
     '''Return the first bundle in `bundles` whose alias group matches, e.g.
     find_by_group(new_bundles, "accel") regardless of what the CSV was named.'''
     matches = [b for b in bundles.values() if getattr(b, "group", None) == group]
@@ -425,19 +425,25 @@ def interpolate(data):
     apogee_index = int(np.argmax(_magnitude(accel_bundle.altitude)))
 
     for key, bundle in new_bundles.items():
-        pad_amount = apogee_index - len(bundle)
+        cols = {}
+        units_here = {}
+        for col in bundle.columns:
+            val = getattr(bundle, col)
+            if isinstance(val, ureg.Quantity):
+                units_here[col] = val.units
+                val = val.magnitude
+            cols[col] = val
+        df = pd.DataFrame(cols)
+
+        pad_amount = apogee_index - len(df)
         if pad_amount > 0:
-            cols = {}
-            units_here = {}
-            for col in bundle.columns:
-                val = getattr(bundle, col)
-                if isinstance(val, ureg.Quantity):
-                    units_here[col] = val.units
-                    val = val.magnitude
-                cols[col] = val
-            df = pd.DataFrame(cols)
+            # shorter than apogee_index: zero-pad up to it
             padding = pd.DataFrame(0, index=range(pad_amount), columns=df.columns)
-            padded = pd.concat([df, padding], ignore_index=True)
-            new_bundles[key] = ArrayBundle(padded, units=units_here, group=bundle.group)
+            df = pd.concat([df, padding], ignore_index=True)
+        elif pad_amount < 0:
+            # longer than apogee_index: truncate down to it
+            df = df.iloc[:apogee_index].reset_index(drop=True)
+
+        new_bundles[key] = ArrayBundle(df, units=units_here, group=bundle.group)
 
     return new_bundles, cutoffs
