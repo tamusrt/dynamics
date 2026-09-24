@@ -115,75 +115,6 @@ def acceleration(v_up, v_dr, v_cr, apogee, t):
 
     return accelx, accely, accelz, total
 
-def ndcheck_no_gyro(in_a, in_dr, in_cr, t, mass, thrust, apogee, gravity=G_FT, eps=1e-8):
-
-    # single derivative for velocity (less noisy than double-diff)
-    
-    vdr = np.gradient(in_dr[:apogee], t[:apogee])
-    vcr = np.gradient(in_cr[:apogee], t[:apogee])
-    va  = np.gradient(in_a[:apogee], t[:apogee])
-    v_vec = np.stack([vdr, vcr, va], axis=-1)          # (N,3)
-    v_mag = np.linalg.norm(v_vec, axis=-1, keepdims=True)
-    x_hat = v_vec / np.maximum(v_mag, eps)              # avoid div by zero at apex/launch
-    # acceleration
-    adr = np.gradient(vdr, t[:apogee])
-    acr = np.gradient(vcr, t[:apogee])
-    aa  = np.gradient(va, t[:apogee])
-    a_vec = np.stack([adr, acr, aa], axis=-1)           # (N,3)
-
-    g_vec = np.array([0, 0, -gravity])
-    fnet_vec = mass[:apogee, None]*a_vec - mass[:apogee, None]*g_vec  # (N,3)
-
-    # normal direction: component of accel perpendicular to velocity
-    a_dot_x = np.sum(a_vec * x_hat, axis=-1, keepdims=True)
-    a_perp = a_vec - a_dot_x * x_hat
-    a_perp_mag = np.linalg.norm(a_perp, axis=-1, keepdims=True)
-    z_hat = a_perp / np.maximum(a_perp_mag, eps)
-
-    faxial = np.sum(fnet_vec * x_hat, axis=-1)
-    fn     = np.sum(fnet_vec * z_hat, axis=-1)
-    fd     = thrust[:apogee] - faxial   # drag opposes the velocity vector
-
-    return fn, fd
-
-def ndcheck_with_aoa(in_a, in_dr, in_cr, t, mass, thrust, aoa, gravity=G_FT, eps=1e-8):
-    """
-    aoa: array of angle-of-attack values (radians), same length as t
-    """
-    aoa = aoa/180 * np.pi
-    vdr = np.gradient(in_dr, t)
-    vcr = np.gradient(in_cr, t)
-    va  = np.gradient(in_a, t)
-    v_vec = np.stack([vdr, vcr, va], axis=-1)
-    v_mag = np.linalg.norm(v_vec, axis=-1, keepdims=True)
-    x_hat_v = v_vec / np.maximum(v_mag, eps)
-
-    adr = np.gradient(vdr, t)
-    acr = np.gradient(vcr, t)
-    aa  = np.gradient(va, t)
-    a_vec = np.stack([adr, acr, aa], axis=-1)
-
-    g_vec = np.array([0, 0, -gravity])
-    fnet_vec = mass[:, None]*a_vec - mass[:, None]*g_vec
-
-    # perpendicular direction (maneuver-plane normal), as before
-    a_dot_x = np.sum(a_vec * x_hat_v, axis=-1, keepdims=True)
-    a_perp = a_vec - a_dot_x * x_hat_v
-    a_perp_mag = np.linalg.norm(a_perp, axis=-1, keepdims=True)
-    n_hat = a_perp / np.maximum(a_perp_mag, eps)
-
-    # rotate by AoA within the maneuver plane
-    cos_a = np.cos(aoa)[:, None]
-    sin_a = np.sin(aoa)[:, None]
-    x_hat_body =  cos_a * x_hat_v + sin_a * n_hat
-    z_hat_body = -sin_a * x_hat_v + cos_a * n_hat
-
-    faxial = np.sum(fnet_vec * x_hat_body, axis=-1)
-    fn     = np.sum(fnet_vec * z_hat_body, axis=-1)
-    fd     = thrust - faxial            # drag opposes the velocity vector
-
-    return fn, fd
-
 def theta(v_dr,v_cr):
     '''azimuth of the velocity vector in the horizontal plane, degrees in (-180, 180]'''
     return np.nan_to_num(np.degrees(np.arctan2(v_dr, v_cr)))
@@ -303,18 +234,6 @@ def frequency(aoa, sample_rate, target_time, f_min=0.2):
     power = np.abs(Zxx[:, t_index]) # powers at that value
     frequency_n = f[np.argmax(power, axis=0)] # dominant frequency
     return frequency_n
-
-def stability1(frequency_n, inertia_yy, velocity, density, aoa, fn, diameter=2*radius/IN_PER_FT):
-    '''static margin in calibers from the pitch oscillation frequency, where the
-    corrective moment coefficient C1 = omega^2 Iyy = q A d CNalpha SM'''
-    omega = 2 * np.pi * frequency_n                       # rad/s
-    iyy_slug_ft2 = inertia_yy / (G_FT * IN_PER_FT**2)     # lbm-in^2 -> slug-ft^2
-    m_corrective = omega**2 * iyy_slug_ft2                # lbf-ft
-    cn_a = cna(fn, density, velocity, aoa, diameter=diameter)[1]
-    denom = dynamic_pressure(density, velocity) * ref_area(diameter) * diameter * cn_a
-    sm = np.divide(m_corrective, denom, out=np.full_like(m_corrective, np.nan),
-                   where=np.abs(denom) > 1e-12)
-    return sm 
 
 def stability(time, inertia_yy, gyro_y, fn, diameter=2*radius/IN_PER_FT, window=71, regression=1001):
     '''static margin in calibers from pitch angular acceleration, Iyy qdot = Fn d SM.
