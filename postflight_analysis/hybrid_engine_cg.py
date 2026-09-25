@@ -71,6 +71,8 @@ from pathlib import Path
 import pint
 import pandas as pd
 
+import matplotlib.pyplot as plt
+
 try:
     from CoolProp.CoolProp import PropsSI
     _HAS_COOLPROP = True
@@ -146,10 +148,6 @@ class N2OSaturation:
             # limit anyway as p_eff -> p_sat.
         if p_eff <= p_sat * (1 + 1e-4):
             return 1.0 / PropsSI("D", "T", temperature_k, "Q", 0, "N2O")
-            try:
-                return 1.0 / PropsSI("D", "T", temperature_k, "P", p_eff, "N2O")
-            except ValueError:
-                return 1.0 / PropsSI("D", "T", temperature_k, "Q", 0, "N2O")
         # Fallback: liquid is nearly incompressible, so approximate with
         # the saturated-liquid specific volume at this temperature.
         p_at_t = float(np.interp(temperature_k, cls._T, cls._P))
@@ -440,6 +438,23 @@ class Engine:
 
         scalar_in = np.isscalar(t) or np.asarray(t).ndim == 0
         return float(cg[0]) if scalar_in else cg               # <-- scalar in, scalar out
+    
+    def iyy_at(self, t, cg_at: float) -> float:
+            """Engine's contribution to pitch Iyy about rocket_cg, at time t."""
+            self._check_ready()
+            frac = self._frac_at(t)
+            tank_mass = self.tank.dry_mass + self.tank.prop_mass * (1 - frac)
+            grain_mass = self.grain.dry_mass + self.grain.prop_mass * (1 - frac)
+            plumbing_mass = self.plumbing.dry_mass
+
+            total = 0.0
+            for comp, m in ((self.tank, tank_mass),
+                            (self.grain, grain_mass),
+                            (self.plumbing, plumbing_mass)):
+                cg_local = self.offset + comp.cg_offset()
+                d = cg_local - rocket_cg
+                total += self._rod_iyy(m, comp.length) + m * d ** 2
+            return total
 
 @dataclass
 class EngineComponent2:
@@ -455,7 +470,6 @@ class EngineComponent2:
     def cg_offset(self) -> float:
         # assuming uniform density
         return self.offset + self.length / 2
-
 @dataclass
 class Engine2:
     tank:      EngineComponent   # oxidizer
@@ -562,7 +576,7 @@ class Engine2:
             d = cg_local - rocket_cg
             total += self._rod_iyy(m, comp.length) + m * d ** 2
         return total
-
+#WERE JUST HERE TO COMPARE
 
 def main():
     path1 = Path(r"G:\Shared drives\TAMU-SRT\srt_general\9_flight_data\Morpheus\04232025_lone_star_cup\SPEC_thrust.csv")
@@ -570,11 +584,11 @@ def main():
 
     sol_ignis = Engine2(EngineComponent2(name="ox_tank", dry_mass=8.0, prop_mass=40, offset=10.0, length=24.0),
                         EngineComponent2(name="plumbing", dry_mass=2.0, offset=10.0, length=2.0),
-                        EngineComponent2(name="fuel_grain", dry_mass=3.0, prop_mass=0.1, offset=36.0, length=12.0), length=38, offset=0.0)
+                        EngineComponent2(name="w34", dry_mass=3.0, prop_mass=0.1, offset=36.0, length=12.0), length=38, offset=0.0)
 
     time = df['Time'].to_numpy()
     thrust = df['Thrust (N)'].to_numpy()
-    thrust = thrust/4.448
+    thrust = thrust/4.448    
 
     sol_ignis.set_curve(thrust, time)
     print(sol_ignis.cg_at(time))
@@ -610,7 +624,9 @@ def main():
     plumbing = EngineComponent(name="plumbing", dry_mass=2.0, offset=34.0, length=2.0)
 
     engine = Engine(tank=tank, plumbing=plumbing, grain=grain, length_in=50.0, offset_in=0.0)
-    print(engine.cg_at(t))
+    print(engine)
+    plt.plot(t, engine.cg_at(t))
+    plt.show()
     return engine.cg_at(t)
 
 if __name__ == "__main__":
