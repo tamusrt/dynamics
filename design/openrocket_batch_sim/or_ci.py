@@ -1461,6 +1461,8 @@ SITE_HTML = r"""<!doctype html>
   .yvar .x { border:0; background:none; color:var(--muted); padding:0 3px; font-size:14px; line-height:1; }
   .yvar .x:hover { color:var(--down); }
   .ypanel .none { color:var(--muted); padding:2px 6px; }
+  .ypanel .hrow { display:flex; align-items:center; justify-content:space-between; gap:6px; } .ypanel .hrow h3 { margin:8px 0 2px; }
+  .ypanel .clear { font-size:11.5px; padding:2px 8px; } .ypanel .clear:disabled { opacity:.45; cursor:default; }
   .ypanel .plotted { flex:none; max-height:45%; overflow:auto; }
   .ypanel .filter { width:100%; margin:4px 0 6px; padding:4px 7px; font:inherit; font-size:12.5px; border:1px solid var(--line); border-radius:6px; background:var(--bg); color:var(--fg); }
   .ypanel .all { flex:1; min-height:120px; overflow:auto; }
@@ -1501,7 +1503,7 @@ SITE_HTML = r"""<!doctype html>
      <aside class="ypanel" id="ypanel"></aside>
     </div>
     <p class="legend" id="finfo"></p>
-    <p class="legend">Any flight variables against any other, from the latest committed version of each ticked simulation, at OpenRocket's full time resolution. Tick as many Y variables as you like in the panel on the right: each unit gets its own axis, up to three per side, and clicking a plotted variable moves it between the left and right axes. Line style tells variables apart; colour tells simulations apart. Triangles mark launch-rod exit, burnout, apogee and deployment on the first Y variable. Drag to zoom, double-click to reset, scroll to zoom, click legend entries to hide traces, the camera button saves a PNG and <b>Export CSV</b> downloads exactly what is plotted (display units, ascent only when ticked). <b>Previous version</b> overlays the commit before as a faint dashed line. Simulated headlessly with OpenRocket 24.12, wind turbulence off, fixed seed; to change conditions, change the simulation in the <code>.ork</code> and push.</p>
+    <p class="legend">Any flight variables against any other, from the latest committed version of each ticked simulation, at OpenRocket's full time resolution. Tick as many Y variables as you like in the panel on the right: each unit gets its own axis, up to three per side, and clicking a plotted variable moves it between the left and right axes. Line style tells variables apart; colour tells simulations apart. Dotted vertical lines mark launch-rod exit, burnout, apogee and deployment (hover the label for the time). With several simulations ticked the legend is grouped by simulation (design names appear only across designs); click an entry to hide that trace. Drag to zoom, double-click to reset, scroll to zoom, click legend entries to hide traces, the camera button saves a PNG and <b>Export CSV</b> downloads exactly what is plotted (display units, ascent only when ticked). <b>Previous version</b> overlays the commit before as a faint dashed line. Simulated headlessly with OpenRocket 24.12, wind turbulence off, fixed seed; to change conditions, change the simulation in the <code>.ork</code> and push.</p>
    </section>
    <section id="view-changelog" hidden>
     <div id="clog"></div>
@@ -1641,7 +1643,8 @@ function buildMetrics() {
 
 // ---- history chart (Plotly) ----
 const hplot = document.getElementById('hplot'), empty = document.getElementById('empty');
-function simLabel(a) { return (Object.keys(DATA.designs).length > 1 ? short(a.file) + ' \u00b7 ' : '') + a.sim; }
+const filesTicked = () => new Set([...state.sel].map(id => id.split('|')[0]));
+function simLabel(a) { return (filesTicked().size > 1 ? short(a.file) + ' \u00b7 ' : '') + a.sim; }
 const isDark = () => window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
 function baseLayout(xTitle, yTitle) {
   const grid = isDark() ? '#30363d' : '#d0d7de';
@@ -1847,7 +1850,11 @@ function buildYPanel() {   // plotted variables by axis side (click to move, x t
     }
   }
   panel.appendChild(plotted);
-  const h = document.createElement('h3'); h.textContent = `Y variables (${state.fys.length} of ${Object.keys(FVARS).length})`; panel.appendChild(h);
+  const hrow = document.createElement('div'); hrow.className = 'hrow';
+  const h = document.createElement('h3'); h.textContent = `Y variables (${state.fys.length} of ${Object.keys(FVARS).length})`;
+  const clear = document.createElement('button'); clear.className = 'clear'; clear.textContent = 'Clear'; clear.title = 'Untick every Y variable'; clear.disabled = !state.fys.length;
+  clear.onclick = () => { state.fys = []; update(); };
+  hrow.append(h, clear); panel.appendChild(hrow);
   const filter = document.createElement('input'); filter.className = 'filter'; filter.type = 'search'; filter.placeholder = 'filter\u2026'; filter.value = yFilter;
   const all = document.createElement('div'); all.className = 'all';
   const rows = [];
@@ -1879,9 +1886,10 @@ function flightPoints(ver, xk, yk, xf, yf) {   // -> {x:[], y:[], t:[]} in displ
 function drawFlight() {
   const sel = ALL.filter(a => state.sel.has(a.id)); sel.forEach(a => ensureFlight(a.id));
   const X = fvar(state.fx), { axes, of } = axisPlan(), Y0 = state.fys.length ? fvar(state.fys[0].key) : null;
-  const traces = [], notes = [];
+  const traces = [], notes = [], shapes = [], annotations = [];
   if (flightNote) { notes.push(flightNote); flightNote = ''; }
   const hover = (label, V) => `${label}<br>${V.label}: %{y:.5g}${V.unit ? ' ' + V.unit : ''}<br>${X.label}: %{x:.5g}${X.unit ? ' ' + X.unit : ''}<br>t = %{customdata:.2f} s<extra></extra>`;
+  let si = 0;
   for (const a of sel) {
     const fl = FLIGHTS[a.id], col = colorOf.get(a.id);
     if (!fl) { notes.push(`${simLabel(a)}: ${(DATA.flights || {})[a.id] ? 'loading\u2026' : 'no flight data (simulation failed or motor unresolved)'}`); continue; }
@@ -1890,21 +1898,25 @@ function drawFlight() {
     vers.forEach((ver, vi) => {
       for (const f of state.fys) {
         const V = fvar(f.key), p = flightPoints(ver, X.key, V.key, X.factor, V.factor); if (!p.x.length) continue;
-        const label = `${simLabel(a)} \u00b7 ${V.label}${vi ? ' (previous ' + ver.short + ')' : ''}`;
-        traces.push({ type: 'scatter', mode: 'lines', name: label, x: p.x, y: p.y, customdata: p.t, yaxis: of.get(f.key).id,
+        const name = V.label + (vi ? ' (previous ' + ver.short + ')' : '');
+        traces.push({ type: 'scatter', mode: 'lines', name, legendgroup: a.id, legendgrouptitle: sel.length > 1 ? { text: simLabel(a) } : undefined, x: p.x,   // group titles only when comparing simulations y: p.y, customdata: p.t, yaxis: of.get(f.key).id,
                       line: { color: col, width: vi ? 1.5 : 2, dash: vi ? 'dot' : dashOf(f.key) }, opacity: vi ? 0.55 : 1,
-                      hovertemplate: hover(label, V) });
+                      hovertemplate: hover(`${simLabel(a)} \u00b7 ${name}`, V) });
       }
-      if (vi || !Y0) return;   // event markers on the latest version's first Y only
-      const base = flightPoints(ver, X.key, Y0.key, X.factor, Y0.factor);
-      const m = { x: [], y: [], t: [], text: [] };
-      for (const [ev, text] of MARKED_EVENTS) { const te = (ver.events[ev] || [])[0]; if (te == null || !base.t.length) continue;
-        let best = 0; for (let i = 1; i < base.t.length; i++) if (Math.abs(base.t[i] - te) < Math.abs(base.t[best] - te)) best = i;
-        if (Math.abs(base.t[best] - te) < 1.0) { m.x.push(base.x[best]); m.y.push(base.y[best]); m.t.push(te); m.text.push(text); } }
-      if (m.x.length) traces.push({ type: 'scatter', mode: 'markers', name: `${simLabel(a)} \u00b7 events`, x: m.x, y: m.y, customdata: m.t, text: m.text, yaxis: of.get(Y0.key).id,
-                                    marker: { symbol: 'triangle-up', size: 12, color: css('--bg'), line: { color: col, width: 2 } }, showlegend: false,
-                                    hovertemplate: `<b>%{text}</b><br>${simLabel(a)}<br>${Y0.label}: %{y:.5g}${Y0.unit ? ' ' + Y0.unit : ''}<br>${X.label}: %{x:.5g}${X.unit ? ' ' + X.unit : ''}<br>t = %{customdata:.2f} s<extra></extra>` });
+      if (vi) return;   // event lines for the latest version only
+      // events as vertical lines at the X value the flight had at that instant, labelled along the top; independent of the Y axes
+      const tcol = ver.cols.time, xcol = ver.cols[X.key], tApo = tApogee(ver);
+      for (const [ev, text] of MARKED_EVENTS) for (const te of (ver.events[ev] || [])) {
+        if (!tcol || !xcol || (state.fapo && te > tApo + 1e-6)) continue;
+        let best = 0; for (let i = 1; i < tcol.length; i++) if (Math.abs(tcol[i] - te) < Math.abs(tcol[best] - te)) best = i;
+        if (Math.abs(tcol[best] - te) > 1.0 || xcol[best] == null) continue;
+        const x = xcol[best] * X.factor;
+        shapes.push({ type: 'line', xref: 'x', yref: 'paper', x0: x, x1: x, y0: 0, y1: 1, line: { color: col, width: 1, dash: 'dot' }, opacity: 0.7 });
+        annotations.push({ x, xref: 'x', y: 1, yref: 'paper', yanchor: 'top', yshift: -2 - 13 * si, text, showarrow: false, font: { size: 11, color: col },
+                           xanchor: 'left', xshift: 3, hovertext: `${simLabel(a)} \u00b7 ${text}<br>t = ${te.toFixed(2)} s<br>${X.label}: ${+x.toPrecision(5)}${X.unit ? ' ' + X.unit : ''}` });
+      }
     });
+    si++;
   }
   finfo.textContent = notes.join('   |   ');
   fempty.hidden = traces.length > 0; fempty.textContent = !sel.length ? 'Select simulations in the list.' : !state.fys.length ? 'Tick a Y variable in the panel on the right.' : 'Loading flight data\u2026';
@@ -1913,8 +1925,9 @@ function drawFlight() {
   const layout = {
     paper_bgcolor: 'rgba(0,0,0,0)', plot_bgcolor: 'rgba(0,0,0,0)', font: { color: fg, size: 12 },
     margin: { l: 60, r: 20, t: 30, b: 50 }, hovermode: 'closest', dragmode: 'zoom',
-    legend: { orientation: 'h', y: 1.06, x: 0 },
+    legend: { orientation: 'h', y: 1.02, yanchor: 'bottom', x: 0, groupclick: 'toggleitem', grouptitlefont: { size: 12 } },
     xaxis: { title: { text: axisText(X) }, gridcolor: grid, zeroline: false, automargin: true },
+    shapes, annotations,
   };
   // one Plotly axis per (side, unit): the first on each side sits on the plot edge, the rest are shifted outwards by Plotly
   const seen = new Set();
