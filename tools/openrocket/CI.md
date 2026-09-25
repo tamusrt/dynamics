@@ -63,12 +63,12 @@ Same script, same config. From the repo root, with the `.venv` active:
 
 ```
 # simulate everything configured (or specific files)
-python design/openrocket_batch_sim/or_ci.py run --config aero_modeling/sim_config.json
-python design/openrocket_batch_sim/or_ci.py run --config aero_modeling/sim_config.json aero_modeling/IREC_2027/2027_OR.ork
+python tools/openrocket/or_ci.py run --config aero_modeling/sim_config.json
+python tools/openrocket/or_ci.py run --config aero_modeling/sim_config.json aero_modeling/IREC_2027/2027_OR.ork
 
 # before/after your uncommitted or unpushed changes
-python design/openrocket_batch_sim/or_ci.py compare --config aero_modeling/sim_config.json --base origin/main
-python design/openrocket_batch_sim/or_ci.py compare --config aero_modeling/sim_config.json --base HEAD~3 --all
+python tools/openrocket/or_ci.py compare --config aero_modeling/sim_config.json --base origin/main
+python tools/openrocket/or_ci.py compare --config aero_modeling/sim_config.json --base HEAD~3 --all
 ```
 
 `compare` includes uncommitted working-tree changes, so you can check a design before committing. Pass `--jar C:\Users\<you>\.cache\orlab-jars\OpenRocket-24.12.jar` if orlab cannot find the jar on its own. Outputs land in `or_ci_results/` (git-ignored).
@@ -103,7 +103,7 @@ An `.ork` is a zip around XML, and git shows it as an opaque binary. The check u
 `ork_diff.py` does this with the standard library only, no OpenRocket. Components are matched by the UUID OpenRocket stores for each one, so a rename or a move to another parent is reported as such rather than as a delete and an add. Cosmetic fields, internal ids, stored flight results and differences below display precision are ignored; a motor swap is reported as one change. Lengths read in inches or millimetres and masses in pounds or kilograms per the `units` setting. It also runs on its own:
 
 ```
-python design/openrocket_batch_sim/ork_diff.py old.ork new.ork --units imperial --table
+python tools/openrocket/ork_diff.py old.ork new.ork --units imperial --table
 ```
 
 ### Optional: a Copilot-written summary
@@ -124,7 +124,7 @@ How it's built: `or_ci.py history` walks each design's git history along the fir
 Locally, the same command draws the chart for your uncommitted working copy as a final "working" bar:
 
 ```
-python design/openrocket_batch_sim/or_ci.py history --config aero_modeling/sim_config.json --cache .or_ci_cache aero_modeling/IREC_2027/2027_OR.ork
+python tools/openrocket/or_ci.py history --config aero_modeling/sim_config.json --cache .or_ci_cache aero_modeling/IREC_2027/2027_OR.ork
 ```
 
 Paste `or_ci_results/history/history.md` into any GitHub issue, PR, or a Markdown preview that supports Mermaid to see the charts.
@@ -148,7 +148,7 @@ One-time setup, already done via the API: Settings → Pages → Source = **GitH
 To build the site locally (open `or_ci_results/site/index.html` in a browser):
 
 ```
-python design/openrocket_batch_sim/or_ci.py history --config aero_modeling/sim_config.json --cache .or_ci_cache --site or_ci_results/site
+python tools/openrocket/or_ci.py history --config aero_modeling/sim_config.json --cache .or_ci_cache --site or_ci_results/site
 ```
 
 ## Manual runs

@@ -8,7 +8,7 @@
     "and are written in the display units. units: metric (default) or imperial (ft, ft/s, psi); CSV/JSON stay SI.",
     "stability_units: cal (calibers, default) or pct (% of rocket length); both are always computed, limits name",
     "the key they mean (stability_off_rod_cal vs stability_off_rod_pct).",
-    "Full docs, metric definitions and examples: design/openrocket_batch_sim/CI.md"
+    "Full docs, metric definitions and examples: tools/openrocket/CI.md"
   ],
   "units": "imperial",
   "stability_units": "pct",
