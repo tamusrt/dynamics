@@ -17,20 +17,114 @@ import pint
 from collections import defaultdict
 import load_data as ld
 import hybrid_engine_cg as eng
+import rocket_geometry as geo
 
-sol_ignis = eng.Engine2(eng.EngineComponent2(name="ox_tank", dry_mass=8.0, prop_mass=40, offset=10.0, length=24.0),
-                        eng.EngineComponent2(name="plumbing", dry_mass=2.0, offset=10.0, length=2.0),
-                        eng.EngineComponent2(name="fuel_grain", dry_mass=3.0, prop_mass=0.1, offset=36.0, length=12.0), length=38, offset=0.0)
+# specifications for each rocket motor
+sol_ignis = {
+    "baseline": {
+        "ox_mdot": 6543,
+        "fuel_mdot": 1.45,
+        "tank": {
+            "dry_mass": 8.0, "offset": 10.0, "length": 24.0, "radius": 2.0,
+            "volume_in3": math.pi * 2.0**2 * 30.0,
+            "initial_ox_mass_lbm": 40.0,
+            "liquid_temp_F": 65.0,
+        },
+        "grain": {
+            "dry_mass": 3.0, "offset": 36.0, "length": 12.0, "radius": 1.5,
+            "outer_radius_in": 1.4, "initial_port_radius_in": 0.4,
+            "length_in": 12.0, "fuel_density_lbm_in3": 0.0417,
+        },
+        "plumbing": {"dry_mass": 2.0, "offset": 34.0, "length": 2.0},
+        "engine": {"length_in": 50.0, "offset_in": 0.0},
+    },
+    "high_of": {
+        "ox_mdot": 1.75,
+        "fuel_mdot": 1.10,
+        "tank": {
+            "dry_mass": 6543, "offset": 10.0, "length": 24.0, "radius": 2.0,
+            "volume_in3": math.pi * 2.0**2 * 32.0,
+            "initial_ox_mass_lbm": 42.0,
+            "liquid_temp_F": 70.0,
+        },
+        "grain": {
+            "dry_mass": 3.0, "offset": 36.0, "length": 12.0, "radius": 1.5,
+            "outer_radius_in": 1.4, "initial_port_radius_in": 0.45,
+            "length_in": 12.0, "fuel_density_lbm_in3": 0.0417,
+        },
+        "plumbing": {"dry_mass": 2.0, "offset": 34.0, "length": 2.0},
+        "engine": {"length_in": 50.0, "offset_in": 0.0},
+    },
+}
+
+O3400 = {
+
+}
+
+valor_10k = {
+}
+
+lumina = {
+
+}
 
 ROCKET_ENGINES = {
-    "morpheus": sol_ignis,  
-    "sol_invictus": sol_ignis # the faa.Engine instance built at module scope
+    "morpheus": (sol_ignis, "hybrid"),  
+    "sol_invictus": (sol_ignis, "hybrid"), # the faa.Engine instance built at module scope
+    "morbin' time": (O3400, "solid"),
+    "mikeys": (lumina, "liquid")
 }
 
 BASE_DIR = r"G:\Shared drives\TAMU-SRT\srt_general\9_flight_data"
 
 ureg = pint.UnitRegistry()
 Q_ = ureg.Quantity
+
+def available_rockets(base_dir=BASE_DIR):
+    """Rocket folders present under base_dir, alphabetically."""
+    root = Path(base_dir)
+    return sorted(p.name for p in root.iterdir() if p.is_dir() and not p.name.startswith("."))
+
+
+def _flight_sort_key(name):
+    """Sort flight folders newest-first. Folder names lead with an mmddyyyy stamp
+    (e.g. '06132025_irec'); anything that doesn't gets sorted by name at the end."""
+    stamp = name[:8]
+    if stamp.isdigit():
+        return (1, stamp[4:8] + stamp[0:2] + stamp[2:4], name)
+    return (0, "", name)
+
+def available_flights(rocket, base_dir=BASE_DIR):
+    """Flight folders for one rocket, newest first."""
+    folder = Path(base_dir) / rocket
+    if not folder.is_dir():
+        return []
+    names = [p.name for p in folder.iterdir() if p.is_dir() and not p.name.startswith(".")]
+    return sorted(names, key=_flight_sort_key, reverse=True)
+
+def _flight_label(name):
+    """Human-readable gloss for a flight folder: '06132025_irec' -> '06/13/2025 irec'."""
+    stamp, rest = name[:8], name[8:].strip("_").replace("_", " ")
+    if not stamp.isdigit():
+        return ""
+    date = f"{stamp[0:2]}/{stamp[2:4]}/{stamp[4:8]}"
+    return f"{date} {rest}".strip()
+
+def _choose(label, options, notes=None):
+    """Print a numbered menu and return the chosen option. Accepts either the
+    number or the name (case-insensitive), and reprompts until one matches."""
+    print(f"\n{label}")
+    for i, opt in enumerate(options, 1):
+        note = notes.get(opt, "") if notes else ""
+        print(f"  [{i}] {opt}" + (f"   {note}" if note else ""))
+    while True:
+        answer = input("Select (number or name): ").strip()
+        if answer.isdigit() and 1 <= int(answer) <= len(options):
+            return options[int(answer) - 1]
+        for opt in options:
+            if answer.lower() == opt.lower():
+                return opt
+        print("Not one of the listed options - try again.")
 
 def resolve_duplicates(data, folder):
     groups = defaultdict(list)
@@ -102,22 +196,10 @@ def calculate(data_dict, cutoff_dict, rocket):
     ork_fd = ork_bundle.ork_fd.magnitude
     ork_cd = ork_bundle.ork_cd.magnitude
 
-    stride = 50  # tune this — e.g. 120,000/50 ≈ 2,400 points, plenty for a smooth CG/Iyy curve
-    coarse_time = time[::stride]
-    coarse_cgs = faa.total_cg(rocket, coarse_time)[1]
-    coarse_iyy = faa.total_iyy(rocket, coarse_time, coarse_cgs)
-
-    calc["cgs"] = np.interp(time, coarse_time, coarse_cgs)
-    calc["iyy"] = np.interp(time, coarse_time, coarse_iyy)
-    # stages of flight
-    #engine = [p for p in rocket if isinstance(p, faa.Engine)][0]
-    #engine.set_curve(thrusts=spec_thrust, times=time)
-    #engine._process_curve()
     cutoff_dict["apogee"] = apogee = np.where(altitude >= max(altitude))[0][0]
     cutoff_dict["coast"] = np.where(spec_thrust <= 5)[0][2]
     cutoff_dict["uppies"] = 0
     theta = faa.theta(v_dr, v_cr)
-    #sample_rate = 1 / step
 
     calc["time"] = time
     calc["flight_angle"], calc["aoa"] = faa.angle(v_up, v_dr, v_cr, tilt)
@@ -134,14 +216,13 @@ def calculate(data_dict, cutoff_dict, rocket):
     calc["cd"] = faa.cd(calc["fd"], calc["density"], calc["accel_v"])
     calc["fnx"], calc["fny"], calc["fnz"], calc["fn"] = faa.fn1(tilt, theta, weight, calc["ax"], calc["ay"], calc["az"])
     calc["cn"], calc["cna"] = faa.cna(calc["fn"], calc["density"], calc["accel_v"], calc["aoa"])
-    # faa.thrust() is the algebraic inverse of faa.fd(), so feeding it the drag that
     # fd() derived from this same curve returns that curve. the two independent
     # sources are the ras condition file and the motor spec curve.
     calc["thrust_ras"] = thrust
     calc["thrust_spec"] = spec_thrust
     calc["altitude"] = altitude
-    #calc["cgs"] = faa.total_cg(rocket, calc["time"])[1]
-    #calc["iyy"] = faa.total_iyy(rocket, calc["time"], calc["cgs"])
+    calc["cgs"] = geo.total_cg(rocket, calc["time"])[1]
+    calc["iyy"] = geo.total_iyy(rocket, calc["time"], calc["cgs"])
     calc["sm"] = faa.stability(time, calc["iyy"], gyro_y, calc["fn"])
 
     #calc["sm2"] = faa.stability1(faa.frequency(calc["aoa"], sample_rate, calc["time"]), calc["iyy"], calc["accel_v"], calc["density"], calc["aoa"], calc["fn"])
@@ -160,9 +241,8 @@ def calculate(data_dict, cutoff_dict, rocket):
     return calc, cutoff_dict
 
 
-def compute_sensitivity_bands(build_data_fn, windows, keys, apogee_key="apogee"):
+def compute_sensitivity_bands(build_data_fn, windows, keys, apogee_key="apogee"):   
     """
-    NEED TO DOUBLE CHECK, THIS FUNCTION IS VIBECODED
     build_data_fn(window_length) -> (data, areas)  -- reruns your full pipeline
     keys -- list of data dict keys you want bands for, e.g. ['accel_v','fd','cd']
     Returns: dict[key] -> (lower, upper) arrays, aligned to the *shortest* apogee
@@ -261,7 +341,7 @@ def graph2(data, areas, build_data_fn=None, windows=(31, 51, 71, 91, 111),
         '''Index of the first sample after which `arr` stays >= threshold for at
         least `hold` consecutive samples. Ignores brief noise spikes that cross
         threshold only momentarily. Returns 0 if never found (no masking applied).'''
-        arr = np.asarray(arr, float)
+        arr= np.asarray(arr, float)
         above = np.abs(arr) >= threshold
         for i in range(len(above) - hold):
             if above[i:i + hold].all():
@@ -327,7 +407,7 @@ def graph2(data, areas, build_data_fn=None, windows=(31, 51, 71, 91, 111),
                              color=kwargs.get('color', 'C0'), label='_nolegend_')
 
     # page 1
-    ork_overlay_1 = {'altitude': 'ork_altitude', 'accel_total': 'ork_accel_total',
+    sim_overlay = {'altitude': 'ork_altitude', 'accel_total': 'ork_accel_total',
                       'accel_v': 'ork_vel_total', 'aoa': 'ork_aoa'}
     fig1, axs = plt.subplots(3, 2, figsize=(12, 10))
     fig1.suptitle('Basics', fontweight='bold')
@@ -335,22 +415,22 @@ def graph2(data, areas, build_data_fn=None, windows=(31, 51, 71, 91, 111),
         ('altitude', 'Altitude (ft)'), ('accel_v', 'Velocity (ft/s)'), ('accel_total', 'Acceleration (ft/s²)'),
         ('aoa', 'AoA (°)'), ('theta', 'Pitch (°)'), ('flight_angle', 'Flight Angle (°)')
     ]):
-        has_overlay = k in ork_overlay_1 and ork_overlay_1[k] in data
+        has_overlay = k in sim_overlay and sim_overlay[k] in data
         plot_to(ax, t, flight_masked(k), band=bands.get(k), label='Flight' if has_overlay else None)
         if has_overlay:
-            ok = ork_overlay_1[k]
+            ok = sim_overlay[k]
             plot_to(ax, t, ork_masked(ok), label='OpenRocket')
             ax.legend()
         ax.set(xlabel='Time (s)', ylabel=lbl, title=lbl)
         shade(ax, x_end=t[apogee])
-        fit_ylim(ax, k, overlay_key=ork_overlay_1.get(k))
+        fit_ylim(ax, k, overlay_key=sim_overlay.get(k))
     fig1.tight_layout()
 
     # page 1b — parity + percent error beneath each overlaid quantity from page 1
-    overlay_present = [(k, ork_overlay_1[k], lbl) for k, lbl in [
+    overlay_present = [(k, sim_overlay[k], lbl) for k, lbl in [
         ('altitude', 'Altitude (ft)'), ('accel_v', 'Velocity (ft/s)'),
         ('accel_total', 'Acceleration (ft/s²)'), ('aoa', 'AoA (°)')
-    ] if k in ork_overlay_1 and ork_overlay_1[k] in data]
+    ] if k in sim_overlay and sim_overlay[k] in data]
 
     fig1b = None
     if overlay_present:
@@ -479,57 +559,52 @@ def graph2(data, areas, build_data_fn=None, windows=(31, 51, 71, 91, 111),
     plt.show()
     return fig1, fig1b, fig2, fig3, fig4
 
-def available_rockets(base_dir=BASE_DIR):
-    """Rocket folders present under base_dir, alphabetically.
-    Falls back to the configured ROCKET_PATHS keys if the drive isn't reachable."""
-    root = Path(base_dir)
-    if not root.is_dir():
-        return sorted(ROCKET_PATHS)
-    return sorted(p.name for p in root.iterdir() if p.is_dir() and not p.name.startswith("."))
+def build_hybrid(cfg: dict, t: np.ndarray, df):
+    ox_pressure = df['run_tank_pressure']
+    ox_mdot = np.full_like(t, cfg["ox_mdot"])
 
+    fuel_mdot = np.full_like(t, cfg["fuel_mdot"])
 
-def _flight_sort_key(name):
-    """Sort flight folders newest-first. Folder names lead with an mmddyyyy stamp
-    (e.g. '06132025_irec'); anything that doesn't gets sorted by name at the end."""
-    stamp = name[:8]
-    if stamp.isdigit():
-        return (1, stamp[4:8] + stamp[0:2] + stamp[2:4], name)
-    return (0, "", name)
+    tc = cfg["tank"]
+    tank_casing = eng.EngineComponent(
+        name="ox_tank_casing",
+        dry_mass=tc["dry_mass"], offset=tc["offset"],
+        length=tc["length"], radius=tc["radius"],
+    )
+    tank = eng.OxidizerTank(
+        casing=tank_casing,
+        volume_in3=tc["volume_in3"],
+        initial_ox_mass_lbm=tc["initial_ox_mass_lbm"],
+        liquid_temp_F=tc["liquid_temp_F"],
+        times_s=t, pressure_psi=ox_pressure, mdot_lbm_s=ox_mdot,
+    )
 
+    gc = cfg["grain"]
+    grain_casing = eng.EngineComponent(
+        name="grain_casing",
+        dry_mass=gc["dry_mass"], offset=gc["offset"],
+        length=gc["length"], radius=gc["radius"],
+    )
+    grain = eng.FuelGrain(
+        casing=grain_casing,
+        outer_radius_in=gc["outer_radius_in"],
+        initial_port_radius_in=gc["initial_port_radius_in"],
+        length_in=gc["length_in"],
+        fuel_density_lbm_in3=gc["fuel_density_lbm_in3"],
+        times_s=t, mdot_lbm_s=fuel_mdot,
+    )
 
-def _flight_label(name):
-    """Human-readable gloss for a flight folder: '06132025_irec' -> '06/13/2025 irec'."""
-    stamp, rest = name[:8], name[8:].strip("_").replace("_", " ")
-    if not stamp.isdigit():
-        return ""
-    date = f"{stamp[0:2]}/{stamp[2:4]}/{stamp[4:8]}"
-    return f"{date} {rest}".strip()
+    pc = cfg["plumbing"]
+    plumbing = eng.EngineComponent(
+        name="plumbing", dry_mass=pc["dry_mass"],
+        offset=pc["offset"], length=pc["length"],
+    )
 
-
-def available_flights(rocket, base_dir=BASE_DIR):
-    """Flight folders for one rocket, newest first."""
-    folder = Path(base_dir) / rocket
-    if not folder.is_dir():
-        return []
-    names = [p.name for p in folder.iterdir() if p.is_dir() and not p.name.startswith(".")]
-    return sorted(names, key=_flight_sort_key, reverse=True)
-
-
-def _choose(label, options, notes=None):
-    """Print a numbered menu and return the chosen option. Accepts either the
-    number or the name (case-insensitive), and reprompts until one matches."""
-    print(f"\n{label}")
-    for i, opt in enumerate(options, 1):
-        note = notes.get(opt, "") if notes else ""
-        print(f"  [{i}] {opt}" + (f"   {note}" if note else ""))
-    while True:
-        answer = input("Select (number or name): ").strip()
-        if answer.isdigit() and 1 <= int(answer) <= len(options):
-            return options[int(answer) - 1]
-        for opt in options:
-            if answer.lower() == opt.lower():
-                return opt
-        print("Not one of the listed options - try again.")
+    ec = cfg["engine"]
+    return eng.Engine(
+        tank=tank, plumbing=plumbing, grain=grain,
+        length_in=ec["length_in"], offset_in=ec["offset_in"],
+    )
 
 def main():
     print(f"    .\n   .'.\n   |o|   Welcome to Comparinator!™\n  .'o'.  \033[3mFor all your comparing needs\033[0m\n  |.-.|\n  '   '\n   ( )\n    )\n   ( )")
@@ -538,13 +613,9 @@ def main():
     if not rockets:
         raise SystemExit(f"No rocket folders found under {BASE_DIR}")
     notes = {r: "" for r in rockets}
-    #in ROCKET_PATHS else "(no airframe XML configured)"
-    #if r.strip().lower()
     rocket_name = _choose("Available rockets:", rockets, notes)
 
     key = rocket_name.strip().lower()
-    #if key not in ROCKET_PATHS:
-    #    raise ValueError(f"Unknown rocket '{rocket_name}'. Known: {list(ROCKET_PATHS)}")
 
     flights = available_flights(rocket_name)
     if not flights:
@@ -556,21 +627,17 @@ def main():
     engine_key = engine_name.strip().lower()
     if engine_key not in ROCKET_ENGINES:
         raise ValueError(f"Unknown engine '{engine_name}'. Known: {list(ROCKET_ENGINES)}")
-
-    def find_bundle(data, substr):
-        matches = [v for k, v in data.items() if substr in k.lower()]
-        if not matches:
-            raise KeyError(f"No dataset found containing '{substr}' in its key")
-        return matches[0]
     
     folder = Path(BASE_DIR) / rocket_name / flight   # match load()'s own folder construction
     data = ld.load(rocket_name, flight)
     data = resolve_duplicates(data, folder)
 
-    thrust_bundle = find_bundle(data, "thrust") # repetitive, but the intention is to initialize the engine component
-
-    thrusts_array = thrust_bundle.spec_thrust.magnitude
-    times_array = thrust_bundle.time.magnitude
+    
+    def find_bundle(data, substr):
+        matches = [v for k, v in data.items() if substr in k.lower()]
+        if not matches:
+            raise KeyError(f"No dataset found containing '{substr}' in its key")
+        return matches[0]
 
     flight_dir = Path(BASE_DIR) / rocket_name / flight
     candidates = [f for f in flight_dir.iterdir() if f.name.lower().endswith('.xml')]
@@ -580,10 +647,6 @@ def main():
     if len(candidates) > 1:
         raise ValueError(f"Multiple suitable XML files found in {flight_dir}: {candidates}")
     
-    rocket = faa.Rocket.from_file(candidates[0], engine=ROCKET_ENGINES[engine_key])
-
-    rocket.engine.set_curve(thrusts_array, times_array) # check if this matches up
-    
     for key, bundle in data.items():
         for col in bundle.columns:
             val = getattr(bundle, col)
@@ -592,10 +655,28 @@ def main():
                 print(f"{key}.{col}: non-numeric, sample = {raw[0]!r}")
 
     interpolated_data, cutoff_dict = ld.interpolate(data)
+
     for entry in interpolated_data:
         bundle = interpolated_data[entry]
         df = pd.DataFrame({col: getattr(bundle, col) for col in bundle.columns})
         df.to_csv(f"interp_{entry}.csv", index=False)
+    
+    thrust_bundle = find_bundle(interpolated_data, "thrust")  # repetitive, but the intention is to initialize the engine component
+    set_bundle = find_bundle(interpolated_data, "set")
+
+    spec_thrust = thrust_bundle['spec_thrust']
+    nonzero_idx = np.flatnonzero(np.asarray(spec_thrust.magnitude))
+    burnout = nonzero_idx[-1] + 1 if nonzero_idx.size else len(spec_thrust)
+
+    for col in set_bundle.columns:
+        setattr(set_bundle, col, set_bundle[col][:burnout])
+    
+
+    if engine_key[1] == "hybrid":
+        engine_used = build_hybrid(sol_ignis["high_of"], set_bundle['time'], set_bundle)
+    engine_used = build_hybrid(sol_ignis["high_of"], set_bundle['time'], set_bundle)
+    rocket = geo.Rocket.from_file(candidates[0], engine=engine_used)
+
     graph_values, cutoff_dict = calculate(interpolated_data, cutoff_dict, rocket)
     graph2(graph_values, cutoff_dict)
 

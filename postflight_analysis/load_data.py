@@ -28,17 +28,13 @@ radius = 3
 
 BASE_DIR = r"G:\Shared drives\TAMU-SRT\srt_general\9_flight_data"
 
-#ROCKET_PATHS = {
-#    "morpheus": r"G:\Shared drives\TAMU-SRT\srt_general\9_flight_data\Morpheus\04232025_lone_star_cup\morph.xml",
-    # add other rockets here as needed
-#}
 sol_ignis = eng.Engine2(eng.EngineComponent2(name="ox_tank", dry_mass=8.0, prop_mass=40, offset=10.0, length=24.0),
                         eng.EngineComponent2(name="plumbing", dry_mass=2.0, offset=10.0, length=2.0),
                         eng.EngineComponent2(name="fuel_grain", dry_mass=3.0, prop_mass=0.1, offset=36.0, length=12.0), length=38, offset=0.0)
 
 ROCKET_ENGINES = {
     "morpheus": sol_ignis,  
-    "sol_invictus": sol_ignis # the faa.Engine instance built at module scope
+    "sol_invictus": sol_ignis 
 }
 # Real, on-disk file "types" -> which raw columns to keep, in order.
 # Note: br_accel and bj_accel share the exact same schema, so they both
@@ -158,11 +154,10 @@ UNITS = {
         "ork_cd":"dimensionless"
     },
     "set": {
-        "time": "ns",
-        "thrust": "sensors/thrust.value",
-        "chamber_pressure": "sensors/chamber_pressure.value",
-        "injector_pressure": "sensors/injector_pressure.value",
-        "run_tank_pressure": "sensors/run_tank_pressure.value"
+        "thrust": "N",
+        "chamber_pressure": "psi",
+        "injector_pressure": "psi",
+        "run_tank_pressure": "psi"
     }
 }
 TIME_UNIT = "s"
@@ -264,8 +259,9 @@ class ArrayBundle:
     units dict is given), accessible by alias name either as an attribute
     (bundle.time) or a key (bundle['time'])."""
 
-    def __init__(self, df: pd.DataFrame, units: dict | None = None):
+    def __init__(self, df: pd.DataFrame, units: dict | None = None, group: str | None = None):
         self._columns = list(df.columns)
+        self.group = group
         units = units or {}
         for col in df.columns:
             arr = df[col].to_numpy()
@@ -295,6 +291,13 @@ class ArrayBundle:
     def __repr__(self):
         return f"ArrayBundle(columns={self._columns})"
 
+def w_by_group(bundles, group):
+    '''Return the first bundle in `bundles` whose alias group matches, e.g.
+    find_by_group(new_bundles, "accel") regardless of what the CSV was named.'''
+    matches = [b for b in bundles.values() if getattr(b, "group", None) == group]
+    if not matches:
+        raise KeyError(f"No dataset with alias group '{group}'")
+    return matches[0]
 
 def load_file(path: Path, format: str | None = None) -> ArrayBundle:
     fmt = _detect_format(path.stem, format=format)
@@ -317,16 +320,24 @@ def load_file(path: Path, format: str | None = None) -> ArrayBundle:
         if missing:
             raise ValueError(f"{path.name} is missing expected columns: {missing}")
         df = df[wanted]
-
     if group in ALIASES:
         rename_map = {raw: alias for alias, raw in ALIASES[group].items() if raw in df.columns}
         df = df.rename(columns=rename_map)
 
+    # convert any non-second raw time units to seconds BEFORE ArrayBundle
+    # force-tags every "time" column as TIME_UNIT ("s")
+    RAW_TIME_UNIT = {"set": "ns"}   # add other groups here if they're ever not already in seconds
     time_col = TIME_ALIAS.get(group)
+    raw_unit = RAW_TIME_UNIT.get(group)
+    if raw_unit and time_col in df.columns:
+        df[time_col] = Q_(df[time_col].to_numpy(), raw_unit).to("s").magnitude
+
     if time_col and time_col in df.columns:
         df = df[df[time_col] >= 0].reset_index(drop=True)
+        if len(df) and df[time_col].iloc[0] > 0:
+            df[time_col] = df[time_col] - df[time_col].iloc[0]
 
-    return ArrayBundle(df, units=UNITS.get(group))
+    return ArrayBundle(df, units=UNITS.get(group), group=group)
 
 
 def load(rocket, flight, format=None, base_dir=r"G:\Shared drives\TAMU-SRT\srt_general\9_flight_data"):
@@ -378,13 +389,13 @@ def interpolate(data):
     new_bundles = {}
     cutoffs = {}
 
-    # only bundles with a "time" column can be aligned this way
     timed = {key: bundle for key, bundle in data.items() if "time" in bundle.columns}
     if not timed:
         raise ValueError("None of the given datasets have a 'time' column to align on")
+    for bundle in timed.values():
+        bundle.time = to_imperial(bundle.time)
 
-    # finest time step across all datasets
-    exclude = [] # problematic high frequency pieces not being used 
+    exclude = []
     step = min(np.diff(_magnitude(bundle.time)).min() for bundle in timed.values() if bundle not in exclude)
 
     for key, bundle in timed.items():
@@ -407,26 +418,32 @@ def interpolate(data):
             interp_func = interp1d(time_val, col_val, kind="linear")
             interp_cols[col] = interp_func(new_time)
 
-        new_bundles[key] = ArrayBundle(pd.DataFrame(interp_cols), units=units_here)
-        # real (pre-padding) length of the interpolated series
+        new_bundles[key] = ArrayBundle(pd.DataFrame(interp_cols), units=units_here, group=bundle.group)
         cutoffs[key] = len(new_time)
 
-    length = max(len(bundle) for bundle in new_bundles.values())
+    accel_bundle = w_by_group(new_bundles, "accel")
+    apogee_index = int(np.argmax(_magnitude(accel_bundle.altitude)))
 
     for key, bundle in new_bundles.items():
-        pad_amount = length - len(bundle)
+        cols = {}
+        units_here = {}
+        for col in bundle.columns:
+            val = getattr(bundle, col)
+            if isinstance(val, ureg.Quantity):
+                units_here[col] = val.units
+                val = val.magnitude
+            cols[col] = val
+        df = pd.DataFrame(cols)
+
+        pad_amount = apogee_index - len(df)
         if pad_amount > 0:
-            cols = {}
-            units_here = {}
-            for col in bundle.columns:
-                val = getattr(bundle, col)
-                if isinstance(val, ureg.Quantity):
-                    units_here[col] = val.units
-                    val = val.magnitude
-                cols[col] = val
-            df = pd.DataFrame(cols)
+            # shorter than apogee_index: zero-pad up to it
             padding = pd.DataFrame(0, index=range(pad_amount), columns=df.columns)
-            padded = pd.concat([df, padding], ignore_index=True)
-            new_bundles[key] = ArrayBundle(padded, units=units_here)
+            df = pd.concat([df, padding], ignore_index=True)
+        elif pad_amount < 0:
+            # longer than apogee_index: truncate down to it
+            df = df.iloc[:apogee_index].reset_index(drop=True)
+
+        new_bundles[key] = ArrayBundle(df, units=units_here, group=bundle.group)
 
     return new_bundles, cutoffs
