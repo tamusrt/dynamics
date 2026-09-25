@@ -1,0 +1,38 @@
+# ============================================================
+# ENGINE INPUT FILE
+# ============================================================
+
+# Custom time at which CG/mass depletion stops [s]
+cg_mass_burn_time = 10.0
+
+# RSE metadata
+rse_code = ENGINE-2027-python
+rse_mfg = TAMUSRT
+rse_Type = Hybrid
+rse_delays = 0
+
+# Geometry [mm]
+rse_dia_mm = 152.4
+rse_throatDia_mm = 38.3032
+rse_exitDia_mm = 86.9696
+
+# RSE comments
+rse_comments = ENGINE-2027-python
+
+# ============================================================
+# COMPONENTS
+# ============================================================
+
+top_plumbing_mass = 1.229235
+top_plumbing_length = 4.923
+
+oxidizer_tank_mass = 14.10672
+oxidizer_tank_length = 57.56
+oxidizer_mass_initial = 18.1437
+
+inter_plumbing_mass = 2.866704
+inter_plumbing_length = 16.0
+
+combustion_chamber_mass = 3.583383
+combustion_chamber_length = 28.5
+fuel_mass_initial = 3.99161
