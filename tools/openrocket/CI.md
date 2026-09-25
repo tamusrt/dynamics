@@ -151,6 +151,18 @@ To build the site locally (open `or_ci_results/site/index.html` in a browser):
 python tools/openrocket/or_ci.py history --config aero_modeling/sim_config.json --cache .or_ci_cache --site or_ci_results/site
 ```
 
+## Tests
+
+The site page has a regression test that needs no OpenRocket, Java or network:
+
+```
+python tools/openrocket/tests/test_site.py
+```
+
+`test_site.py` builds a site from a synthetic history (two designs, a failed version, undefined samples, a commit message with a script tag) through `or_ci.write_site`, then `site_page_test.js` runs the page's own JavaScript in a stub DOM. Every call the page makes to Plotly is checked structurally (x, y and customdata of equal length, axes that exist, no unfilled placeholders), and the tests assert values against the flight data files: unit conversion, axis assignment and the three-per-side limit, event lines, legend grouping, the stability toggle, the URL hash, presets and the CSV export, plus the History views and the Changelog. With `npm install` run in `tools/openrocket/` (jsdom and the same Plotly build the page loads), the six-axis flight layout and the history charts are also rendered through the real Plotly.
+
+The workflow runs it as the `page-test` job on every push that touches `or_ci.py` or the tests, and the Pages deployment waits for it, so a broken page never reaches the site (the simulation report is not held up). Run it locally before pushing any change to the page template; a change in behaviour that is intended needs its assertion updated in the same commit.
+
 ## Manual runs
 
 The workflow can also be started from the Actions tab (**Run workflow**) with a custom base commit or with **all** ticked to simulate every configured design, for example after a motor curve update.

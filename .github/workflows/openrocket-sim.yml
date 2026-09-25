@@ -13,6 +13,7 @@ on:
       - "aero_modeling/**/*.eng"
       - "aero_modeling/sim_config.json"
       - "tools/openrocket/or_ci.py"
+      - "tools/openrocket/tests/**"
       - ".github/workflows/openrocket-sim.yml"
   workflow_dispatch:
     inputs:
@@ -188,10 +189,28 @@ jobs:
           } > comment.md
           gh api "repos/${{ github.repository }}/commits/${{ github.sha }}/comments" -F body=@comment.md >/dev/null
 
+  # Regression test of the site page: builds a site from synthetic data (no OpenRocket) and runs the
+  # page's JavaScript with assertions, then renders it through the real Plotly. A broken page blocks
+  # the Pages deployment but not the simulation report above.
+  page-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+      - name: Install jsdom and Plotly for the render check
+        run: npm install --prefix tools/openrocket --no-package-lock --no-audit --no-fund
+      - name: Test the site page
+        run: python tools/openrocket/tests/test_site.py
+
   # Publishes the site built above. Runs only for pushes to main; the URL is shown on the run
   # and under Settings -> Pages. Pages must be set to "GitHub Actions" as the source (once).
   deploy-pages:
-    needs: simulate
+    needs: [simulate, page-test]
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     environment:

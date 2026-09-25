@@ -1,0 +1,12 @@
+{
+  "name": "openrocket-site-test",
+  "private": true,
+  "description": "Optional dev dependencies for tests/site_page_test.js: with these installed the site page is also rendered through the real Plotly (same version the page loads from the CDN).",
+  "scripts": {
+    "test": "python tests/test_site.py"
+  },
+  "devDependencies": {
+    "jsdom": "^24.1.0",
+    "plotly.js-basic-dist-min": "2.35.2"
+  }
+}

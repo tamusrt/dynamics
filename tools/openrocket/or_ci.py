@@ -1899,7 +1899,9 @@ function drawFlight() {
       for (const f of state.fys) {
         const V = fvar(f.key), p = flightPoints(ver, X.key, V.key, X.factor, V.factor); if (!p.x.length) continue;
         const name = V.label + (vi ? ' (previous ' + ver.short + ')' : '');
-        traces.push({ type: 'scatter', mode: 'lines', name, legendgroup: a.id, legendgrouptitle: sel.length > 1 ? { text: simLabel(a) } : undefined, x: p.x,   // group titles only when comparing simulations y: p.y, customdata: p.t, yaxis: of.get(f.key).id,
+        // group titles only when comparing simulations
+        traces.push({ type: 'scatter', mode: 'lines', name, legendgroup: a.id, legendgrouptitle: sel.length > 1 ? { text: simLabel(a) } : undefined,
+                      x: p.x, y: p.y, customdata: p.t, yaxis: of.get(f.key).id,
                       line: { color: col, width: vi ? 1.5 : 2, dash: vi ? 'dot' : dashOf(f.key) }, opacity: vi ? 0.55 : 1,
                       hovertemplate: hover(`${simLabel(a)} \u00b7 ${name}`, V) });
       }
