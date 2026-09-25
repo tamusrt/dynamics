@@ -11,3 +11,5 @@ venv/
 or_ci_results/
 .or_ci_cache/
 site/
+
+node_modules/
