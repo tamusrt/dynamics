@@ -482,13 +482,13 @@ def derived_metrics(helper, sim, summary: dict) -> dict:
 
 # Flight variables that are constant or bookkeeping; left out of the website's flight plots.
 _SERIES_SKIP = {"computation_time", "time_step", "reference_area", "reference_length"}
-SERIES_DESCENT_STRIDE = 10   # ascent keeps every sample; after apogee every Nth (plus event samples)
+SERIES_DESCENT_STRIDE = 1    # after apogee keep every Nth sample (1 = full fidelity; the site's CSV export relies on it)
 
 
 def capture_flight_series(helper, sim, length_m: float, ref_d: float) -> dict:
-    """Every OpenRocket flight variable of the run just made, for the website's flight plots.
-    Full resolution from launch to apogee; thinned under parachute, where nothing changes fast.
-    -> {'vars': {key: {'label', 'unit'}}, 'cols': {key: [floats|None]}, 'events': {NAME: [t, ...]}}"""
+    """Every OpenRocket flight variable of the run just made, for the website's flight plots and CSV export.
+    Every sample at OpenRocket's own time step (SERIES_DESCENT_STRIDE > 1 would thin the descent).
+    -> {'vars': {key: {'label', 'unit'}}, 'cols': {key: [floats|None]}, 'events': {NAME: [t, ...]}, 'stride': N}"""
     import numpy as np
     from orlab import FlightDataType as F
     cols, meta = {}, {}
@@ -539,7 +539,7 @@ def capture_flight_series(helper, sim, length_m: float, ref_d: float) -> dict:
     def clean(a):
         return [None if (x != x or x in (float("inf"), float("-inf"))) else float(f"{x:.6g}") for x in a[idx].tolist()]
 
-    return {"vars": meta, "cols": {k: clean(v) for k, v in cols.items()}, "events": events}
+    return {"vars": meta, "cols": {k: clean(v) for k, v in cols.items()}, "events": events, "stride": SERIES_DESCENT_STRIDE}
 
 
 def check_limits(metrics: dict, limits: dict, units: str = "metric"):
@@ -1271,8 +1271,9 @@ def cmd_history(args):
             if hit and hit.is_file():
                 try:
                     recs = json.loads(hit.read_text(encoding="utf-8"))
-                    has_series = all("series" in r for r in recs if r.get("status") == "OK"
-                                     and "unresolved" not in (r.get("motor_source") or ""))
+                    # a cached series thinned differently (older stride) is re-simulated for the site
+                    has_series = all("series" in r and (not r["series"] or r["series"].get("stride") == SERIES_DESCENT_STRIDE)
+                                     for r in recs if r.get("status") == "OK" and "unresolved" not in (r.get("motor_source") or ""))
                     if key not in want_series or has_series:
                         cached[key] = recs
                         continue
@@ -1447,6 +1448,19 @@ SITE_HTML = r"""<!doctype html>
   .row select { max-width:260px; }
   .row .lbl { color:var(--muted); font-size:12px; margin-left:6px; }
   .chartbox.tall { min-height:380px; }
+  main > section > .fwrap { flex:1 1 auto; min-height:380px; display:flex; gap:10px; }
+  .fwrap > .chartbox { flex:1 1 auto; min-width:0; }
+  .ypanel { flex:none; width:230px; background:var(--card); border:1px solid var(--line); border-radius:8px; padding:8px 10px; overflow:auto; font-size:12.5px; }
+  .ypanel h3 { font-size:12px; color:var(--muted); font-weight:600; margin:8px 0 4px; text-transform:uppercase; letter-spacing:.03em; }
+  .ypanel .hint { color:var(--muted); font-size:11.5px; margin:0 0 4px; }
+  .yvar { display:flex; align-items:center; gap:6px; padding:4px 6px; border-radius:6px; cursor:pointer; }
+  .yvar:hover { background:var(--hover); }
+  .yvar svg { flex:none; color:var(--fg); }
+  .yvar .lbl { flex:1; margin:0; color:var(--fg); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .yvar .arrow { color:var(--muted); font-size:11px; }
+  .yvar .x { border:0; background:none; color:var(--muted); padding:0 3px; font-size:14px; line-height:1; }
+  .yvar .x:hover { color:var(--down); }
+  .ypanel .none { color:var(--muted); padding:2px 6px; }
   .chartbox { flex:1 1 auto; min-height:320px; position:relative; background:var(--card); border:1px solid var(--line); border-radius:8px; padding:10px; }
   .empty { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; color:var(--muted); pointer-events:none; }
   .empty[hidden] { display:none; }   /* an author display rule would otherwise beat the hidden attribute */
@@ -1458,7 +1472,7 @@ SITE_HTML = r"""<!doctype html>
   td .d { color:var(--muted); font-size:11px; margin-left:4px; } td .d.up { color:var(--up); } td .d.down { color:var(--down); }
   .legend { color:var(--muted); font-size:12px; margin-top:14px; }
   a { color:var(--accent); }
-  @media (max-width: 760px) { body { overflow:auto; } .layout { grid-template-columns:1fr; } nav { border-right:0; border-bottom:1px solid var(--line); max-height:45vh; } .chartbox, .chartbox.tall { min-height:340px; } }
+  @media (max-width: 760px) { body { overflow:auto; } main > section > .fwrap { flex-direction:column; } .ypanel { width:auto; } .layout { grid-template-columns:1fr; } nav { border-right:0; border-bottom:1px solid var(--line); max-height:45vh; } .chartbox, .chartbox.tall { min-height:340px; } }
 </style>
 </head>
 <body>
@@ -1475,9 +1489,12 @@ SITE_HTML = r"""<!doctype html>
    <section id="view-flight" hidden>
     <div class="row" id="fpresets"></div>
     <div class="row" id="fcontrols"></div>
-    <div class="chartbox tall"><div id="fplot" style="position:absolute;inset:10px"></div><div class="empty" id="fempty" hidden>Select simulations in the list.</div></div>
+    <div class="fwrap">
+     <div class="chartbox tall"><div id="fplot" style="position:absolute;inset:10px"></div><div class="empty" id="fempty" hidden>Select simulations in the list.</div></div>
+     <aside class="ypanel" id="ypanel"></aside>
+    </div>
     <p class="legend" id="finfo"></p>
-    <p class="legend">Any flight variable against any other, from the latest committed version of each ticked simulation: full resolution through apogee, thinned under parachute. Triangles mark launch-rod exit, burnout, apogee and deployment. A second Y variable gets its own right-hand axis when its unit differs. Drag to zoom, double-click to reset, scroll to zoom, click legend entries to hide traces, and use the camera button to save a PNG. <b>Previous version</b> overlays the commit before as a faint dashed line. Simulated headlessly with OpenRocket 24.12, wind turbulence off, fixed seed; to change conditions, change the simulation in the <code>.ork</code> and push.</p>
+    <p class="legend">Any flight variables against any other, from the latest committed version of each ticked simulation, at OpenRocket's full time resolution. Add as many Y variables as you like: each unit gets its own axis, up to three per side, and clicking a variable in the panel moves it between the left and right axes. Line style tells variables apart; colour tells simulations apart. Triangles mark launch-rod exit, burnout, apogee and deployment on the first Y variable. Drag to zoom, double-click to reset, scroll to zoom, click legend entries to hide traces, the camera button saves a PNG and <b>Export CSV</b> downloads exactly what is plotted (display units, ascent only when ticked). <b>Previous version</b> overlays the commit before as a faint dashed line. Simulated headlessly with OpenRocket 24.12, wind turbulence off, fixed seed; to change conditions, change the simulation in the <code>.ork</code> and push.</p>
    </section>
    <section id="view-changelog" hidden>
     <div id="clog"></div>
@@ -1507,8 +1524,11 @@ const ALL = [];  // {id, file, sim, rows}
 for (const [file, sims] of Object.entries(DATA.designs)) for (const [sim, rows] of Object.entries(sims)) ALL.push({ id: `${file}|${sim}`, file, sim, rows });
 const VIEWS = [['abs', 'Absolute'], ['dline', 'Δ line'], ['dbar', 'Δ bars']];
 const state = { metric: DATA.metrics[0].key, view: 'abs', sel: new Set(), units: DATA.default_units || 'metric', stab: DATA.default_stability || 'cal',
-                tab: 'history', fx: 'altitude', fy: 'stability', fy2: '', fapo: true, fprev: false };
+                tab: 'history', fx: 'altitude', fys: [{ key: 'stability', side: 'l' }], fapo: true, fprev: false };   // fys: Y variables in order, side l|r
 const FVARS = DATA.flight_vars || {};
+// Y variables travel in the URL as 'altitude,velocity_total:r' (':r' = right axis)
+const parseFys = s => s.split(',').map(x => { const [key, side] = x.split(':'); return { key, side: side === 'r' ? 'r' : 'l' }; }).filter(f => FVARS[f.key]);
+const fysText = fys => fys.map(f => f.key + (f.side === 'r' ? ':r' : '')).join(',');
 const unitSel = document.getElementById('units');
 unitSel.onchange = () => { state.units = unitSel.value; update(); };
 const stabSel = document.getElementById('stab');
@@ -1517,7 +1537,7 @@ const STAB_FLIGHT = { stability: 'stability_pct_length', stability_pct_length: '
 function stabKey(k) { const o = STAB_FLIGHT[k]; if (!o || !FVARS[o]) return k; return (state.stab === 'pct') === (k === 'stability_pct_length') ? k : o; }
 function applyStab() {
   const m = DATA.metrics.find(x => x.key === state.metric); if (m && m.stab && m.stab !== state.stab && m.pair) state.metric = m.pair;
-  state.fx = stabKey(state.fx); state.fy = stabKey(state.fy); if (state.fy2) state.fy2 = stabKey(state.fy2);
+  state.fx = stabKey(state.fx); state.fys.forEach(f => f.key = stabKey(f.key));
 }
 stabSel.onchange = () => { state.stab = stabSel.value; applyStab(); update(); };
 // the metrics shown for the current stability form (calibers vs % of length)
@@ -1533,8 +1553,7 @@ function readHash() {
   if (p.get('stab') === 'cal' || p.get('stab') === 'pct') state.stab = p.get('stab');
   state.tab = ['flight', 'changelog'].includes(p.get('tab')) ? p.get('tab') : 'history';
   if (FVARS[p.get('fx')]) state.fx = p.get('fx');
-  if (FVARS[p.get('fy')]) state.fy = p.get('fy');
-  state.fy2 = FVARS[p.get('fy2')] ? p.get('fy2') : '';
+  if (p.get('fy')) { const fys = parseFys(p.get('fy')); if (FVARS[p.get('fy2')]) fys.push({ key: p.get('fy2'), side: 'r' }); if (fys.length) state.fys = fys; }   // fy2: old links
   if (p.has('apo')) state.fapo = p.get('apo') !== '0';
   state.fprev = p.get('prev') === '1';
   applyStab();
@@ -1547,7 +1566,7 @@ function readHash() {
 function writeHash() {
   const p = new URLSearchParams();
   p.set('tab', state.tab); p.set('units', state.units); p.set('stab', state.stab);
-  if (state.tab === 'flight') { p.set('fx', state.fx); p.set('fy', state.fy); if (state.fy2) p.set('fy2', state.fy2); p.set('apo', state.fapo ? '1' : '0'); if (state.fprev) p.set('prev', '1'); }
+  if (state.tab === 'flight') { p.set('fx', state.fx); p.set('fy', fysText(state.fys)); p.set('apo', state.fapo ? '1' : '0'); if (state.fprev) p.set('prev', '1'); }
   else { p.set('metric', state.metric); p.set('view', state.view); }
   p.set('sel', [...state.sel].map(encodeURIComponent).join(','));
   history.replaceState(null, '', '#' + p.toString());
@@ -1722,80 +1741,143 @@ const UNIT_IMPERIAL = { 'm': ['ft', 3.28084], 'm/s': ['ft/s', 3.28084], 'm/s²':
 function fvar(key) { const m = FVARS[key]; const c = (state.units === 'imperial' ? UNIT_IMPERIAL : UNIT_METRIC)[m.unit];
   return { key, label: m.label, unit: c ? c[0] : m.unit, factor: c ? c[1] : 1 }; }
 const axisText = v => v.label + (v.unit ? ` (${v.unit})` : '');
+const MAX_AXES = 3;   // per side; variables sharing a unit share an axis
+const DASHES = ['solid', 'dash', 'dot', 'dashdot', 'longdash', 'longdashdot'];
+const DASH_SVG = { solid: '', dash: '6,3', dot: '2,3', dashdot: '6,3,2,3', longdash: '10,4', longdashdot: '10,4,2,4' };
 const PRESETS = [
-  ['Stability vs altitude', 'altitude', 'stability', '', true], ['Velocity & Mach vs time', 'time', 'velocity_total', 'mach_number', true],
-  ['Cd vs Mach', 'mach_number', 'drag_coeff', '', true], ['Thrust & mass vs time', 'time', 'thrust_force', 'mass', true],
-  ['CP & CG vs time', 'time', 'cp_location', 'cg_location', true], ['Dynamic pressure vs altitude', 'altitude', 'dynamic_pressure', '', true],
-  ['AoA vs time', 'time', 'aoa', '', true], ['Altitude vs time (whole flight)', 'time', 'altitude', '', false]];
+  ['Stability vs altitude', 'altitude', 'stability', true], ['Velocity & Mach vs time', 'time', 'velocity_total,mach_number:r', true],
+  ['Cd vs Mach', 'mach_number', 'drag_coeff', true], ['Thrust & mass vs time', 'time', 'thrust_force,mass:r', true],
+  ['CP & CG vs time', 'time', 'cp_location,cg_location', true], ['Dynamic pressure vs altitude', 'altitude', 'dynamic_pressure', true],
+  ['Altitude, velocity & acceleration vs time', 'time', 'altitude,velocity_total:r,acceleration_total:r', true],
+  ['AoA vs time', 'time', 'aoa', true], ['Altitude vs time (whole flight)', 'time', 'altitude', false]];
 const MARKED_EVENTS = [['LAUNCHROD', 'rod exit'], ['BURNOUT', 'burnout'], ['APOGEE', 'apogee'], ['RECOVERY_DEVICE_DEPLOYMENT', 'deployment']];
+
+// axes: one per (side, unit), in the order the variables were added -> [{id, side, unit, vars}], plus variable key -> axis
+function axisPlan() {
+  const axes = [], of = new Map();
+  for (const side of ['l', 'r']) for (const f of state.fys) {
+    if (f.side !== side) continue;
+    const V = fvar(f.key);
+    let ax = axes.find(a => a.side === side && a.unit === V.unit);
+    if (!ax) { ax = { side, unit: V.unit, vars: [] }; axes.push(ax); }
+    ax.vars.push(V); of.set(f.key, ax);
+  }
+  axes.forEach((a, i) => a.id = i ? 'y' + (i + 1) : 'y');
+  return { axes, of };
+}
+function sideFull(side, key) {   // would this variable need a fourth axis on that side?
+  const unit = fvar(key).unit, units = new Set(state.fys.filter(f => f.side === side && f.key !== key).map(f => fvar(f.key).unit));
+  return !units.has(unit) && units.size >= MAX_AXES;
+}
+let flightNote = '';
+function addY(key) {
+  if (!FVARS[key] || state.fys.some(f => f.key === key)) return;
+  const side = !sideFull('l', key) ? 'l' : !sideFull('r', key) ? 'r' : null;
+  if (!side) { flightNote = `Both sides already carry ${MAX_AXES} units; remove a variable first.`; return; }
+  state.fys.push({ key, side });
+}
+function flipY(key) {
+  const f = state.fys.find(x => x.key === key); if (!f) return;
+  const to = f.side === 'l' ? 'r' : 'l';
+  if (sideFull(to, key)) { flightNote = `The ${to === 'l' ? 'left' : 'right'} side already carries ${MAX_AXES} units.`; return; }
+  f.side = to;
+}
+function removeY(key) { if (state.fys.length > 1) state.fys = state.fys.filter(f => f.key !== key); else flightNote = 'Keep at least one Y variable.'; }
+const dashOf = key => DASHES[Math.max(0, state.fys.findIndex(f => f.key === key)) % DASHES.length];
 
 function buildFlightControls() {
   const pre = document.getElementById('fpresets'); pre.innerHTML = '';
-  for (const [name, x, y0, y2, apo] of PRESETS) {
+  for (const [name, x, ys, apo] of PRESETS) {
     // the stability preset follows the header's calibers / % of length choice
-    const y = (y0 === 'stability' && state.stab === 'pct' && FVARS.stability_pct_length) ? 'stability_pct_length' : y0;
-    if (!FVARS[x] || !FVARS[y] || (y2 && !FVARS[y2])) continue;
+    const fys = parseFys(ys).map(f => ({ key: stabKey(f.key), side: f.side }));
+    if (!FVARS[x] || fys.length !== ys.split(',').length) continue;
     const b = document.createElement('button'); b.textContent = name;
-    b.className = (state.fx === x && state.fy === y && state.fy2 === y2) ? 'on' : '';
-    b.onclick = () => { state.fx = x; state.fy = y; state.fy2 = y2; state.fapo = apo; update(); }; pre.appendChild(b);
+    b.className = (state.fx === x && fysText(state.fys) === fysText(fys)) ? 'on' : '';
+    b.onclick = () => { state.fx = x; state.fys = fys.map(f => ({ ...f })); state.fapo = apo; update(); }; pre.appendChild(b);
   }
   const row = document.getElementById('fcontrols'); row.innerHTML = '';
   const keys = Object.keys(FVARS).sort((a, b) => FVARS[a].label.localeCompare(FVARS[b].label));
-  const addSelect = (text, value, allowNone, onpick) => {
+  const addSelect = (text, value, first, onpick) => {
     const l = document.createElement('span'); l.className = 'lbl'; l.textContent = text; row.appendChild(l);
     const s = document.createElement('select');
-    if (allowNone) { const o = document.createElement('option'); o.value = ''; o.textContent = '(none)'; s.appendChild(o); }
-    for (const k of keys) { const o = document.createElement('option'); o.value = k; o.textContent = axisText(fvar(k)); s.appendChild(o); }
+    if (first) { const o = document.createElement('option'); o.value = ''; o.textContent = first; s.appendChild(o); }
+    for (const k of keys) { const o = document.createElement('option'); o.value = k; o.textContent = axisText(fvar(k)); if (first && state.fys.some(f => f.key === k)) o.disabled = true; s.appendChild(o); }
     s.value = value; s.onchange = () => { onpick(s.value); update(); }; row.appendChild(s);
   };
-  addSelect('X', state.fx, false, v => state.fx = v);
-  addSelect('Y', state.fy, false, v => state.fy = v);
-  addSelect('Y2', state.fy2, true, v => state.fy2 = v);
+  addSelect('X', state.fx, '', v => state.fx = v);
+  addSelect('Y', '', '+ add a Y variable\u2026', v => addY(v));
   const sp = document.createElement('span'); sp.className = 'spacer'; row.appendChild(sp);
   const addCheck = (text, checked, onpick) => { const l = document.createElement('label'); l.className = 'toggle';
     const c = document.createElement('input'); c.type = 'checkbox'; c.checked = checked; c.onchange = () => { onpick(c.checked); update(); };
     l.append(c, document.createTextNode(text)); row.appendChild(l); };
   addCheck('ascent only', state.fapo, v => state.fapo = v);
   addCheck('previous version', state.fprev, v => state.fprev = v);
+  const ex = document.createElement('button'); ex.textContent = 'Export CSV'; ex.title = 'Download the plotted series (display units; ascent only when ticked) as CSV';
+  ex.onclick = exportCsv; row.appendChild(ex);
+  buildYPanel();
+}
+function dashIcon(dash) {
+  const ns = 'http://www.w3.org/2000/svg', s = document.createElementNS(ns, 'svg'); s.setAttribute('width', '26'); s.setAttribute('height', '8');
+  const l = document.createElementNS(ns, 'line'); l.setAttribute('x1', '0'); l.setAttribute('y1', '4'); l.setAttribute('x2', '26'); l.setAttribute('y2', '4');
+  l.setAttribute('stroke', 'currentColor'); l.setAttribute('stroke-width', '2'); if (DASH_SVG[dash]) l.setAttribute('stroke-dasharray', DASH_SVG[dash]);
+  s.appendChild(l); return s;
+}
+function buildYPanel() {   // the selected Y variables, grouped by axis side; click to move, x to remove
+  const panel = document.getElementById('ypanel'); panel.innerHTML = '';
+  const hint = document.createElement('p'); hint.className = 'hint'; hint.textContent = `Click a variable to move it to the other axis. Up to ${MAX_AXES} units per side.`; panel.appendChild(hint);
+  for (const [side, title] of [['l', 'Left axes'], ['r', 'Right axes']]) {
+    const h = document.createElement('h3'); h.textContent = title; panel.appendChild(h);
+    const here = state.fys.filter(f => f.side === side);
+    if (!here.length) { const n = document.createElement('div'); n.className = 'none'; n.textContent = 'none'; panel.appendChild(n); continue; }
+    for (const f of here) {
+      const V = fvar(f.key), row = document.createElement('div'); row.className = 'yvar'; row.title = `Move ${V.label} to the ${side === 'l' ? 'right' : 'left'} axis`;
+      const lbl = document.createElement('span'); lbl.className = 'lbl'; lbl.textContent = axisText(V);
+      const arrow = document.createElement('span'); arrow.className = 'arrow'; arrow.textContent = side === 'l' ? '\u2192' : '\u2190';
+      const x = document.createElement('button'); x.className = 'x'; x.textContent = '\u00d7'; x.title = `Remove ${V.label}`;
+      x.onclick = e => { e.stopPropagation(); removeY(f.key); update(); };
+      row.append(dashIcon(dashOf(f.key)), lbl, arrow, x); row.onclick = () => { flipY(f.key); update(); }; panel.appendChild(row);
+    }
+  }
 }
 
 const fplot = document.getElementById('fplot'), fempty = document.getElementById('fempty'), finfo = document.getElementById('finfo');
+const tApogee = ver => (ver.events.APOGEE || [Infinity])[0];
+const versionsShown = fl => state.fprev ? fl.versions.slice(0, 2) : fl.versions.slice(0, 1);
 function flightPoints(ver, xk, yk, xf, yf) {   // -> {x:[], y:[], t:[]} in display units, ascent-only when asked
   const t = ver.cols.time, xs = ver.cols[xk], ys = ver.cols[yk]; const out = { x: [], y: [], t: [] };
   if (!t || !xs || !ys) return out;
-  const tApo = (ver.events.APOGEE || [Infinity])[0];
+  const tApo = tApogee(ver);
   for (let i = 0; i < t.length; i++) { if (state.fapo && t[i] > tApo) break; if (xs[i] == null || ys[i] == null) continue; out.x.push(xs[i] * xf); out.y.push(ys[i] * yf); out.t.push(t[i]); }
   return out;
 }
 function drawFlight() {
   const sel = ALL.filter(a => state.sel.has(a.id)); sel.forEach(a => ensureFlight(a.id));
-  const X = fvar(state.fx), Y = fvar(state.fy), Y2 = state.fy2 ? fvar(state.fy2) : null;
-  const twoAxes = Y2 && Y2.unit !== Y.unit;
+  const X = fvar(state.fx), { axes, of } = axisPlan(), Y0 = fvar(state.fys[0].key);
   const traces = [], notes = [];
+  if (flightNote) { notes.push(flightNote); flightNote = ''; }
   const hover = (label, V) => `${label}<br>${V.label}: %{y:.5g}${V.unit ? ' ' + V.unit : ''}<br>${X.label}: %{x:.5g}${X.unit ? ' ' + X.unit : ''}<br>t = %{customdata:.2f} s<extra></extra>`;
   for (const a of sel) {
     const fl = FLIGHTS[a.id], col = colorOf.get(a.id);
     if (!fl) { notes.push(`${simLabel(a)}: ${(DATA.flights || {})[a.id] ? 'loading\u2026' : 'no flight data (simulation failed or motor unresolved)'}`); continue; }
-    const vers = state.fprev ? fl.versions.slice(0, 2) : fl.versions.slice(0, 1);
+    const vers = versionsShown(fl);
     notes.push(`${simLabel(a)}: ${vers.map(v => `${v.short} (${v.date})`).join(' vs ')}`);
     vers.forEach((ver, vi) => {
-      [[Y, 'y'], [Y2, twoAxes ? 'y2' : 'y']].forEach(([V, axis], yi) => {
-        if (!V) return;
-        const p = flightPoints(ver, X.key, V.key, X.factor, V.factor); if (!p.x.length) return;
+      for (const f of state.fys) {
+        const V = fvar(f.key), p = flightPoints(ver, X.key, V.key, X.factor, V.factor); if (!p.x.length) continue;
         const label = `${simLabel(a)} \u00b7 ${V.label}${vi ? ' (previous ' + ver.short + ')' : ''}`;
-        traces.push({ type: 'scatter', mode: 'lines', name: label, x: p.x, y: p.y, customdata: p.t, yaxis: axis,
-                      line: { color: col, width: vi ? 1.5 : 2, dash: vi ? 'dot' : (yi ? 'dash' : 'solid') }, opacity: vi ? 0.55 : 1,
+        traces.push({ type: 'scatter', mode: 'lines', name: label, x: p.x, y: p.y, customdata: p.t, yaxis: of.get(f.key).id,
+                      line: { color: col, width: vi ? 1.5 : 2, dash: vi ? 'dot' : dashOf(f.key) }, opacity: vi ? 0.55 : 1,
                       hovertemplate: hover(label, V) });
-      });
+      }
       if (vi) return;   // event markers on the latest version's first Y only
-      const base = flightPoints(ver, X.key, Y.key, X.factor, Y.factor);
+      const base = flightPoints(ver, X.key, Y0.key, X.factor, Y0.factor);
       const m = { x: [], y: [], t: [], text: [] };
       for (const [ev, text] of MARKED_EVENTS) { const te = (ver.events[ev] || [])[0]; if (te == null || !base.t.length) continue;
         let best = 0; for (let i = 1; i < base.t.length; i++) if (Math.abs(base.t[i] - te) < Math.abs(base.t[best] - te)) best = i;
         if (Math.abs(base.t[best] - te) < 1.0) { m.x.push(base.x[best]); m.y.push(base.y[best]); m.t.push(te); m.text.push(text); } }
-      if (m.x.length) traces.push({ type: 'scatter', mode: 'markers', name: `${simLabel(a)} \u00b7 events`, x: m.x, y: m.y, customdata: m.t, text: m.text, yaxis: 'y',
+      if (m.x.length) traces.push({ type: 'scatter', mode: 'markers', name: `${simLabel(a)} \u00b7 events`, x: m.x, y: m.y, customdata: m.t, text: m.text, yaxis: of.get(Y0.key).id,
                                     marker: { symbol: 'triangle-up', size: 12, color: css('--bg'), line: { color: col, width: 2 } }, showlegend: false,
-                                    hovertemplate: `<b>%{text}</b><br>${simLabel(a)}<br>${Y.label}: %{y:.5g}${Y.unit ? ' ' + Y.unit : ''}<br>${X.label}: %{x:.5g}${X.unit ? ' ' + X.unit : ''}<br>t = %{customdata:.2f} s<extra></extra>` });
+                                    hovertemplate: `<b>%{text}</b><br>${simLabel(a)}<br>${Y0.label}: %{y:.5g}${Y0.unit ? ' ' + Y0.unit : ''}<br>${X.label}: %{x:.5g}${X.unit ? ' ' + X.unit : ''}<br>t = %{customdata:.2f} s<extra></extra>` });
     });
   }
   finfo.textContent = notes.join('   |   ');
@@ -1804,15 +1886,52 @@ function drawFlight() {
   const dark = isDark(), fg = css('--fg'), grid = dark ? '#30363d' : '#d0d7de';
   const layout = {
     paper_bgcolor: 'rgba(0,0,0,0)', plot_bgcolor: 'rgba(0,0,0,0)', font: { color: fg, size: 12 },
-    margin: { l: 60, r: twoAxes ? 60 : 20, t: 30, b: 50 }, hovermode: 'closest', dragmode: 'zoom',
+    margin: { l: 60, r: 20, t: 30, b: 50 }, hovermode: 'closest', dragmode: 'zoom',
     legend: { orientation: 'h', y: 1.06, x: 0 },
     xaxis: { title: { text: axisText(X) }, gridcolor: grid, zeroline: false, automargin: true },
-    yaxis: { title: { text: axisText(Y) + (Y2 && !twoAxes ? '  /  ' + axisText(Y2) : '') }, gridcolor: grid, zeroline: false, automargin: true },
   };
-  if (twoAxes) layout.yaxis2 = { title: { text: axisText(Y2) + '  (dashed)' }, overlaying: 'y', side: 'right', showgrid: false, zeroline: false, automargin: true };
+  // one Plotly axis per (side, unit): the first on each side sits on the plot edge, the rest are shifted outwards by Plotly
+  const seen = new Set();
+  for (const ax of axes) {
+    const title = ax.vars.map(v => v.label).join(' / ') + (ax.unit ? ` (${ax.unit})` : '');
+    const a = { title: { text: title }, side: ax.side === 'l' ? 'left' : 'right', automargin: true, zeroline: false, gridcolor: grid, showgrid: ax.id === 'y' };
+    if (ax.id !== 'y') { a.overlaying = 'y'; if (seen.has(ax.side)) { a.anchor = 'free'; a.autoshift = true; } }
+    seen.add(ax.side); layout['yaxis' + ax.id.slice(1)] = a;
+  }
   const config = { responsive: true, displaylogo: false, scrollZoom: true, modeBarButtonsToRemove: ['lasso2d', 'select2d'],
-                   toImageButtonOptions: { format: 'png', filename: `${state.fy}_vs_${state.fx}`, scale: 2 } };
+                   toImageButtonOptions: { format: 'png', filename: `${state.fys.map(f => f.key).join('+')}_vs_${state.fx}`, scale: 2 } };
   Plotly.react(fplot, traces, layout, config);
+}
+
+// ---- CSV of exactly what is plotted: one row per sample, display units, ascent only when ticked ----
+const csvq = s => /[",\n]/.test(s) ? '"' + String(s).replace(/"/g, '""') : s;
+const csvNum = v => v == null ? '' : String(+(+v).toPrecision(7));
+function csvText() {
+  const X = fvar(state.fx), Ys = state.fys.map(f => fvar(f.key));
+  const head = ['simulation', 'version', 'time (s)'].concat(X.key === 'time' ? [] : [axisText(X)], Ys.map(axisText));
+  const lines = [head.map(csvq).join(',')];
+  let n = 0;
+  for (const a of ALL) {
+    const fl = FLIGHTS[a.id]; if (!state.sel.has(a.id) || !fl) continue;
+    for (const ver of versionsShown(fl)) {
+      const t = ver.cols.time, tApo = tApogee(ver), xs = ver.cols[X.key] || [], cols = Ys.map(V => ver.cols[V.key] || []);
+      for (let i = 0; i < t.length; i++) {
+        if (state.fapo && t[i] > tApo) break;
+        const row = [csvq(simLabel(a)), ver.short, csvNum(t[i])];
+        if (X.key !== 'time') row.push(csvNum(xs[i] == null ? null : xs[i] * X.factor));
+        Ys.forEach((V, k) => row.push(csvNum(cols[k][i] == null ? null : cols[k][i] * V.factor)));
+        lines.push(row.join(',')); n++;
+      }
+    }
+  }
+  return { text: lines.join('\n') + '\n', rows: n, name: `${state.fys.map(f => f.key).join('+')}_vs_${state.fx}${state.fapo ? '_ascent' : ''}.csv` };
+}
+function exportCsv() {
+  const { text, rows, name } = csvText();
+  if (!rows) { flightNote = 'Nothing to export yet: tick a simulation and wait for its flight data.'; update(); return; }
+  const url = URL.createObjectURL(new Blob([text], { type: 'text/csv;charset=utf-8' }));
+  const a = document.createElement('a'); a.href = url; a.download = name; document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 2000);
 }
 
 // ---- changelog: what changed in each design file, commit by commit ----
