@@ -1,0 +1,104 @@
+name: Rocket milestone release
+
+# Publishes a GitHub Release of a rocket's aero_modeling/<ROCKET>/ folder when a
+# commit pushed to main contains a directive in its message:
+#
+#   [release: SOL_INVICTUS/v1.2]
+#
+# The rocket name must match a folder in aero_modeling/ (case-insensitive). The
+# release is tagged <ROCKET>/<milestone> on the commit that carried the
+# directive, and the zip holds that folder exactly as committed there. Every
+# commit in the push is scanned, so directives survive merge commits, and one
+# push may release several rockets. An existing tag is an error, never an
+# overwrite: bump the milestone instead.
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: write   # create tags and releases with GITHUB_TOKEN
+
+concurrency:
+  group: rocket-release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # full history, to scan the pushed commits and check tags
+
+      - name: Create releases from commit directives
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BEFORE: ${{ github.event.before }}
+          AFTER: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+
+          # Commits in this push, oldest first. A new branch or a force push has
+          # no usable "before", so fall back to the head commit alone.
+          if [[ "$BEFORE" =~ ^0+$ ]] || ! git cat-file -e "$BEFORE^{commit}" 2>/dev/null; then
+            COMMITS="$AFTER"
+          else
+            COMMITS=$(git rev-list --reverse "$BEFORE..$AFTER")
+          fi
+
+          directive='\[release:[[:space:]]*([A-Za-z0-9_-]+)/([A-Za-z0-9._-]+)[[:space:]]*\]'
+          released=0
+
+          for sha in $COMMITS; do
+            msg=$(git log -1 --format=%B "$sha")
+            [[ "$msg" =~ $directive ]] || continue
+            requested="${BASH_REMATCH[1]}"
+            milestone="${BASH_REMATCH[2]}"
+
+            # Resolve the folder name case-insensitively as it exists at that commit.
+            rocket=$(git ls-tree -d --name-only "$sha" aero_modeling/ \
+                     | sed 's|^aero_modeling/||' \
+                     | grep -ix -- "$requested" || true)
+            if [[ -z "$rocket" ]]; then
+              echo "::error::Commit ${sha:0:7} asks to release '$requested', but aero_modeling/$requested does not exist there."
+              exit 1
+            fi
+
+            tag="$rocket/$milestone"
+            if git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
+              echo "::error::Tag $tag already exists. Use a new milestone name."
+              exit 1
+            fi
+
+            # Zip only tracked files at that commit, inside a top-level folder.
+            zip_name="${rocket}_${milestone}.zip"
+            git archive --format=zip --prefix="${rocket}_${milestone}/" \
+              -o "$zip_name" "$sha:aero_modeling/$rocket"
+            zip -dq "$zip_name" '*.DS_Store' '*/.gitkeep' || true   # no match is fine
+
+            {
+              echo "Milestone release of **$rocket**: \`$milestone\`"
+              echo
+              echo "Contents of \`aero_modeling/$rocket/\` at commit $sha."
+              echo
+              echo "Commit message:"
+              echo
+              echo '```'
+              echo "$msg"
+              echo '```'
+            } > notes.md
+
+            gh release create "$tag" "$zip_name" \
+              --target "$sha" \
+              --title "$rocket $milestone" \
+              --notes-file notes.md
+
+            echo "Released $tag from ${sha:0:7}" >> "$GITHUB_STEP_SUMMARY"
+            released=$((released + 1))
+          done
+
+          if [[ $released -eq 0 ]]; then
+            echo "No [release: ROCKET/milestone] directive in this push."
+          fi
