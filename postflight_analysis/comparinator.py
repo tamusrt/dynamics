@@ -16,7 +16,8 @@ from scipy.interpolate import interp1d
 import pint
 from collections import defaultdict
 import load_data as ld
-import hybrid_engine_cg as eng
+import hybrid_engine_cg as heng
+import solid_engine_cg as seng
 import rocket_geometry as geo
 
 # specifications for each rocket motor
@@ -58,7 +59,27 @@ sol_ignis = {
 }
 
 O3400 = {
+    "grain_casing": {
+        "offset": 0.4,        # m from the motor's own reference point (mount face, say)
+    },
 
+    "fuel_grain": {    
+        "dry_mass":0.15,      # lbm, empty liner
+        "length":8.0,         # in, matches length_in convention used elsewhere
+    },
+
+    "grain":{
+        "outer_radius_in":1.5,
+        "initial_port_radius_in":0.375,
+        "length_in":8.0,
+        "propellant_density_lbm_in3":0.065,   
+    },
+
+    "hardware" : {
+        "offset": 8.5,         # m, downstream of the grain
+        "dry_mass": 0.6,       # lbm
+        "length": 2.0,         # in
+    }
 }
 
 valor_10k = {
@@ -69,8 +90,8 @@ lumina = {
 }
 
 ROCKET_ENGINES = {
-    "morpheus": (sol_ignis, "hybrid"),  
-    "sol_invictus": (sol_ignis, "hybrid"), # the faa.Engine instance built at module scope
+    "morpheus": (O3400, "solid"),  
+    "sol_invictus": (sol_ignis, "hybrid"), 
     "morbin' time": (O3400, "solid"),
     "mikeys": (lumina, "liquid")
 }
@@ -80,11 +101,11 @@ BASE_DIR = r"G:\Shared drives\TAMU-SRT\srt_general\9_flight_data"
 ureg = pint.UnitRegistry()
 Q_ = ureg.Quantity
 
+# find the flight for user
 def available_rockets(base_dir=BASE_DIR):
     """Rocket folders present under base_dir, alphabetically."""
     root = Path(base_dir)
     return sorted(p.name for p in root.iterdir() if p.is_dir() and not p.name.startswith("."))
-
 
 def _flight_sort_key(name):
     """Sort flight folders newest-first. Folder names lead with an mmddyyyy stamp
@@ -149,6 +170,58 @@ def resolve_duplicates(data, folder):
                 del data[k]
 
     return data
+
+# call engine qualities, find values
+def build_hybrid(cfg: dict, t: np.ndarray, df):
+    ox_pressure = df['run_tank_pressure']
+    ox_mdot = np.full_like(t, cfg["ox_mdot"])
+
+    fuel_mdot = np.full_like(t, cfg["fuel_mdot"])
+
+    tc = cfg["tank"]
+    tank_casing = heng.EngineComponent(
+        name="ox_tank_casing",
+        dry_mass=tc["dry_mass"], offset=tc["offset"],
+        length=tc["length"], radius=tc["radius"],
+    )
+    tank = heng.OxidizerTank(
+        casing=tank_casing,
+        volume_in3=tc["volume_in3"],
+        initial_ox_mass_lbm=tc["initial_ox_mass_lbm"],
+        liquid_temp_F=tc["liquid_temp_F"],
+        times_s=t, pressure_psi=ox_pressure, mdot_lbm_s=ox_mdot,
+    )
+
+    gc = cfg["grain"]
+    grain_casing = heng.EngineComponent(
+        name="grain_casing",
+        dry_mass=gc["dry_mass"], offset=gc["offset"],
+        length=gc["length"], radius=gc["radius"],
+    )
+    grain = heng.FuelGrain(
+        casing=grain_casing,
+        outer_radius_in=gc["outer_radius_in"],
+        initial_port_radius_in=gc["initial_port_radius_in"],
+        length_in=gc["length_in"],
+        fuel_density_lbm_in3=gc["fuel_density_lbm_in3"],
+        times_s=t, mdot_lbm_s=fuel_mdot,
+    )
+
+    pc = cfg["plumbing"]
+    plumbing = heng.EngineComponent(
+        name="plumbing", dry_mass=pc["dry_mass"],
+        offset=pc["offset"], length=pc["length"],
+    )
+
+    ec = cfg["engine"]
+    return heng.Engine(
+        tank=tank, plumbing=plumbing, grain=grain,
+        length_in=ec["length_in"], offset_in=ec["offset_in"],
+    )
+
+def build_solid():
+    
+    return 0 
 
 def calculate(data_dict, cutoff_dict, rocket):
     calc_array = []
@@ -240,7 +313,7 @@ def calculate(data_dict, cutoff_dict, rocket):
 
     return calc, cutoff_dict
 
-
+# graph
 def compute_sensitivity_bands(build_data_fn, windows, keys, apogee_key="apogee"):   
     """
     build_data_fn(window_length) -> (data, areas)  -- reruns your full pipeline
@@ -559,52 +632,6 @@ def graph2(data, areas, build_data_fn=None, windows=(31, 51, 71, 91, 111),
     plt.show()
     return fig1, fig1b, fig2, fig3, fig4
 
-def build_hybrid(cfg: dict, t: np.ndarray, df):
-    ox_pressure = df['run_tank_pressure']
-    ox_mdot = np.full_like(t, cfg["ox_mdot"])
-
-    fuel_mdot = np.full_like(t, cfg["fuel_mdot"])
-
-    tc = cfg["tank"]
-    tank_casing = eng.EngineComponent(
-        name="ox_tank_casing",
-        dry_mass=tc["dry_mass"], offset=tc["offset"],
-        length=tc["length"], radius=tc["radius"],
-    )
-    tank = eng.OxidizerTank(
-        casing=tank_casing,
-        volume_in3=tc["volume_in3"],
-        initial_ox_mass_lbm=tc["initial_ox_mass_lbm"],
-        liquid_temp_F=tc["liquid_temp_F"],
-        times_s=t, pressure_psi=ox_pressure, mdot_lbm_s=ox_mdot,
-    )
-
-    gc = cfg["grain"]
-    grain_casing = eng.EngineComponent(
-        name="grain_casing",
-        dry_mass=gc["dry_mass"], offset=gc["offset"],
-        length=gc["length"], radius=gc["radius"],
-    )
-    grain = eng.FuelGrain(
-        casing=grain_casing,
-        outer_radius_in=gc["outer_radius_in"],
-        initial_port_radius_in=gc["initial_port_radius_in"],
-        length_in=gc["length_in"],
-        fuel_density_lbm_in3=gc["fuel_density_lbm_in3"],
-        times_s=t, mdot_lbm_s=fuel_mdot,
-    )
-
-    pc = cfg["plumbing"]
-    plumbing = eng.EngineComponent(
-        name="plumbing", dry_mass=pc["dry_mass"],
-        offset=pc["offset"], length=pc["length"],
-    )
-
-    ec = cfg["engine"]
-    return eng.Engine(
-        tank=tank, plumbing=plumbing, grain=grain,
-        length_in=ec["length_in"], offset_in=ec["offset_in"],
-    )
 
 def main():
     print(f"    .\n   .'.\n   |o|   Welcome to Comparinator!™\n  .'o'.  \033[3mFor all your comparing needs\033[0m\n  |.-.|\n  '   '\n   ( )\n    )\n   ( )")
@@ -660,21 +687,28 @@ def main():
         bundle = interpolated_data[entry]
         df = pd.DataFrame({col: getattr(bundle, col) for col in bundle.columns})
         df.to_csv(f"interp_{entry}.csv", index=False)
-    
-    thrust_bundle = find_bundle(interpolated_data, "thrust")  # repetitive, but the intention is to initialize the engine component
-    set_bundle = find_bundle(interpolated_data, "set")
 
-    spec_thrust = thrust_bundle['spec_thrust']
-    nonzero_idx = np.flatnonzero(np.asarray(spec_thrust.magnitude))
-    burnout = nonzero_idx[-1] + 1 if nonzero_idx.size else len(spec_thrust)
+    if ROCKET_ENGINES[engine_key][1] == "hybrid":
+        thrust_bundle = find_bundle(interpolated_data, "thrust")  # fix meeeeeeee, but the intention is to initialize the engine component
+        set_bundle = find_bundle(interpolated_data, "set")
 
-    for col in set_bundle.columns:
-        setattr(set_bundle, col, set_bundle[col][:burnout])
-    
+        spec_thrust = thrust_bundle['spec_thrust']
+        nonzero_idx = np.flatnonzero(np.asarray(spec_thrust.magnitude))
+        burnout = nonzero_idx[-1] + 1 if nonzero_idx.size else len(spec_thrust)
 
-    if engine_key[1] == "hybrid":
-        engine_used = build_hybrid(sol_ignis["high_of"], set_bundle['time'], set_bundle)
-    engine_used = build_hybrid(sol_ignis["high_of"], set_bundle['time'], set_bundle)
+        for col in set_bundle.columns:
+            setattr(set_bundle, col, set_bundle[col][:burnout])
+        engine_used = build_hybrid(sol_ignis["high_of"], set_bundle['time'], set_bundle) 
+    elif ROCKET_ENGINES[engine_key][1] == "solid":
+        thrust_bundle = find_bundle(interpolated_data, "thrust")
+        spec_thrust = thrust_bundle['spec_thrust']
+        nonzero_idx = np.flatnonzero(np.asarray(spec_thrust.magnitude))
+        burnout = nonzero_idx[-1] + 1 if nonzero_idx.size else len(spec_thrust)
+
+        burn_time = thrust_bundle['time'][:burnout].magnitude
+        burn_thrust = spec_thrust[:burnout].magnitude
+        engine_used = build_solid(grain, hardware, offset_in=1.2)
+
     rocket = geo.Rocket.from_file(candidates[0], engine=engine_used)
 
     graph_values, cutoff_dict = calculate(interpolated_data, cutoff_dict, rocket)
