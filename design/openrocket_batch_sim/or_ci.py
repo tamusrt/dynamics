@@ -1466,6 +1466,7 @@ SITE_HTML = r"""<!doctype html>
   .ypanel .all { flex:1; min-height:120px; overflow:auto; }
   .ycheck { display:flex; align-items:center; gap:7px; padding:3px 6px; border-radius:6px; cursor:pointer; }
   .ycheck:hover { background:var(--hover); } .ycheck input { margin:0; accent-color:var(--accent); flex:none; }
+  .ycheck[hidden] { display:none; }   /* display:flex above would otherwise beat the hidden attribute */
   .ycheck .lbl { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; } .ycheck .sidetag { color:var(--muted); font-size:11px; }
   .chartbox { flex:1 1 auto; min-height:320px; position:relative; background:var(--card); border:1px solid var(--line); border-radius:8px; padding:10px; }
   .empty { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; color:var(--muted); pointer-events:none; }
@@ -1929,7 +1930,7 @@ function drawFlight() {
 }
 
 // ---- CSV of exactly what is plotted: one row per sample, display units, ascent only when ticked ----
-const csvq = s => /[",\n]/.test(s) ? '"' + String(s).replace(/"/g, '""') : s;
+const csvq = s => /[",\n]/.test(s) ? '"' + String(s).replace(/"/g, '""') + '"' : s;   // RFC 4180 quoting
 const csvNum = v => v == null ? '' : String(+(+v).toPrecision(7));
 function csvText() {
   const X = fvar(state.fx), Ys = state.fys.map(f => fvar(f.key));
@@ -1954,7 +1955,7 @@ function csvText() {
 function exportCsv() {
   const { text, rows, name } = csvText();
   if (!rows) { flightNote = 'Nothing to export yet: tick a simulation and wait for its flight data.'; update(); return; }
-  const url = URL.createObjectURL(new Blob([text], { type: 'text/csv;charset=utf-8' }));
+  const url = URL.createObjectURL(new Blob(['\ufeff', text], { type: 'text/csv;charset=utf-8' }));   // BOM: Excel then reads ° and ² correctly
   const a = document.createElement('a'); a.href = url; a.download = name; document.body.appendChild(a); a.click(); a.remove();
   setTimeout(() => URL.revokeObjectURL(url), 2000);
 }
