@@ -4,7 +4,7 @@ name: OpenRocket simulation check
 # OpenRocket design, a motor thrust curve, or the simulation config. Each
 # changed .ork is simulated before and after the push, and a before/after
 # table is posted as a comment on the commit, in the job summary, and as a
-# downloadable artifact. See design/openrocket_batch_sim/CI.md.
+# downloadable artifact. See tools/openrocket/CI.md.
 on:
   push:
     paths:
@@ -12,7 +12,7 @@ on:
       - "aero_modeling/**/*.rse"
       - "aero_modeling/**/*.eng"
       - "aero_modeling/sim_config.json"
-      - "design/openrocket_batch_sim/or_ci.py"
+      - "tools/openrocket/or_ci.py"
       - ".github/workflows/openrocket-sim.yml"
   workflow_dispatch:
     inputs:
@@ -55,10 +55,10 @@ jobs:
         with:
           python-version: "3.11"
           cache: pip
-          cache-dependency-path: design/openrocket_batch_sim/requirements.txt
+          cache-dependency-path: tools/openrocket/requirements.txt
 
       - name: Install orlab
-        run: pip install -r design/openrocket_batch_sim/requirements.txt
+        run: pip install -r tools/openrocket/requirements.txt
 
       - name: Cache the OpenRocket jar
         uses: actions/cache@v6
@@ -84,7 +84,7 @@ jobs:
           BASE: ${{ github.event.before || inputs.base }}
           ALL: ${{ inputs.all == true && '--all' || '' }}
         run: |
-          python design/openrocket_batch_sim/or_ci.py compare \
+          python tools/openrocket/or_ci.py compare \
             --config aero_modeling/sim_config.json \
             --base "$BASE" $ALL \
             --results or_ci_results \
@@ -96,7 +96,7 @@ jobs:
         run: |
           targets=$(tr '\n' ' ' < or_ci_results/targets.txt)
           if [ -n "$(echo $targets | tr -d ' ')" ]; then
-            python design/openrocket_batch_sim/or_ci.py history \
+            python tools/openrocket/or_ci.py history \
               --config aero_modeling/sim_config.json \
               --cache .or_ci_cache \
               --results or_ci_results/history \
@@ -141,7 +141,7 @@ jobs:
       - name: Assemble the report (merges any narrations)
         if: always() && hashFiles('or_ci_results/results.json') != ''
         run: |
-          python design/openrocket_batch_sim/or_ci.py narrate \
+          python tools/openrocket/or_ci.py narrate \
             --config aero_modeling/sim_config.json \
             --results or_ci_results \
             --cache .or_ci_cache \
@@ -152,7 +152,7 @@ jobs:
       - name: Build the history site for every design (main only)
         if: always() && github.ref == 'refs/heads/main'
         run: |
-          python design/openrocket_batch_sim/or_ci.py history \
+          python tools/openrocket/or_ci.py history \
             --config aero_modeling/sim_config.json \
             --cache .or_ci_cache \
             --results or_ci_results/site_history \

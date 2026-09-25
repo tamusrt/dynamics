@@ -1,3 +1,14 @@
+# OpenRocket automation
+
+Everything that drives OpenRocket headlessly (through `orlab`, no GUI), for every design under `aero_modeling/`:
+
+- **CI check, history site and changelog:** `or_ci.py` and `ork_diff.py`, run by `.github/workflows/openrocket-sim.yml` on every push. Config in `aero_modeling/sim_config.json`. Docs: [CI.md](CI.md).
+- **Batch trade studies:** `batch_simulate.py` (run every `.ork` in a folder), `openrocket_variant_generator.py` (generate geometry variants) and `analyze_trade_study.py` (summarise the results CSV). Documented below.
+
+Both share one setup: Java 17+, `pip install -r requirements.txt` here (or the repo's root `requirements.txt`), and `python -m orlab fetch 24.12` for the OpenRocket jar.
+
+---
+
 # OpenRocket Batch Simulator
 
 Runs OpenRocket's flight simulation on every `.ork` file in a folder, without opening the OpenRocket GUI or clicking "import"/"simulate" by hand, and writes one summary CSV row per simulation (apogee, max velocity, max acceleration, time to apogee, flight time).
