@@ -1424,7 +1424,7 @@ SITE_HTML = r"""<!doctype html>
   .sim .label { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   .sim .val { color:var(--muted); font-size:12px; font-variant-numeric:tabular-nums; }
   .sim .val.up { color:var(--up); } .sim .val.down { color:var(--down); }
-  .navtools { display:flex; gap:6px; padding:2px 6px 10px; }
+  .navtools { display:flex; gap:8px; align-items:center; padding:2px 6px 10px; } .navtools .lbl { margin:0; }
   .navtools button, .row button, .row label { font:inherit; font-size:12px; }
   select { font:inherit; font-size:13px; padding:3px 6px; border-radius:6px; border:1px solid var(--line); background:var(--bg); color:var(--fg); }
   button { font:inherit; padding:4px 10px; border-radius:6px; border:1px solid var(--line); background:var(--bg); color:var(--fg); cursor:pointer; }
@@ -1561,7 +1561,8 @@ function buildNav() {
   nav.innerHTML = '';
   const tools = document.createElement('div'); tools.className = 'navtools';
   const bNone = document.createElement('button'); bNone.textContent = 'Clear'; bNone.onclick = () => { state.sel.clear(); update(); };
-  tools.appendChild(bNone); nav.appendChild(tools);
+  const cap = document.createElement('span'); cap.id = 'navcap'; cap.className = 'lbl';
+  tools.append(bNone, cap); nav.appendChild(tools);
   for (const [file, sims] of Object.entries(DATA.designs)) {
     const d = document.createElement('div'); d.className = 'design';
     const head = document.createElement('div'); head.className = 'head';
@@ -1585,14 +1586,16 @@ function buildNav() {
     d.append(head, list); nav.appendChild(d);
   }
 }
+function navMetric() { return state.tab === 'history' ? state.metric : 'apogee'; }   // the sidebar numbers follow the History metric; elsewhere they are apogee
 function refreshNav() {
-  const spec = specOf(state.metric);
+  const key = navMetric(), spec = specOf(key);
+  const cap = document.getElementById('navcap'); if (cap) cap.textContent = `latest ${spec.label.toLowerCase()}${spec.unit ? ' (' + spec.unit + ')' : ''}, coloured by last change`;
   for (const row of nav.querySelectorAll('.sim')) {
     const a = ALL.find(x => x.id === row.dataset.id);
     row.querySelector('input').checked = state.sel.has(a.id);
     row.querySelector('.swatch').style.background = colorOf.get(a.id) || css('--line');
-    const ok = a.rows.filter(r => r.ok && r.m[state.metric] != null);
-    const v = ok.length ? val(ok[ok.length - 1], state.metric) : null, p = ok.length > 1 ? val(ok[ok.length - 2], state.metric) : null;
+    const ok = a.rows.filter(r => r.ok && r.m[key] != null);
+    const v = ok.length ? val(ok[ok.length - 1], key) : null, p = ok.length > 1 ? val(ok[ok.length - 2], key) : null;
     const el = row.querySelector('.val'); el.textContent = fmt(v, spec.dec) + (spec.unit ? ' ' + spec.unit : '');
     el.className = 'val' + (p == null || v == null || Math.abs(v - p) < Math.pow(10, -spec.dec) / 2 ? '' : v > p ? ' up' : ' down');
   }
