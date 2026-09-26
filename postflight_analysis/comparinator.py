@@ -60,15 +60,14 @@ sol_ignis = {
 
 O3400 = {
     "grain_casing": {
-        "offset": 0.4,        # m from the motor's own reference point (mount face, say)
+        "offset": 0.4,
+        "dry_mass":0.15,      # lbm, empty liner
+        "length":8.0,         # m from the motor's own reference point (mount face, say)
     },
 
-    "fuel_grain": {    
+    "grain": {    
         "dry_mass":0.15,      # lbm, empty liner
         "length":8.0,         # in, matches length_in convention used elsewhere
-    },
-
-    "grain":{
         "outer_radius_in":1.5,
         "initial_port_radius_in":0.375,
         "length_in":8.0,
@@ -219,9 +218,34 @@ def build_hybrid(cfg: dict, t: np.ndarray, df):
         length_in=ec["length_in"], offset_in=ec["offset_in"],
     )
 
-def build_solid():
-    
-    return 0 
+def build_solid(values: dict, t: np.array, df):
+    gcv = values["grain_casing"]
+    grain_casing = seng.EngineComponent(
+        name = "grain_casing",
+        offset=gcv["offset"],        # m from the motor's own reference point (mount face, say)
+        dry_mass=gcv["dry_mass"],      # lbm, empty liner
+        length=gcv["length"],         # in, matches length_in convention used elsewhere
+    )
+
+    gv = values["grain"]
+    grain = seng.SolidGrain(
+        casing=grain_casing,
+        outer_radius_in=gv["outer_radius_in"],
+        initial_port_radius_in=gv["initial_port_radius_in"],
+        length_in=gv["length_in"],
+        propellant_density_lbm_in3=gv["propellant_density_lbm_in3"],   # from the propellant's datasheet
+        times_s=t.m,
+        thrust_lbf=df,
+    )
+    hv = values["hardware"]
+    hardware = seng.EngineComponent(
+        name = "hardware",
+        offset=hv["offset"],         # m, downstream of the grain
+        dry_mass=hv["dry_mass"],       # lbm
+        length=hv["length"],         # in
+    )
+    engine = seng.SolidMotor(grain, hardware, offset_in=0)
+    return engine 
 
 def calculate(data_dict, cutoff_dict, rocket):
     calc_array = []
@@ -698,7 +722,8 @@ def main():
 
         for col in set_bundle.columns:
             setattr(set_bundle, col, set_bundle[col][:burnout])
-        engine_used = build_hybrid(sol_ignis["high_of"], set_bundle['time'], set_bundle) 
+        dictionary = ROCKET_ENGINES[engine_key][0]
+        engine_used = build_hybrid(ROCKET_ENGINES[engine_key][0]["high_of"], set_bundle['time'], set_bundle) 
     elif ROCKET_ENGINES[engine_key][1] == "solid":
         thrust_bundle = find_bundle(interpolated_data, "thrust")
         spec_thrust = thrust_bundle['spec_thrust']
@@ -707,7 +732,7 @@ def main():
 
         burn_time = thrust_bundle['time'][:burnout].magnitude
         burn_thrust = spec_thrust[:burnout].magnitude
-        engine_used = build_solid(grain, hardware, offset_in=1.2)
+        engine_used = build_solid(ROCKET_ENGINES[engine_key][0], thrust_bundle['time'], thrust_bundle['spec_thrust'])
 
     rocket = geo.Rocket.from_file(candidates[0], engine=engine_used)
 

@@ -1,10 +1,13 @@
 """
-Hybrid rocket engine center of mass model.
+Hybrid rocket engine mass-distribution model.
 
-Notes:
+Improvements over the original thrust-curve-fraction approach:
 
-1. oxidizer tank is tracked as a two-phase liquid/vapor system,
-   but *not* assumed to be in saturation equilibrium as a whole. 
+1. Oxidizer tank (N2O) is tracked as a two-phase liquid/vapor system,
+   but *not* assumed to be in saturation equilibrium as a whole. Bulk
+   liquid N2O in a real tank generally doesn't flash fast enough to
+   track the saturation curve implied by the pressure sensor -- it runs
+   subcooled, especially during high flow. So:
      - the VAPOR/ullage space is assumed saturated at the measured tank
        pressure (small mass, large surface area -> equilibrates fast),
        giving v_v = v_g(P(t)) from the N2O dome.
@@ -13,27 +16,34 @@ Notes:
        looked up as compressed/subcooled liquid at that temperature and
        the current tank pressure, v_l(T_liquid, P(t)) -- not read off
        the saturation dome at the tank pressure.
-   Remaining mass is determined by mass flow rate sensor, as a function of time
-   The liquid/vapor mass split is solved through the volume balance V_tank = m_l*v_l + m_v*v_v, 
-   not a saturation-quality equation. These will be assigned different areas of the tank, liquid at the bottom, vapor everywhere else
-   
-   ***NOTE FROM CLAUDE: (A natural next step, not implemented here, is to let
+   Total remaining mass still comes from integrating your ox
+   mass-flow-rate sensor. The liquid/vapor mass split is then solved
+   directly from the volume balance V_tank = m_l*v_l + m_v*v_v, rather
+   than from a saturation-quality equation. This matters a lot for CG
+   because liquid and vapor sit at very different heights in the tank.
+   (A natural next step, not implemented here, is to let
    `liquid_temp_F` drift over time via its own energy balance instead
    of holding it fixed -- ask if you want that added.)
 
-2. Fuel grain mass comes from integrating fuel mass-flow-rate
+2. Fuel grain mass comes from integrating your fuel mass-flow-rate
    sensor, and is converted to an actual regressed port radius using
    the grain's geometry and density -- so you get a real r(t) burn-back
    profile instead of a linear fraction.
 
 3. Saturated N2O specific volumes (v_f, v_g) are looked up via CoolProp
    (`pip install CoolProp`), which uses a real NIST-grade equation of
-   state for N2O. 
+   state for N2O. This is what "look up tables" should mean here --
+   don't hand-type a small table if you can avoid it. A crude fallback
+   table is included for when CoolProp isn't available, but you should
+   replace it with validated data (NIST WebBook, ESDU 91022, or your
+   own PVT data) before trusting it for anything real.
 
+Unit convention (kept from your original code): masses in lbm, lengths
+in inches, pressures in psi, time in seconds. SI conversions happen
+internally wherever CoolProp is called.
 
-
-ASSUMPTIONS:
- - treating the tank and grain as simple cylinders (constant cross-section, no special consideration for the shape of the spiral).
+ASSUMPTIONS -- check these against your actual hardware:
+ - Tank and grain are simple cylinders (constant cross-section).
  - Tank: liquid pools at the `offset` (forward) end, vapor ullage fills
    the rest toward the aft end. Flip `cg_at` if your tank sits the
    other way (e.g. injector/liquid draw from the aft end).
@@ -64,14 +74,9 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from os import path
 from typing import Optional
-import numpy as np
-from pathlib import Path
-import pint
-import pandas as pd
 
-import matplotlib.pyplot as plt
+import numpy as np
 
 try:
     from CoolProp.CoolProp import PropsSI
@@ -80,13 +85,15 @@ except ImportError:
     _HAS_COOLPROP = False
 
 
+# --------------------------------------------------------------------------
+# Unit conversions
+# --------------------------------------------------------------------------
 IN_TO_M = 0.0254
 LBM_TO_KG = 0.45359237
 PSI_TO_PA = 6894.757293168
 
 
-
-def cumulative(y: np.ndarray, x: np.ndarray) -> np.ndarray:
+def _cumtrapz(y: np.ndarray, x: np.ndarray) -> np.ndarray:
     """Cumulative trapezoidal integral of y dx, same length as y, starting at 0."""
     y = np.asarray(y, dtype=float)
     x = np.asarray(x, dtype=float)
@@ -95,11 +102,13 @@ def cumulative(y: np.ndarray, x: np.ndarray) -> np.ndarray:
     return out
 
 
-
+# --------------------------------------------------------------------------
+# N2O saturation properties
+# --------------------------------------------------------------------------
 class N2OSaturation:
     """
-    Defining the liquid/vapor properties within the oxidizer tank with
-    N2O saturation-dome property lookups. Called through N2OSaturation.function
+    N2O saturation-dome property lookups. This is the "steam table"
+    equivalent for nitrous.
 
     `vf_vg(P)` is kept around for reference / for anyone who wants to
     run the simpler full-equilibrium model as a comparison, but the
@@ -107,30 +116,44 @@ class N2OSaturation:
     for the ullage) plus `subcooled_liquid_v` (NOT assumed saturated).
     """
 
+    # *** PLACEHOLDER fallback table -- only used if CoolProp is missing.
+    # Verify against NIST WebBook / ESDU 91022 before trusting it.
+    # T [K], Psat [Pa], vf [m^3/kg], vg [m^3/kg]
+    _T = np.array([220, 230, 240, 250, 260, 270, 280, 290, 300, 305])
+    _P = np.array([1.0e6, 1.4e6, 1.9e6, 2.5e6, 3.2e6, 4.0e6, 5.0e6, 6.2e6, 7.3e6, 7.9e6])
+    _VF = np.array([0.00089, 0.00092, 0.00095, 0.00099, 0.00103, 0.00108, 0.00115, 0.00124, 0.00138, 0.00151])
+    _VG = np.array([0.0430, 0.0310, 0.0225, 0.0165, 0.0122, 0.0090, 0.0065, 0.0045, 0.0028, 0.0019])
+
     @classmethod
     def vf_vg(cls, pressure_pa: float) -> tuple[float, float]:
         """Return (v_f, v_g) in m^3/kg at the given saturation pressure (Pa)."""
-        vf = 1.0 / PropsSI("D", "P", pressure_pa, "Q", 0, "N2O")
-        vg = 1.0 / PropsSI("D", "P", pressure_pa, "Q", 1, "N2O")
+        if _HAS_COOLPROP:
+            vf = 1.0 / PropsSI("D", "P", pressure_pa, "Q", 0, "N2O")
+            vg = 1.0 / PropsSI("D", "P", pressure_pa, "Q", 1, "N2O")
+            return vf, vg
+        vf = float(np.interp(pressure_pa, cls._P, cls._VF))
+        vg = float(np.interp(pressure_pa, cls._P, cls._VG))
         return vf, vg
 
     @classmethod
     def vg(cls, pressure_pa: float) -> float:
         """Saturated vapor specific volume (m^3/kg) at the given pressure -- used for the ullage."""
-
-        return 1.0 / PropsSI("D", "P", pressure_pa, "Q", 1, "N2O")
+        if _HAS_COOLPROP:
+            return 1.0 / PropsSI("D", "P", pressure_pa, "Q", 1, "N2O")
+        return float(np.interp(pressure_pa, cls._P, cls._VG))
 
     @classmethod
     def p_sat(cls, temperature_k: float) -> float:
-        """Pressure needed to boil, when sitting at a given temperature (K)."""
-        return PropsSI("P", "T", temperature_k, "Q", 0, "N2O")
-       
+        """Saturation (vapor) pressure of N2O (Pa) at the given temperature (K)."""
+        if _HAS_COOLPROP:
+            return PropsSI("P", "T", temperature_k, "Q", 0, "N2O")
+        return float(np.interp(temperature_k, cls._T, cls._P))
+
     @classmethod
     def subcooled_liquid_v(cls, temperature_k: float, pressure_pa: float) -> float:
         """
-        Specific volume ((m^3/kg) of liquid N2O, at given temperature (K) and with given surrounding pressure
-
-        If `pressure_pa` is at/below the saturation
+        Specific volume (m^3/kg) of liquid N2O held at `temperature_k`
+        and `pressure_pa`. If `pressure_pa` is at/below the saturation
         pressure for that temperature, the liquid would actually be
         boiling there -- our fixed-liquid-temperature assumption has
         broken down at that instant, so we clamp to the saturated-
@@ -140,23 +163,29 @@ class N2OSaturation:
         """
         p_sat = cls.p_sat(temperature_k)
         p_eff = max(pressure_pa, p_sat)
-        
+        if _HAS_COOLPROP:
             # Right at/near p_sat, T&P aren't independent (that's the
             # definition of saturation) and CoolProp's single-phase
             # solver can't resolve it -- fall back to the saturated
             # liquid state at this temperature, which is the correct
             # limit anyway as p_eff -> p_sat.
-        if p_eff <= p_sat * (1 + 1e-4):
-            return 1.0 / PropsSI("D", "T", temperature_k, "Q", 0, "N2O")
+            if p_eff <= p_sat * (1 + 1e-4):
+                return 1.0 / PropsSI("D", "T", temperature_k, "Q", 0, "N2O")
+            try:
+                return 1.0 / PropsSI("D", "T", temperature_k, "P", p_eff, "N2O")
+            except ValueError:
+                return 1.0 / PropsSI("D", "T", temperature_k, "Q", 0, "N2O")
         # Fallback: liquid is nearly incompressible, so approximate with
         # the saturated-liquid specific volume at this temperature.
         p_at_t = float(np.interp(temperature_k, cls._T, cls._P))
         return float(np.interp(p_at_t, cls._P, cls._VF))
 
 
+# --------------------------------------------------------------------------
+# Dry hardware (casings, plumbing) -- pure geometry, no propellant state
+# --------------------------------------------------------------------------
 @dataclass
 class EngineComponent:
-    "Used to house the properties of the casing/structural/hardware components, namely oxidizer, plumbing, and fuel components"
     name: str
     dry_mass: float            # lbm, hardware only
     offset: float               # in, distance from engine reference to forward face
@@ -164,17 +193,19 @@ class EngineComponent:
     radius: Optional[float] = None   # in, used for volume/CG defaults
 
     def cg_offset(self) -> float:
-        """CG of the dry hardware, assuming uniform density"""
+        """CG of the dry hardware, assuming uniform density along its length."""
         return self.offset + self.length / 2
 
     def volume(self) -> float:
-        """Internal volume assuming a simple cylinder, in^3.
-        S"""
+        """Internal volume assuming a simple cylinder, in^3."""
         if self.radius is None:
             raise ValueError(f"{self.name}: radius not set, cannot compute volume")
         return math.pi * self.radius**2 * self.length
 
 
+# --------------------------------------------------------------------------
+# Oxidizer tank -- two-phase N2O tracking
+# --------------------------------------------------------------------------
 @dataclass
 class OxidizerTank:
     """
@@ -198,7 +229,7 @@ class OxidizerTank:
     liquid_temp_F: float                     # assumed/measured bulk liquid temperature, held fixed
     times_s: np.ndarray
     pressure_psi: np.ndarray               # tank pressure sensor
-    mdot_lbm_s: float                   # ox mass flow rate sensor
+    mdot_lbm_s: np.ndarray                   # ox mass flow rate sensor
     cross_section_area_in2: Optional[float] = None  # defaults from casing.radius
 
     def __post_init__(self):
@@ -208,7 +239,7 @@ class OxidizerTank:
         assert len(self.times_s) == len(self.pressure_psi) == len(self.mdot_lbm_s), (
             "times_s, pressure_psi and mdot_lbm_s must all be the same length"
         )
-        self._cum_mass_lost = cumulative(self.mdot_lbm_s, self.times_s)
+        self._cum_mass_lost = _cumtrapz(self.mdot_lbm_s, self.times_s)
         self.liquid_temp_K = (self.liquid_temp_F - 32.0) * 5.0 / 9.0 + 273.15
 
         if self.cross_section_area_in2 is None:
@@ -220,7 +251,7 @@ class OxidizerTank:
         return np.interp(t, self.times_s, self.pressure_psi)
 
     def mass_at(self, t):
-        """Total remaining oxidizer mass (liquid + vapor) in tank, lbm."""
+        """Total remaining N2O mass (liquid + vapor), lbm."""
         cum_lost = np.interp(t, self.times_s, self._cum_mass_lost)
         return np.maximum(self.initial_ox_mass_lbm - cum_lost, 0.0)
 
@@ -286,31 +317,36 @@ class OxidizerTank:
             return float(liquid_mass[0]), float(vapor_mass[0]), float(vapor_fraction[0])
         return liquid_mass, vapor_mass, vapor_fraction
 
-    def cg_at(self, t) -> float:
+    def cg_at(self, t):
         """
         CG offset of the tank *contents only* (liquid + vapor), in the
         same reference frame as casing.offset. Liquid is assumed to
         pool at the casing.offset (forward) end with vapor filling the
         ullage toward the aft end -- flip liquid/vapor centroids below
         if your tank is oriented the other way.
-        """
-        # AFTER
 
+        Works with either a scalar t or an array of times.
+        """
         t_arr = np.atleast_1d(np.asarray(t, dtype=float))
         liquid_mass, vapor_mass, _ = self.phase_split_at(t_arr)
-        v_l, v_v = self._liquid_vapor_v_at(t_arr)          # per-timestep now, not just [0]
+        v_l, v_v = self._liquid_vapor_v_at(t_arr)  # per-timestep, NOT just t[0]
 
         liquid_vol_in3 = liquid_mass * LBM_TO_KG * v_l / IN_TO_M**3
         vapor_vol_in3 = vapor_mass * LBM_TO_KG * v_v / IN_TO_M**3
+
         h_liquid = liquid_vol_in3 / self.cross_section_area_in2
         h_vapor = vapor_vol_in3 / self.cross_section_area_in2
+        # Sanity check you should actually run: h_liquid + h_vapor should
+        # come out close to casing.length. If it overshoots a lot, your
+        # pressure/mass/volume inputs are inconsistent at that instant
+        # (sensor noise, non-equilibrium flashing during fast draws, etc).
 
         total_mass = liquid_mass + vapor_mass
         liquid_centroid = self.casing.offset + h_liquid / 2
         vapor_centroid = self.casing.offset + h_liquid + h_vapor / 2
         empty_cg = self.casing.offset + self.casing.length / 2
 
-        cg = np.divide(                                      # <-- array-safe, replaces if/else
+        cg = np.divide(
             liquid_mass * liquid_centroid + vapor_mass * vapor_centroid,
             total_mass,
             out=np.full_like(total_mass, empty_cg),
@@ -324,6 +360,10 @@ class OxidizerTank:
         """Tank contents + dry casing mass."""
         return self.mass_at(t) + self.casing.dry_mass
 
+
+# --------------------------------------------------------------------------
+# Fuel grain -- radial regression from a mass-flow-rate sensor
+# --------------------------------------------------------------------------
 @dataclass
 class FuelGrain:
     """
@@ -344,7 +384,7 @@ class FuelGrain:
         self.times_s = np.asarray(self.times_s, dtype=float)
         self.mdot_lbm_s = np.asarray(self.mdot_lbm_s, dtype=float)
         assert len(self.times_s) == len(self.mdot_lbm_s)
-        self._cum_mass_lost = cumulative(self.mdot_lbm_s, self.times_s)
+        self._cum_mass_lost = _cumtrapz(self.mdot_lbm_s, self.times_s)
         self.initial_fuel_mass_lbm = (
             self.fuel_density_lbm_in3 * math.pi * self.length_in
             * (self.outer_radius_in**2 - self.initial_port_radius_in**2)
@@ -368,9 +408,12 @@ class FuelGrain:
     def total_mass_at(self, t) -> float:
         return self.mass_at(t) + self.casing.dry_mass
 
+
+# --------------------------------------------------------------------------
+# Whole-engine assembly
+# --------------------------------------------------------------------------
 @dataclass
 class Engine:
-    "All together now folks!~"
     tank: OxidizerTank
     plumbing: EngineComponent           # injector, valves, lines -- treated as dry, static
     grain: FuelGrain
@@ -388,7 +431,7 @@ class Engine:
         self.thrusts = np.asarray(thrusts, dtype=float)
         self.times_s = np.asarray(times_s, dtype=float)
         assert len(self.thrusts) == len(self.times_s)
-        cumulative = cumulative(self.thrusts, self.times_s)
+        cumulative = _cumtrapz(self.thrusts, self.times_s)
         self.total_impulse = cumulative[-1]
         self.burn_time = self.times_s[-1]
         self._curve_ready = True
@@ -405,13 +448,19 @@ class Engine:
             + self.plumbing.dry_mass
         )
 
-    def cg_at(self, t):
+    def _component_states(self, t):
+        """
+        Shared helper: (mass, cg) arrays for tank, grain, plumbing at
+        time t, cg measured in the same local (pre-offset) frame as
+        casing.cg_offset(). Used by both cg_at and iyy_at so they can't
+        drift out of sync with each other.
+        """
         t_arr = np.atleast_1d(np.asarray(t, dtype=float))
 
         tank_mass = self.tank.total_mass_at(t_arr)
         ox_mass = self.tank.mass_at(t_arr)
         tank_dry_cg = self.tank.casing.cg_offset()
-        tank_cg = np.divide(                                   # <-- array-safe, replaces if/else
+        tank_cg = np.divide(
             self.tank.casing.dry_mass * tank_dry_cg + ox_mass * self.tank.cg_at(t_arr),
             tank_mass,
             out=np.full_like(tank_mass, tank_dry_cg),
@@ -421,40 +470,111 @@ class Engine:
         grain_mass = self.grain.total_mass_at(t_arr)
         fuel_mass = self.grain.mass_at(t_arr)
         grain_dry_cg = self.grain.casing.cg_offset()
-        grain_cg = np.divide(                                  # <-- array-safe, replaces if/else
+        grain_cg = np.divide(
             self.grain.casing.dry_mass * grain_dry_cg + fuel_mass * self.grain.cg_at(t_arr),
             grain_mass,
             out=np.full_like(grain_mass, grain_dry_cg),
             where=grain_mass > 0,
         )
-        plumbing_mass = self.plumbing.dry_mass
+
+        plumbing_mass = np.full_like(t_arr, self.plumbing.dry_mass)
+        plumbing_cg = np.full_like(t_arr, self.plumbing.cg_offset())
+
+        return (tank_mass, tank_cg), (grain_mass, grain_cg), (plumbing_mass, plumbing_cg)
+
+    def cg_at(self, t):
+        (tank_mass, tank_cg), (grain_mass, grain_cg), (plumbing_mass, plumbing_cg) = self._component_states(t)
+
         total = tank_mass + grain_mass + plumbing_mass
-        moment = (
-            tank_mass * tank_cg
-            + grain_mass * grain_cg
-            + plumbing_mass * self.plumbing.cg_offset()
-        )
+        moment = tank_mass * tank_cg + grain_mass * grain_cg + plumbing_mass * plumbing_cg
         cg = self.offset_in + moment / total
 
         scalar_in = np.isscalar(t) or np.asarray(t).ndim == 0
-        return float(cg[0]) if scalar_in else cg               # <-- scalar in, scalar out
-    
-    def iyy_at(self, t, cg_at: float) -> float:
-            """Engine's contribution to pitch Iyy about rocket_cg, at time t."""
-            self._check_ready()
-            frac = self._frac_at(t)
-            tank_mass = self.tank.dry_mass + self.tank.prop_mass * (1 - frac)
-            grain_mass = self.grain.dry_mass + self.grain.prop_mass * (1 - frac)
-            plumbing_mass = self.plumbing.dry_mass
+        return float(cg[0]) if scalar_in else cg
 
-            total = 0.0
-            for comp, m in ((self.tank, tank_mass),
-                            (self.grain, grain_mass),
-                            (self.plumbing, plumbing_mass)):
-                cg_local = self.offset + comp.cg_offset()
-                d = cg_local - rocket_cg
-                total += self._rod_iyy(m, comp.length) + m * d ** 2
-            return total
+    @staticmethod
+    def _rod_iyy(mass, length):
+        """Moment of inertia of a uniform rod about its OWN center (pitch/yaw axis), lbm*in^2."""
+        return mass * length**2 / 12.0
+
+    def iyy_at(self, t, rocket_cg_in: float):
+        """
+        Engine's contribution to pitch/yaw moment of inertia (Iyy)
+        about `rocket_cg_in` (same reference frame as offset_in), at
+        time t.
+
+        Each component (tank contents+casing, grain contents+casing,
+        plumbing) is approximated as a uniform rod along its own
+        casing/grain length for its LOCAL Iyy, then shifted to
+        rocket_cg_in via the parallel-axis theorem. This is a
+        simplification -- it does not separately account for the
+        liquid/vapor columns inside the tank having different lengths
+        than the full casing, the way cg_at does. If you need Iyy
+        precise enough to resolve that, say so and we can split the
+        tank's rod into a liquid-length segment and a vapor-length
+        segment instead of one full-casing-length rod.
+        """
+        t_arr = np.atleast_1d(np.asarray(t, dtype=float))
+        (tank_mass, tank_cg), (grain_mass, grain_cg), (plumbing_mass, plumbing_cg) = self._component_states(t_arr)
+
+        tank_cg_global = self.offset_in + tank_cg
+        grain_cg_global = self.offset_in + grain_cg
+        plumbing_cg_global = self.offset_in + plumbing_cg
+
+        iyy = (
+            self._rod_iyy(tank_mass, self.tank.casing.length)
+            + tank_mass * (tank_cg_global - rocket_cg_in) ** 2
+            + self._rod_iyy(grain_mass, self.grain.length_in)
+            + grain_mass * (grain_cg_global - rocket_cg_in) ** 2
+            + self._rod_iyy(plumbing_mass, self.plumbing.length)
+            + plumbing_mass * (plumbing_cg_global - rocket_cg_in) ** 2
+        )
+
+        scalar_in = np.isscalar(t) or np.asarray(t).ndim == 0
+        return float(iyy[0]) if scalar_in else iyy
+
+
+# --------------------------------------------------------------------------
+# Example usage / smoke test
+# --------------------------------------------------------------------------
+if __name__ == "__main__":
+    t = np.linspace(0, 8, 81)  # 8 s burn, 0.1 s steps
+
+    # Synthetic sensor data -- replace with your logged data.
+    ox_mdot = np.where(t < 7.5, 0.9, 0.0)                       # lbm/s
+    ox_pressure = 750 - 40 * t + 2 * t**2                        # psi, blow-down shape
+    ox_pressure = np.clip(ox_pressure, 300, None)
+
+    fuel_mdot = np.where(t < 7.5, 0.9 / 5.0, 0.0)                # O/F ~5
+
+    tank_casing = EngineComponent(name="ox_tank_casing", dry_mass=8.0, offset=10.0, length=24.0, radius=2.0)
+    tank = OxidizerTank(
+        casing=tank_casing,
+        volume_in3=math.pi * 2.0**2 * 24.0,
+        initial_ox_mass_lbm=12.0,
+        liquid_temp_F=65.0,  # assumed/measured fill temperature, held fixed for the burn
+        times_s=t, pressure_psi=ox_pressure, mdot_lbm_s=ox_mdot,
+    )
+
+    grain_casing = EngineComponent(name="grain_casing", dry_mass=3.0, offset=36.0, length=12.0, radius=1.5)
+    grain = FuelGrain(
+        casing=grain_casing,
+        outer_radius_in=1.4, initial_port_radius_in=0.4, length_in=12.0,
+        fuel_density_lbm_in3=0.0417,  # ~HTPB, lbm/in^3
+        times_s=t, mdot_lbm_s=fuel_mdot,
+    )
+
+    plumbing = EngineComponent(name="plumbing", dry_mass=2.0, offset=34.0, length=2.0)
+
+    engine = Engine(tank=tank, plumbing=plumbing, grain=grain, length_in=50.0, offset_in=0.0)
+
+    for tt in (0.0, 2.0, 4.0, 6.0, 7.9):
+        liq, vap, vf = tank.phase_split_at(tt)
+        print(
+            f"t={tt:4.1f}s  m_total={engine.mass_at(tt):6.2f} lbm  "
+            f"ox: liq={liq:5.2f} vap={vap:5.2f} lbm (vapor_frac={vf:.3f})  "
+            f"port_r={grain.port_radius_at(tt):.3f} in  cg={engine.cg_at(tt):.2f} in"
+        )
 
 @dataclass
 class EngineComponent2:
