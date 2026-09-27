@@ -2,7 +2,9 @@ from dataclasses import dataclass
 from typing import Optional
 import math
 import numpy as np
-
+# units.py
+from comparinator import ureg, Q_
+    
 def cumulative(y: np.ndarray, x: np.ndarray) -> np.ndarray:
     """Cumulative trapezoidal integral of y dx, same length as y, starting at 0."""
     y = np.asarray(y, dtype=float)
@@ -135,3 +137,144 @@ class SolidGrain:
 
     def total_mass_at(self, t) -> float:
         return self.mass_at(t) + self.casing.dry_mass
+    
+class SolidMotor:
+    """CG/Iyy model for a solid rocket motor: one propellant grain that
+    depletes over the burn, inside a casing, plus fixed hardware (nozzle,
+    igniter, closures) that never loses mass. All quantities are imperial
+    throughout: mass in lbm, length/cg/offset in inches, iyy in lbm-in^2 --
+    matching flight_analysis_functions.py's convention (see stability()'s
+    lbm-in^2 -> slug-ft^2 conversion, which is the point where this would
+    ever need to leave imperial).
+
+    Mirrors HybridEngine: _component_states() is the single source of truth
+    for "mass + cg of each component at time t", used by both cg_at() and
+    iyy_at() (and a dry-state variant for burnout) so they can't disagree."""
+
+    def __init__(self, grain, hardware, offset_in: float = 0.0):
+        """
+        grain: a SolidGrain/FuelGrain-like component -- total_mass_at(t),
+            mass_at(t) (propellant remaining), cg_at(t) (WHOLE assembly's
+            cg -- casing + propellant already combined, not propellant-only),
+            casing.dry_mass, length_in.
+        hardware: fixed-mass hardware (nozzle/igniter/closures) -- dry_mass,
+            cg_offset(), length (assumed inches; see _component_length_in).
+        offset_in: motor's mounting offset from the rocket nose, inches.
+        """
+        self.grain = grain
+        self.hardware = hardware
+        self.offset_in = offset_in
+        self._ready = grain is not None and hardware is not None
+
+    def _check_ready(self):
+        if not self._ready:
+            raise RuntimeError("SolidMotor is missing its grain or hardware component")
+
+    @staticmethod
+    def _component_length_in(comp):
+        """Length of a motor component, in inches -- resolves the naming
+        mismatch between SolidGrain/FuelGrain (length_in) and EngineComponent
+        (length), given both are already imperial."""
+        return comp.length_in if hasattr(comp, 'length_in') else comp.length
+
+    @staticmethod
+    def _rod_iyy(m, length_in):
+        """Iyy of a slender rod/cylinder about its own cg, in lbm-in^2.
+        m: lbm, length_in: inches."""
+        return m * length_in**2 / 12.0
+
+    # -- shared mass/cg state, consumed by cg_at(), iyy_at(), mass_at() ----
+    def _component_states(self, t_arr):
+        """(component, mass, cg) triples at time t_arr, vectorized, cg in
+        the motor's local coordinates (not yet shifted by offset_in).
+        grain.cg_at() already returns the whole grain assembly's cg -- no
+        separate casing/propellant mass-weighting needed, since SolidGrain
+        fixes the propellant centroid at the grain midpoint under the
+        radial-burn assumption and folds the casing in there too."""
+        grain_mass = self.grain.total_mass_at(t_arr)
+        grain_cg = np.full_like(grain_mass, self.grain.cg_at(t_arr))
+
+        hardware_mass = np.full_like(grain_mass, self.hardware.dry_mass)
+        hardware_cg = np.full_like(grain_mass, self.hardware.cg_offset())
+
+        return (
+            (self.grain, grain_mass, grain_cg),
+            (self.hardware, hardware_mass, hardware_cg),
+        )
+
+    def _dry_component_states(self):
+        """(component, mass, cg) with propellant fully depleted -- the
+        burnout endpoint. grain.cg_at() is constant under the radial-burn
+        assumption, so any t gives the correct dry-state cg; 0.0 is used
+        here just as an arbitrary valid input."""
+        return (
+            (self.grain, self.grain.casing.dry_mass, self.grain.cg_at(0.0)),
+            (self.hardware, self.hardware.dry_mass, self.hardware.cg_offset()),
+        )
+
+    # -- mass ----------------------------------------------------------------
+    def mass_at(self, t):
+        self._check_ready()
+        t_arr = np.atleast_1d(np.asarray(t, dtype=float))
+        total = sum(m for _, m, _ in self._component_states(t_arr))
+        scalar_in = np.isscalar(t) or np.asarray(t).ndim == 0
+        magnitude = float(total[0]) if scalar_in else total
+        return Q_(magnitude, ureg.lb)
+
+    def mass_dry(self):
+        self._check_ready()
+        return sum(m for _, m, _ in self._dry_component_states())
+
+    # -- cg --------------------------------------------------------------
+    def cg_at(self, t):
+        """CG location (inches), measured from the rocket nose, at time t.
+        t may be scalar or array; the return matches its shape."""
+        self._check_ready()
+        t_arr = np.atleast_1d(np.asarray(t, dtype=float))
+        states = self._component_states(t_arr)
+        total = sum(m for _, m, _ in states)
+        moment = sum(m * cg for _, m, cg in states)
+        cg = self.offset_in + np.divide(moment, total, out=np.zeros_like(total), where=total > 0)
+
+        scalar_in = np.isscalar(t) or np.asarray(t).ndim == 0
+        magnitude = float(cg[0]) if scalar_in else cg
+        return Q_(magnitude, ureg.inch)
+
+    def cg_dry(self):
+        """CG location (inches) once propellant is fully depleted."""
+        self._check_ready()
+        states = self._dry_component_states()
+        total = sum(m for _, m, _ in states)
+        moment = sum(m * cg for _, m, cg in states)
+        return self.offset_in + (moment / total if total else 0.0)
+
+    # -- iyy -------------------------------------------------------------
+    def _iyy_from_states(self, states, rocket_cg):
+        """Parallel-axis sum, in lbm-in^2: each component's own rod iyy about
+        its own cg, shifted out to rocket_cg by m*d**2. rocket_cg, self.offset_in
+        and every component's cg/length are all inches; mass is lbm throughout."""
+        total = 0.0
+        for comp, m, cg in states:
+            cg_global = self.offset_in + cg
+            d = cg_global - rocket_cg
+            total = total + self._rod_iyy(m, self._component_length_in(comp)) + m * d**2
+        return total
+
+    def iyy_at(self, t, rocket_cg):
+        """rocket_cg arrives as a pint Quantity (whatever unit Rocket.cg_at
+        resolved to) -- convert to the bare inches the parallel-axis math
+        below expects, run it unchanged, then wrap the result back up."""
+        self._check_ready()
+        rocket_cg_in = rocket_cg.to(ureg.inch).magnitude
+        t_arr = np.atleast_1d(np.asarray(t, dtype=float))
+        iyy = self._iyy_from_states(self._component_states(t_arr), rocket_cg_in)
+
+        scalar_in = np.isscalar(t) or np.asarray(t).ndim == 0
+        magnitude = float(iyy[0]) if scalar_in else iyy
+        return Q_(magnitude, ureg.lb * ureg.inch**2)
+
+    def iyy_dry(self, rocket_cg):
+        self._check_ready()
+        rocket_cg_in = rocket_cg.to(ureg.inch).magnitude
+        magnitude = self._iyy_from_states(self._dry_component_states(), rocket_cg_in)
+        return Q_(magnitude, ureg.lb * ureg.inch**2)
