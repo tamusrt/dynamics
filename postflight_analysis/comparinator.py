@@ -9,6 +9,8 @@ import flight_analysis_functions as faa
 from scipy.signal import stft, hilbert
 from pathlib import Path
 import pint
+ureg = pint.UnitRegistry()
+Q_ = ureg.Quantity
 from pathlib import Path
 import pandas as pd
 import numpy as np
@@ -180,8 +182,10 @@ def build_hybrid(cfg: dict, t: np.ndarray, df):
     tc = cfg["tank"]
     tank_casing = heng.EngineComponent(
         name="ox_tank_casing",
-        dry_mass=tc["dry_mass"], offset=tc["offset"],
-        length=tc["length"], radius=tc["radius"],
+        dry_mass=tc["dry_mass"], 
+        offset=tc["offset"],
+        length=tc["length"], 
+        radius=tc["radius"],
     )
     tank = heng.OxidizerTank(
         casing=tank_casing,
@@ -194,7 +198,8 @@ def build_hybrid(cfg: dict, t: np.ndarray, df):
     gc = cfg["grain"]
     grain_casing = heng.EngineComponent(
         name="grain_casing",
-        dry_mass=gc["dry_mass"], offset=gc["offset"],
+        dry_mass=gc["dry_mass"], 
+        offset=gc["offset"],
         length=gc["length"], radius=gc["radius"],
     )
     grain = heng.FuelGrain(
@@ -208,14 +213,18 @@ def build_hybrid(cfg: dict, t: np.ndarray, df):
 
     pc = cfg["plumbing"]
     plumbing = heng.EngineComponent(
-        name="plumbing", dry_mass=pc["dry_mass"],
-        offset=pc["offset"], length=pc["length"],
+        name="plumbing", 
+        dry_mass=pc["dry_mass"],
+        offset=pc["offset"], 
+        length=pc["length"],
     )
 
     ec = cfg["engine"]
     return heng.Engine(
-        tank=tank, plumbing=plumbing, grain=grain,
-        length_in=ec["length_in"], offset_in=ec["offset_in"],
+        tank=tank, plumbing=plumbing, 
+        grain=grain,
+        length_in=ec["length_in"], 
+        offset_in=ec["offset_in"],
     )
 
 def build_solid(values: dict, t: np.array, df):
@@ -321,6 +330,7 @@ def calculate(data_dict, cutoff_dict, rocket):
     print(rocket.engine)          # is it None?
     print(rocket.mass_at(0), rocket.mass_at(rocket.engine.grain.times_s[-1] if rocket.engine else None))
     calc["cgs"] = geo.total_cg(rocket, calc["time"])[1]
+    print(["cg"])
     calc["iyy"] = geo.total_iyy(rocket, calc["time"], calc["cgs"])
     calc["sm"] = faa.stability(time, calc["iyy"], gyro_y, calc["fn"])
 
@@ -771,9 +781,7 @@ def main():
         engine_used = build_solid(ROCKET_ENGINES[engine_key][0], accel_bundle['time'], thrust_bundle['spec_thrust'])
 
     rocket = geo.Rocket.from_file(candidates[0], engine=engine_used)
-    print("***")
-    print(rocket.engine)          # is it None?
-    print(rocket.mass_at(0), rocket.mass_at(rocket.engine.grain.times_s[-1] if rocket.engine else None))
+
     graph_values, cutoff_dict = calculate(interpolated_data, cutoff_dict, rocket)
     graph2(graph_values, cutoff_dict)
 
