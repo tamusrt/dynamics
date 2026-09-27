@@ -1,5 +1,6 @@
 import numpy as np
 import os
+import pandas as pd
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
@@ -85,10 +86,10 @@ inputs = read_input_file(INPUT_FILE)
 # ============================================================
 
 # ------------------------------------------------------------
-# Custom CG / mass depletion time
+# CG / mass depletion time
+#
+# This is now automatically set from the thrust-curve burn time.
 # ------------------------------------------------------------
-
-cg_mass_burn_time = inputs["cg_mass_burn_time"]
 
 
 # ------------------------------------------------------------
@@ -126,94 +127,116 @@ combustion_chamber_length = inputs["combustion_chamber_length"]
 fuel_mass_initial = inputs["fuel_mass_initial"]
 
 # ============================================================
-# READ THRUST CURVE
+# READ THRUST CURVE FROM EXCEL / CSV
 # ============================================================
 
 def read_thrust_curve(filename):
 
-    time_values = []
-    thrust_values = []
+    # Pandas is used so the program can read either:
+    #   .xlsx / .xls  -> Excel spreadsheet
+    #   .csv          -> CSV file
+    #
+    # Only these two columns are used:
+    #   Time (s)
+    #   Thrust (N)
 
-    with open(filename, "r") as file:
+    file_extension = os.path.splitext(filename)[1].lower()
 
-        for line in file:
+    if file_extension in [".xlsx", ".xls"]:
+        data = pd.read_excel(filename)
+    elif file_extension == ".csv":
+        data = pd.read_csv(filename)
+    else:
+        raise ValueError(
+            "Thrust input must be an Excel file (.xlsx/.xls) or CSV file (.csv)."
+        )
 
-            line = line.strip()
+    required_columns = ["Time (s)", "Thrust (N)"]
 
-            # Skip blank lines
-            if not line:
-                continue
+    for column in required_columns:
+        if column not in data.columns:
+            raise ValueError(
+                f'Thrust input is missing the required column "{column}".'
+            )
 
-            # Skip comments
-            if line.startswith("#"):
-                continue
+    # Collect only time and thrust.
+    data = data[required_columns].copy()
 
-            parts = line.split()
+    # Convert values to numbers and remove invalid rows.
+    data["Time (s)"] = pd.to_numeric(data["Time (s)"], errors="coerce")
+    data["Thrust (N)"] = pd.to_numeric(data["Thrust (N)"], errors="coerce")
+    data = data.dropna()
 
-            # We need at least two columns:
-            # time   thrust
-            if len(parts) < 2:
-                continue
+    if len(data) < 2:
+        raise ValueError("Thrust input must contain at least two valid data points.")
 
-            try:
-                t = float(parts[0])
-                thrust = float(parts[1])
-            except ValueError:
-                # This skips the "CC 152 ..." header
-                continue
+    time_values = data["Time (s)"].to_numpy(dtype=float)
+    thrust_values = data["Thrust (N)"].to_numpy(dtype=float)
 
-            time_values.append(t)
-            thrust_values.append(thrust)
+    # Require strictly increasing time.
+    if np.any(np.diff(time_values) <= 0):
+        raise ValueError("Thrust-curve times must be strictly increasing.")
 
-    if len(time_values) == 0:
-        raise ValueError("No thrust data found in thrust curve file.")
+    # ------------------------------------------------------------
+    # Find the end of the burn.
+    #
+    # The first zero-thrust point at t = 0 is NOT treated as the
+    # burn endpoint. Instead, find the first point at/after the
+    # beginning of positive thrust where thrust returns to zero.
+    # ------------------------------------------------------------
+
+    positive_indices = np.where(thrust_values > 0)[0]
+
+    if len(positive_indices) == 0:
+        raise ValueError("No positive thrust was found in the input file.")
+
+    first_positive_index = positive_indices[0]
+
+    zero_after_burn = np.where(
+        thrust_values[first_positive_index:] <= 0
+    )[0]
+
+    if len(zero_after_burn) == 0:
+        raise ValueError(
+            "No zero-thrust point was found after the positive thrust portion."
+        )
+
+    burn_end_index = first_positive_index + zero_after_burn[0]
+
+    # Keep the initial t=0 point through the first zero-thrust point.
+    time_values = time_values[:burn_end_index + 1]
+    thrust_values = thrust_values[:burn_end_index + 1]
+
+    if len(time_values) < 2:
+        raise ValueError("The extracted thrust curve must contain at least two points.")
+
+    # Sampling intervals from the input data.
+    time_steps = np.diff(time_values)
 
     return (
-        np.array(time_values, dtype=float),
-        np.array(thrust_values, dtype=float)
+        time_values,
+        thrust_values,
+        time_steps
     )
 
 
-thrust_filename = input("Enter thrust curve filename: ").strip()
+thrust_filename = input(
+    "Enter Excel/CSV thrust curve filename: "
+).strip()
+
 THRUST_FILE = os.path.join(SCRIPT_DIR, thrust_filename)
-time, thrust_array_N = read_thrust_curve(THRUST_FILE)
 
+time, thrust_array_N, time_steps = read_thrust_curve(THRUST_FILE)
 
-# ============================================================
-# VALIDATE THRUST CURVE
-# ============================================================
+# The time at the first zero-thrust point is now the burn time.
+rse_burn_time = time[-1] - time[0]
 
-if len(time) < 2:
-    raise ValueError("Thrust curve must contain at least two points.")
+# Use the thrust-curve burn time for propellant depletion.
+# This replaces the old custom cg_mass_burn_time input.
+cg_mass_burn_time = rse_burn_time
 
-if np.any(np.diff(time) <= 0):
-    raise ValueError(
-        "Thrust-curve times must be strictly increasing."
-    )
-
-
-# ============================================================
-# DETERMINE THRUST-CURVE TIME STEP
-# ============================================================
-
-time_steps = np.diff(time)
-
-
-
-# ============================================================
-# IMPORTANT:
-#
-# The thrust curve determines the RSE time points.
-#
-# The custom cg_mass_burn_time determines when propellant
-# depletion stops.
-# ============================================================
-
-if cg_mass_burn_time > time[-1]:
-
-    raise ValueError(
-        "cg_mass_burn_time is longer than the thrust curve."
-    )
+# The normal collecting/sampling interval from the input file.
+collecting_interval = time_steps[0]
 
 
 # ============================================================
@@ -501,11 +524,9 @@ rse_peakThrust = np.max(
 )
 
 
-# Actual thrust-curve duration
-
-rse_burn_time = (
-    time[-1] - time[0]
-)
+# Burn time is determined directly from the first zero-thrust
+# point in the input spreadsheet/CSV.
+# rse_burn_time was set immediately after reading the thrust curve.
 
 
 # Specific impulse

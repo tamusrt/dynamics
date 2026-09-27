@@ -59,13 +59,13 @@
             <Overhang>0</Overhang>
             <Fin>
                 <Count>4</Count>
-                <Chord>13</Chord>
-                <Span>7.5</Span>
+                <Chord>12</Chord>
+                <Span>6.5</Span>
                 <SweepDistance>13</SweepDistance>
-                <TipChord>4</TipChord>
+                <TipChord>3.875</TipChord>
                 <Thickness>0.3</Thickness>
                 <LERadius>0</LERadius>
-                <Location>15</Location>
+                <Location>14</Location>
                 <AirfoilSection>Subsonic NACA</AirfoilSection>
                 <FX1>0</FX1>
                 <FX3>0</FX3>
@@ -115,9 +115,9 @@
     <MachAlt></MachAlt>
     <SimulationList>
         <Simulation>
-            <SustainerLaunchWt>131.5591</SustainerLaunchWt>
+            <SustainerLaunchWt>130.7832</SustainerLaunchWt>
             <SustainerNozzleDiameter>0</SustainerNozzleDiameter>
-            <SustainerCG>103.7232</SustainerCG>
+            <SustainerCG>103.3687</SustainerCG>
             <SustainerIgnitionDelay>0</SustainerIgnitionDelay>
             <Booster1LaunchWt>0</Booster1LaunchWt>
             <Booster1SeparationDelay>0</Booster1SeparationDelay>
@@ -138,9 +138,9 @@
             <OptimumMaxAlt>0</OptimumMaxAlt>
         </Simulation>
         <Simulation>
-            <SustainerLaunchWt>131.5591</SustainerLaunchWt>
+            <SustainerLaunchWt>130.7832</SustainerLaunchWt>
             <SustainerNozzleDiameter>0</SustainerNozzleDiameter>
-            <SustainerCG>103.7232</SustainerCG>
+            <SustainerCG>103.3687</SustainerCG>
             <SustainerIgnitionDelay>0</SustainerIgnitionDelay>
             <Booster1LaunchWt>0</Booster1LaunchWt>
             <Booster1SeparationDelay>0</Booster1SeparationDelay>
@@ -161,9 +161,9 @@
             <OptimumMaxAlt>0</OptimumMaxAlt>
         </Simulation>
         <Simulation>
-            <SustainerLaunchWt>131.5591</SustainerLaunchWt>
+            <SustainerLaunchWt>130.7832</SustainerLaunchWt>
             <SustainerNozzleDiameter>0</SustainerNozzleDiameter>
-            <SustainerCG>103.7232</SustainerCG>
+            <SustainerCG>103.3687</SustainerCG>
             <SustainerIgnitionDelay>0</SustainerIgnitionDelay>
             <Booster1LaunchWt>0</Booster1LaunchWt>
             <Booster1SeparationDelay>0</Booster1SeparationDelay>
