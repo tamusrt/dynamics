@@ -1,3 +1,141 @@
+# =============================================================================
+# LUMINA N2O / ETHANOL BLOWDOWN & ENGINE PERFORMANCE MODEL
+# =============================================================================
+#
+# PURPOSE
+# -------
+# This program is a zero-dimensional engineering model developed to predict the
+# approximate transient behavior of the Lumina N2O / ethanol liquid rocket
+# propulsion system during blowdown operation.
+#
+# The model is intended primarily for:
+#
+#   - Preliminary engine performance prediction
+#   - Thrust curve estimation
+#   - Propellant ṁ estimation
+#   - Tank pressure and temperature prediction
+#   - O/F prediction
+#   - Injector sizing and injector stiffness trades
+#   - Feed system ΔP trades
+#   - Estimation of liquid N2O depletion and subsequent vapor blowdown
+#   - Comparison against cold-flow and hotfire test data
+#   - Providing approximate inputs for vehicle trajectory and dynamics models
+#
+# The program is intended to be updated/calibrated using experimental data as
+# Lumina testing progresses.
+#
+#
+# MODEL OVERVIEW
+# --------------
+# The propulsion system is represented as a coupled lumped-parameter model.
+# At each timestep, the program solves the oxidizer tank thermodynamic state,
+# feed-system mass flow, chamber pressure, thrust, and propellant inventory.
+#
+# Major modeled components are:
+#
+#   1. N2O Tank Thermodynamics
+#      - Nitrous oxide properties are obtained using CoolProp.
+#      - During the liquid-containing portion of the burn, the tank is assumed
+#        to remain in homogeneous thermodynamic equilibrium between saturated
+#        liquid and saturated vapor.
+#      - Tank temperature and vapor quality are solved from conservation of
+#        mass, volume, and internal energy.
+#      - Energy removed with discharged propellant is included.
+#      - Expansion work (P*dV) is included.
+#      - The model transitions to a single-phase vapor calculation after
+#        liquid N2O depletion.
+#
+#   2. N2O Injector Flow
+#      - Liquid/two-phase N2O injector flow is modeled using the Dyer / NHNE
+#        non-equilibrium flashing-flow model.
+#      - The Dyer formulation blends an incompressible SPI solution and a
+#        homogeneous-equilibrium (HEM) solution.
+#      - Injector geometry is represented using an effective CdA.
+#
+#   3. Fuel Flow
+#      - Ethanol is treated as an incompressible liquid with constant density.
+#      - Fuel feedline and injector pressure losses are modeled as lumped
+#        hydraulic restrictions using effective CdA values.
+#
+#   4. Feed-System Losses
+#      - Feedlines, valves, fittings, and other upstream restrictions are
+#        represented by equivalent CdA values.
+#
+#   5. Chamber Pressure
+#      - Chamber pressure is solved quasi-steadily at each timestep from:
+#
+#            Pc = mdot_total * c* / At
+#
+#        including the specified c* efficiency.
+#      - Feed-system flow and chamber pressure are therefore solved as a
+#        coupled system.
+#
+#   6. Thrust
+#      - Thrust is calculated from:
+#
+#            F = Cf * Pc * At
+#
+#   7. Vapor-Phase N2O Flow
+#      - After liquid N2O depletion, the remaining oxidizer is modeled as
+#        single-phase vapor.
+#      - Vapor discharge is currently approximated using a compressible-gas
+#        orifice model with a lumped equivalent oxidizer flow-path CdA.
+#
+#   8. Injector Diagnostics
+#      - Injector pressure drop, manifold pressure, and injector stiffness are
+#        calculated during the liquid-fed portion of the burn.
+#      - Injector stiffness is defined as:
+#
+#            stiffness = DeltaP_injector / Pc
+#
+#
+# PRIMARY ASSUMPTIONS
+# -------------------
+# This model intentionally makes several simplifying assumptions:
+#
+#   - Zero-dimensional / lumped-parameter system representation
+#   - Quasi-steady feed-system and chamber response at each timestep
+#   - Homogeneous thermodynamic equilibrium inside the N2O tank while liquid
+#     and vapor coexist
+#   - Uniform tank pressure and temperature
+#   - No explicit spatial modeling of tank stratification or slosh
+#   - Constant ethanol density
+#   - Lumped feedline and valve losses represented by CdA
+#   - No transient fluid momentum in the feedlines
+#   - No injector manifold volume dynamics
+#   - No explicit combustion chamber filling or ignition transient
+#   - No combustion instability modeling
+#   - No detailed atomization, spray, mixing, or droplet combustion model
+#   - No explicit heat transfer model between tank walls and N2O
+#
+#
+# IMPORTANT LIMITATIONS
+# ---------------------
+#
+# In particular:
+#
+#   - Dyer/NHNE predictions depend strongly on injector geometry, upstream
+#     state, discharge coefficient, and the applicability of the model to the
+#     actual injector.
+#
+#   - CdA values are effective parameters and may include behavior from
+#     multiple real components. They should be updated when experimental
+#     pressure-drop and mass-flow data become available.
+#
+#   - The current vapor-phase oxidizer model is lower fidelity than the
+#     liquid/two-phase portion of the simulation.
+#
+#   - The current model does not explicitly resolve separate vapor-phase
+#     oxidizer feedline and injector pressure drops after liquid depletion.
+#
+#   - c*, c* efficiency, and Cf may currently be treated as constants.
+#     Therefore, predicted performance during large excursions in mixture
+#     ratio, particularly the late vapor tail, is probably decently wrong
+# 
+# Mikey Carlino
+# 09/27/2026
+
+
 import numpy as np
 import matplotlib.pyplot as plt
 
