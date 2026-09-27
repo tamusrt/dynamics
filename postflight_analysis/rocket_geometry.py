@@ -261,7 +261,6 @@ class Rocket:
         self.parts: List[BodyPart] = parts
         self.fins: List[FinSet] = fins
         self.engine: Optional[eng.Engine] = engine 
-        print(engine)
 
     @classmethod
     def from_file(cls, path: str, engine: Optional[eng.Engine] = None) -> "Rocket":
@@ -274,15 +273,17 @@ class Rocket:
 
         parts: List[BodyPart] = []
         fins: List[FinSet] = []
-
+        print(parts)
+        print(fins)
         sub = rocket_el.find("subcomponents")
         if sub is not None:
             for stage in sub.findall("stage"):
                 _walk_children(stage, parent_front=0.0, parent_length=0.0,
                                 current_radius=0.0, parts=parts, fins=fins)
         if engine is None:
+            print("hewwo")
             return cls(name, parts, fins)
-        print("hewwo", engine)
+        print(engine)
         return cls(name, parts, fins, engine=engine)   
 
     # -- static (structural-only) quantities, unchanged --------------
