@@ -163,7 +163,9 @@ class SolidMotor:
         self.hardware = hardware
         self.offset_in = offset_in
         self._ready = grain is not None and hardware is not None
-
+        print("times_s monotonic?", np.all(np.diff(grain.times_s) > 0))
+        print("total_impulse:", grain._frac_burned[-1] if hasattr(grain, '_frac_burned') else None)
+        print(grain.times_s[-5:])
     def _check_ready(self):
         if not self._ready:
             raise RuntimeError("SolidMotor is missing its grain or hardware component")
