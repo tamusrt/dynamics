@@ -307,6 +307,7 @@ class Rocket:
         self.parts=[UnitAwareBodyPart(p) for p in parts]
         self.fins= [UnitAwareFinSet(f) for f in fins]
         self.engine= engine
+        print("hiya",parts)
 
     @classmethod
     def from_file(cls, path: str, engine: Optional[eng.Engine] = None) -> "Rocket":
@@ -325,9 +326,8 @@ class Rocket:
                 _walk_children(stage, parent_front=0.0, parent_length=0.0,
                                 current_radius=0.0, parts=parts, fins=fins)
         if engine is None:
-            print("hewwo")
             return cls(name, parts, fins)
-        print(parts,fins,engine)
+        print(name, parts, fins, engine)
         return cls(name, parts, fins, engine=engine)   
 
     # -- static (structural-only) quantities, unchanged --------------
