@@ -23,6 +23,7 @@ import solid_engine_cg as seng
 import rocket_geometry as geo
 
 # specifications for each rocket motor
+# offset is measure from the nose tip 
 sol_ignis = {
     "baseline": {
         "ox_mdot": 6543,
@@ -61,26 +62,22 @@ sol_ignis = {
 }
 
 O3400 = {
-    "grain_casing": {
-        "offset": 0.4,
-        "dry_mass":0.15,      # lbm, empty liner
-        "length":8.0,         # m from the motor's own reference point (mount face, say)
-    },
-
-    "grain": {    
-        "dry_mass":0.15,      # lbm, empty liner
-        "length":8.0,         # in, matches length_in convention used elsewhere
-        "outer_radius_in":1.5,
-        "initial_port_radius_in":0.375,
-        "length_in":8.0,
-        "propellant_density_lbm_in3":0.065,   
-    },
-
-    "hardware" : {
-        "offset": 8.5,         # m, downstream of the grain
-        "dry_mass": 0.6,       # lbm
-        "length": 2.0,         # in
-    }
+  "grain_casing": {
+    "offset": 88.41,
+    "dry_mass": 0.15,
+    "length": 8.0    
+  },
+  "grain": {
+    "outer_radius_in": 1.5,
+    "initial_port_radius_in": 0.375,
+    "length_in": 8.0,
+    "propellant_density_lbm_in3": 0.065
+  },
+  "hardware": {
+    "offset": 88.41, 
+    "dry_mass": 0.6,
+    "length": 2.0
+  }
 }
 
 valor_10k = {
@@ -330,7 +327,7 @@ def calculate(data_dict, cutoff_dict, rocket):
     print(rocket.engine)          # is it None?
     print(rocket.mass_at(0), rocket.mass_at(rocket.engine.grain.times_s[-1] if rocket.engine else None))
     calc["cgs"] = geo.total_cg(rocket, calc["time"])[1]
-    print(["cg"])
+    print(calc["cgs"])
     calc["iyy"] = geo.total_iyy(rocket, calc["time"], calc["cgs"])
     calc["sm"] = faa.stability(time, calc["iyy"], gyro_y, calc["fn"])
 
