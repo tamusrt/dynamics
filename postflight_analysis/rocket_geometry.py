@@ -202,9 +202,7 @@ class BodyPart:
 
 class UnitAwareBodyPart:
     """Wraps a metric BodyPart; exposes mass/cg/iyy as pint Quantities in
-    their native SI units. No conversion factor written anywhere -- pint
-    resolves unit mismatches automatically wherever these combine with
-    quantities in other units."""
+    imperial units, matching solid_engine_cg.py's convention."""
     def __init__(self, part: BodyPart):
         self._p = part
         self.name = part.name
@@ -212,15 +210,15 @@ class UnitAwareBodyPart:
 
     @property
     def mass(self):
-        return Q_(self._p.mass, ureg.kg)
+        return Q_(self._p.mass, ureg.kg).to(ureg.lb)
 
     @property
     def cg(self):
-        return Q_(self._p.cg, ureg.m)
+        return Q_(self._p.cg, ureg.m).to(ureg.inch)
 
-    def iyy_about(self, rocket_cg):          # rocket_cg is now a Quantity
+    def iyy_about(self, rocket_cg):
         rocket_cg_m = rocket_cg.to(ureg.m).magnitude
-        return Q_(self._p.iyy_about(rocket_cg_m), ureg.kg * ureg.m**2)
+        return Q_(self._p.iyy_about(rocket_cg_m), ureg.kg * ureg.m**2).to(ureg.lb * ureg.inch**2)
 
 @dataclass
 class FinSet:
@@ -273,29 +271,25 @@ class FinSet:
         return self.iyy_cm() + self.mass * d_squared
 
 class UnitAwareFinSet:
-    """Wraps a metric FinSet so mass/cg/iyy come back as pint Quantities
-    in native SI units. No conversion factors written anywhere -- pint
-    resolves mismatches automatically wherever these combine with
-    quantities in other units (e.g. the imperial engine)."""
+    """Wraps a metric FinSet; exposes mass/cg/iyy as pint Quantities in
+    imperial units, matching solid_engine_cg.py's convention."""
     def __init__(self, fin: FinSet):
         self._f = fin
         self.name = fin.name
 
     @property
     def mass(self):
-        return Q_(self._f.mass, ureg.kg)
+        return Q_(self._f.mass, ureg.kg).to(ureg.lb)
 
     @property
     def cg(self):
-        return Q_(self._f.cg, ureg.m)
+        return Q_(self._f.cg, ureg.m).to(ureg.inch)
 
     def iyy_about(self, rocket_cg):
-        """rocket_cg arrives as a Quantity now (from Rocket.cg_at), not a
-        bare float -- convert to the unit FinSet.iyy_about's internal
-        math expects (meters) before calling into it."""
         rocket_cg_m = rocket_cg.to(ureg.m).magnitude
         iyy_kg_m2 = self._f.iyy_about(rocket_cg_m)
-        return Q_(iyy_kg_m2, ureg.kg * ureg.m**2)
+        return Q_(iyy_kg_m2, ureg.kg * ureg.m**2).to(ureg.lb * ureg.inch**2)
+    
 # --------------------------------------------------------------------------
 # the parser
 # --------------------------------------------------------------------------
@@ -307,7 +301,8 @@ class Rocket:
         self.parts=[UnitAwareBodyPart(p) for p in parts]
         self.fins= [UnitAwareFinSet(f) for f in fins]
         self.engine= engine
-        print("hiya",parts)
+        print("hiya", [(p.name, p.length if hasattr(p, 'length') else None, p.mass, p.cg) for p in self.parts])
+
 
     @classmethod
     def from_file(cls, path: str, engine: Optional[eng.Engine] = None) -> "Rocket":
