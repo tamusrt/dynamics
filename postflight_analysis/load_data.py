@@ -17,8 +17,8 @@ import pint
 from collections import defaultdict
 import hybrid_engine_cg as eng
 
-ureg = pint.UnitRegistry()
-Q_ = ureg.Quantity
+
+from comparinator import ureg, Q_
 
 
 radius = 3
