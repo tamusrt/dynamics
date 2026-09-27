@@ -378,6 +378,7 @@ class Rocket:
         return iyy
 
 
+
 def _resolve_offset(elem, parent_front, parent_length, this_length, stack_cursor):
     off_el = elem.find("axialoffset")
     if off_el is None:
@@ -557,22 +558,26 @@ def _tube_mass(length, r_outer, r_inner, density):
     return density * math.pi * vol_over_pi
 
 def total_cg(rocket: "Rocket", times) -> tuple:
-    """Returns (masses, cgs) as numpy arrays over the given time array."""
+    """Returns (masses, cgs) as pint Quantities wrapping numpy arrays,
+    over the given time array."""
     times = np.asarray(times, dtype=float)
-    masses = np.array([rocket.mass_at(t) for t in times])
-    cgs = rocket.cg_at(times)
+
+    mass_quantities = [rocket.mass_at(t) for t in times]
+    mass_unit = mass_quantities[0].units
+    masses_mag = np.array([m.to(mass_unit).magnitude for m in mass_quantities])
+    masses = Q_(masses_mag, mass_unit)
+
+    cgs = rocket.cg_at(times)   # already returns one Quantity wrapping an array, if cg_at was updated per earlier messages
+
     return masses, cgs
 
-
 def total_iyy(rocket: "Rocket", times, cgs=None):
-    """Returns Iyy (kg*m^2) as a numpy array over the given time array.
-    If `cgs` is provided (e.g. from total_cg), reuses it instead of
-    recomputing cg at every timestep."""
     times = np.asarray(times, dtype=float)
     if cgs is None:
-        iyys = np.array([rocket.iyy_at(t) for t in times])
+        iyy_quantities = [rocket.iyy_at(t) for t in times]
     else:
-        cgs = np.asarray(cgs, dtype=float)
-        iyys = np.array([rocket.iyy_at(t, cg=c) for t, c in zip(times, cgs)])
-    return iyys
+        iyy_quantities = [rocket.iyy_at(t, cg=c) for t, c in zip(times, cgs)]
 
+    iyy_unit = iyy_quantities[0].units
+    iyys_mag = np.array([i.to(iyy_unit).magnitude for i in iyy_quantities])
+    return Q_(iyys_mag, iyy_unit)

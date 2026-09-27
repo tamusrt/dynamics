@@ -261,23 +261,20 @@ class SolidMotor:
         return total
 
     def iyy_at(self, t, rocket_cg):
-        """Motor's contribution to pitch Iyy (lbm-in^2) about rocket_cg, at
-        time t. rocket_cg is the rest-of-rocket cg, computed once by the
-        caller -- only the motor's own mass distribution moves as
-        propellant burns."""
-        rocket_cg_in = rocket_cg.to(ureg.inch).magnitude
+        """rocket_cg arrives as a pint Quantity (whatever unit Rocket.cg_at
+        resolved to) -- convert to the bare inches the parallel-axis math
+        below expects, run it unchanged, then wrap the result back up."""
         self._check_ready()
+        rocket_cg_in = rocket_cg.to(ureg.inch).magnitude
         t_arr = np.atleast_1d(np.asarray(t, dtype=float))
-        iyy = self._iyy_from_states(self._component_states(t_arr), rocket_cg)
+        iyy = self._iyy_from_states(self._component_states(t_arr), rocket_cg_in)
 
         scalar_in = np.isscalar(t) or np.asarray(t).ndim == 0
         magnitude = float(iyy[0]) if scalar_in else iyy
         return Q_(magnitude, ureg.lb * ureg.inch**2)
 
     def iyy_dry(self, rocket_cg):
-        """Motor's contribution to pitch Iyy (lbm-in^2) at burnout
-        (propellant fully depleted) -- same parallel-axis sum as
-        iyy_at(), dry state instead."""
         self._check_ready()
-        return self._iyy_from_states(self._dry_component_states(), rocket_cg)
-    
+        rocket_cg_in = rocket_cg.to(ureg.inch).magnitude
+        magnitude = self._iyy_from_states(self._dry_component_states(), rocket_cg_in)
+        return Q_(magnitude, ureg.lb * ureg.inch**2)
