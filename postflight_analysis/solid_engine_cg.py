@@ -2,7 +2,9 @@ from dataclasses import dataclass
 from typing import Optional
 import math
 import numpy as np
-
+# units.py
+from comparinator import ureg, Q_
+    
 def cumulative(y: np.ndarray, x: np.ndarray) -> np.ndarray:
     """Cumulative trapezoidal integral of y dx, same length as y, starting at 0."""
     y = np.asarray(y, dtype=float)
@@ -163,9 +165,7 @@ class SolidMotor:
         self.hardware = hardware
         self.offset_in = offset_in
         self._ready = grain is not None and hardware is not None
-        print("times_s monotonic?", np.all(np.diff(grain.times_s) > 0))
-        print("total_impulse:", grain._frac_burned[-1] if hasattr(grain, '_frac_burned') else None)
-        print(grain.times_s[-5:])
+
     def _check_ready(self):
         if not self._ready:
             raise RuntimeError("SolidMotor is missing its grain or hardware component")
@@ -218,7 +218,8 @@ class SolidMotor:
         t_arr = np.atleast_1d(np.asarray(t, dtype=float))
         total = sum(m for _, m, _ in self._component_states(t_arr))
         scalar_in = np.isscalar(t) or np.asarray(t).ndim == 0
-        return float(total[0]) if scalar_in else total
+        magnitude = float(total[0]) if scalar_in else total
+        return Q_(magnitude, ureg.lb)
 
     def mass_dry(self):
         self._check_ready()
@@ -236,7 +237,8 @@ class SolidMotor:
         cg = self.offset_in + np.divide(moment, total, out=np.zeros_like(total), where=total > 0)
 
         scalar_in = np.isscalar(t) or np.asarray(t).ndim == 0
-        return float(cg[0]) if scalar_in else cg
+        magnitude = float(cg[0]) if scalar_in else cg
+        return Q_(magnitude, ureg.inch)
 
     def cg_dry(self):
         """CG location (inches) once propellant is fully depleted."""
@@ -263,12 +265,14 @@ class SolidMotor:
         time t. rocket_cg is the rest-of-rocket cg, computed once by the
         caller -- only the motor's own mass distribution moves as
         propellant burns."""
+        rocket_cg_in = rocket_cg.to(ureg.inch).magnitude
         self._check_ready()
         t_arr = np.atleast_1d(np.asarray(t, dtype=float))
         iyy = self._iyy_from_states(self._component_states(t_arr), rocket_cg)
 
         scalar_in = np.isscalar(t) or np.asarray(t).ndim == 0
-        return float(iyy[0]) if scalar_in else iyy
+        magnitude = float(iyy[0]) if scalar_in else iyy
+        return Q_(magnitude, ureg.lb * ureg.inch**2)
 
     def iyy_dry(self, rocket_cg):
         """Motor's contribution to pitch Iyy (lbm-in^2) at burnout
@@ -276,3 +280,4 @@ class SolidMotor:
         iyy_at(), dry state instead."""
         self._check_ready()
         return self._iyy_from_states(self._dry_component_states(), rocket_cg)
+    
