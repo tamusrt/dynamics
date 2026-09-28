@@ -586,7 +586,7 @@ def run_ork(helper, cfg: Config, snap: Snapshot, root: Path, ork_rel: str, seed:
     # level -> every simulation runs once per variant, reported as "<sim> [label]"
     for i in range(n):
         sim = doc.getSimulation(i)
-        sim_name = str(sim.getName())
+        sim_name = " ".join(str(sim.getName()).split())   # names in .ork files carry stray spaces
         configid = info["sims"][i][1] if i < len(info["sims"]) else ""
         scfg = cfg.sim_cfg(fcfg, sim_name)
         variants = scfg.get("motor_variants") or fcfg.get("motor_variants") or {None: None}
@@ -1229,6 +1229,26 @@ def render_history_md(series: dict, max_points: int, units: str = "metric", stab
     return "\n".join(out) + "\n"
 
 
+def sim_label(rec: dict) -> str:
+    """The simulation name of a result record, trimmed (records cached before names were trimmed keep the spaces)."""
+    return " ".join((rec.get("sim_name") or f"#{rec.get('sim_index')}").split())
+
+
+def current_sims(series: dict, files_versions: dict, results: dict) -> dict:
+    """Keep only the simulations that exist in the newest version of each file. A simulation that was
+    deleted or renamed drops out of the charts and the site (its rows stay in history.csv). If the newest
+    version could not be loaded, the newest one that did load decides; a file with no loadable version
+    keeps everything."""
+    keep = {}
+    for f, versions in files_versions.items():
+        for v in reversed(versions):
+            recs = results.get((f, v["blob"]), [])
+            if recs:
+                keep[f] = {sim_label(rec) for rec in recs}
+                break
+    return {k: rows for k, rows in series.items() if k[0] not in keep or k[1] in keep[k[0]]}
+
+
 def cmd_history(args):
     import datetime as dt
     cfg = Config(Path(args.config))
@@ -1305,7 +1325,7 @@ def cmd_history(args):
         for v in versions:
             date = dt.datetime.fromtimestamp(v["time"]).strftime("%Y-%m-%d")
             for rec in results.get((f, v["blob"]), []):
-                sim = rec.get("sim_name") or f"#{rec.get('sim_index')}"
+                sim = sim_label(rec)
                 row = {"label": f"{date[5:]} {v['short']}", "short": v["short"], "date": date, "author": v["author"],
                        "message": v["message"], "status": rec["status"], "metrics": rec.get("metrics") or {},
                        "note": ("motor unresolved" if "unresolved" in (rec.get("motor_source") or "") else ""),
@@ -1315,6 +1335,10 @@ def cmd_history(args):
                                  "short": v["short"], "date": date, "author": v["author"], "message": v["message"],
                                  "status": rec["status"], "motor": rec.get("motor", ""),
                                  "motor_source": rec.get("motor_source", ""), **(rec.get("metrics") or {})})
+    kept = current_sims(series, files_versions, results)
+    for f, sim in sorted(set(series) - set(kept)):
+        print(f"  {f} :: {sim}: not in the current file, left out of the charts")
+    series = kept
     out = Path(args.results)
     out.mkdir(parents=True, exist_ok=True)
 

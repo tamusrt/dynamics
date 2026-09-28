@@ -93,7 +93,21 @@ def build(site: Path):
     or_ci.write_site(series, site, "imperial", "https://github.com/example/dynamics", files_versions, "pct", changelog)
 
 
+def test_current_sims():
+    """A simulation missing from the newest loadable version drops out; a newest version that failed to load is skipped."""
+    fv = {"a.ork": [{"blob": "1"}, {"blob": "2"}, {"blob": "3"}], "b.ork": [{"blob": "4"}]}
+    results = {("a.ork", "1"): [{"sim_name": "old"}, {"sim_name": "best"}],
+               ("a.ork", "2"): [{"sim_name": "best"}, {"sim_name": "new"}],
+               ("a.ork", "3"): [],                      # newest version failed to load
+               ("b.ork", "4"): []}                      # never loaded: keep whatever history there is
+    series = {("a.ork", "old"): [1], ("a.ork", "best"): [1, 2], ("a.ork", "new"): [2], ("b.ork", "x"): [1]}
+    kept = or_ci.current_sims(series, fv, results)
+    assert set(kept) == {("a.ork", "best"), ("a.ork", "new"), ("b.ork", "x")}, kept
+    print("current_sims: ok")
+
+
 def main() -> int:
+    test_current_sims()
     tmp = Path(tempfile.mkdtemp(prefix="or_site_test_"))
     site = tmp / "site"
     try:
