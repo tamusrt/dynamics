@@ -80,6 +80,25 @@ O3400 = {
   }
 }
 
+LokiM3464 = {
+  "grain_casing": {
+    "offset": 40.87,
+    "dry_mass": 0.69,
+    "length": 38.3
+  },
+  "grain": {
+    "outer_radius_in": 1.25,
+    "initial_port_radius_in": 0.4375,
+    "length_in": 6.0,
+    "propellant_density_lbm_in3": 0.0631
+  },
+  "hardware": {
+    "offset": 40.87,
+    "dry_mass": 6.91,
+    "length": 40.87
+  }
+}
+
 valor_10k = {
 }
 
@@ -88,7 +107,7 @@ lumina = {
 }
 
 ROCKET_ENGINES = {
-    "morpheus": (O3400, "solid"),  
+    "morpheus": (LokiM3464, "solid"),  
     "sol_invictus": (sol_ignis, "hybrid"), 
     "morbin' time": (O3400, "solid"),
     "mikeys": (lumina, "liquid")
@@ -253,7 +272,7 @@ def build_solid(values: dict, t: np.array, df):
     engine = seng.SolidMotor(grain, hardware, offset_in=0)
     return engine 
 
-def calculate(data_dict, cutoff_dict, rocket):
+def calculate(data_dict, cutoff_dict, rocket=0):
     calc_array = []
     calc = {}
     titles = [...]
@@ -293,11 +312,11 @@ def calculate(data_dict, cutoff_dict, rocket):
     ork_accel_total = ork_bundle.ork_accel_total.magnitude
     ork_vel_total = ork_bundle.ork_vel_total.magnitude
     ork_aoa = ork_bundle.ork_aoa.magnitude
-    ork_pitch = ork_bundle.ork_pitch.magnitude
-    ork_flight_angle = ork_bundle.ork_flight_angle.magnitude
     ork_sm = ork_bundle.ork_sm.magnitude
     ork_fd = ork_bundle.ork_fd.magnitude
     ork_cd = ork_bundle.ork_cd.magnitude
+    ork_pressure = ork_bundle.ork_pressure.magnitude
+    ork_temperature = ork_bundle.ork_temperature.magnitude
 
     cutoff_dict["apogee"] = apogee = np.where(altitude >= max(altitude))[0][0]
     cutoff_dict["coast"] = np.where(spec_thrust <= 5)[0][2]
@@ -309,6 +328,10 @@ def calculate(data_dict, cutoff_dict, rocket):
     calc["theta"] = theta
     calc["accel_v"] = faa.magnitude(v_up, v_dr, v_cr)
     calc["sound"], calc["vel_mach"] = faa.v_mach(temperature, calc["accel_v"])
+    calc["density"] = faa.density(pressure, temperature)
+    calc["dyn_pressure"] = faa.dynamic_pressure(calc["density"], calc["accel_v"])
+    calc["ork_density"] = faa.density(ork_pressure, ork_temperature)
+    calc["ork_dyn_pressure"] = faa.dynamic_pressure(calc["ork_density"], ork_vel_total)
     calc["ax"], calc["ay"], calc["az"], calc["accel_total"] = faa.acceleration(v_up, v_dr, v_cr, apogee, calc["time"])
     calc["accel_gs"] = faa.magnitude(gx_accel, gy_accel, gz_accel)
     calc["accel_fts2"] = calc["accel_gs"] * 32.2
@@ -324,12 +347,12 @@ def calculate(data_dict, cutoff_dict, rocket):
     calc["thrust_ras"] = thrust
     calc["thrust_spec"] = spec_thrust
     calc["altitude"] = altitude
-    print(rocket.engine)          # is it None?
-    print(rocket.mass_at(0), rocket.mass_at(rocket.engine.grain.times_s[-1] if rocket.engine else None))
-    calc["cgs"] = geo.total_cg(rocket, calc["time"])[1]
-    print(calc["cgs"])
-    calc["iyy"] = geo.total_iyy(rocket, calc["time"], calc["cgs"])
-    calc["sm"] = faa.stability(time, calc["iyy"], gyro_y, calc["fn"])
+    #print(rocket.engine)          # is it None?
+    #print(rocket.mass_at(0), rocket.mass_at(rocket.engine.grain.times_s[-1] if rocket.engine else None))
+    #calc["cgs"] = geo.total_cg(rocket, calc["time"])[1]
+    #print(calc["cgs"])
+    #calc["iyy"] = geo.total_iyy(rocket, calc["time"], calc["cgs"])
+    #calc["sm"] = faa.stability(time, calc["iyy"], gyro_y, calc["fn"])
 
     #calc["sm2"] = faa.stability1(faa.frequency(calc["aoa"], sample_rate, calc["time"]), calc["iyy"], calc["accel_v"], calc["density"], calc["aoa"], calc["fn"])
 
@@ -641,6 +664,7 @@ def graph2(data, areas, build_data_fn=None, windows=(31, 51, 71, 91, 111),
     )
 
     # ---- page 3/4 merged: Drag & Stability Studies -------------------------
+
     def scatter_with_band(ax, xarr, ykey, bands, apogee, valid_mask, bins=40):
         x = xarr[start:apogee][valid_mask]
         y = data[ykey][start:apogee][valid_mask]
@@ -681,11 +705,6 @@ def graph2(data, areas, build_data_fn=None, windows=(31, 51, 71, 91, 111),
             'x_specs': [('time', 'Time (s)', 'CD vs Time'),
                         ('vel_mach', 'Mach', 'CD vs Mach')],
         },
-        {
-            'label': 'SM', 'y_key': 'sm', 'y_label': 'SM (cal)',
-            'x_specs': [('time', 'Time (s)', 'SM vs Time'),
-                        ('vel_mach', 'Mach', 'SM vs Mach')],
-        },
     ]
 
     def _study_row_builder(row_cfg):
@@ -704,12 +723,12 @@ def graph2(data, areas, build_data_fn=None, windows=(31, 51, 71, 91, 111),
         column_specs=[0, 1],
         row_builders=[_study_row_builder(cfg) for cfg in STUDY_ROWS],
         row_labels=[cfg['label'] for cfg in STUDY_ROWS],
-        suptitle='Drag & Stability Studies',
+        suptitle='Drag Study',
         col_width=4.5, row_height=4,
     )
 
     plt.show()
-    return fig1, fig1b, fig2, fig34
+    return fig1, fig1b, fig2
 
 def main():
     print(f"    .\n   .'.\n   |o|   Welcome to Comparinator!™\n  .'o'.  \033[3mFor all your comparing needs\033[0m\n  |.-.|\n  '   '\n   ( )\n    )\n   ( )")
@@ -777,7 +796,7 @@ def main():
         for col in set_bundle.columns:
             setattr(set_bundle, col, set_bundle[col][:burnout])
         dictionary = ROCKET_ENGINES[engine_key][0]
-        engine_used = build_hybrid(ROCKET_ENGINES[engine_key][0]["high_of"], set_bundle['time'], set_bundle) 
+        #engine_used = build_hybrid(ROCKET_ENGINES[engine_key][0]["high_of"], set_bundle['time'], set_bundle) 
     elif ROCKET_ENGINES[engine_key][1] == "solid":
         thrust_bundle = find_bundle(interpolated_data, "thrust")
         spec_thrust = thrust_bundle['spec_thrust']
@@ -788,11 +807,11 @@ def main():
         burn_time = accel_bundle['time'][:burnout].magnitude
 
         burn_thrust = spec_thrust[:burnout].magnitude
-        engine_used = build_solid(ROCKET_ENGINES[engine_key][0], accel_bundle['time'], thrust_bundle['spec_thrust'])
+        #engine_used = build_solid(ROCKET_ENGINES[engine_key][0], accel_bundle['time'], thrust_bundle['spec_thrust'])
 
-    rocket = geo.Rocket.from_file(candidates[0], engine=engine_used)
+    #rocket = geo.Rocket.from_file(candidates[0], engine=engine_used)
 
-    graph_values, cutoff_dict = calculate(interpolated_data, cutoff_dict, rocket)
+    graph_values, cutoff_dict = calculate(interpolated_data, cutoff_dict)
     graph2(graph_values, cutoff_dict)
 
 
