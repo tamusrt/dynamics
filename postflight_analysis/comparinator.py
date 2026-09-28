@@ -363,69 +363,108 @@ def compute_sensitivity_bands(build_data_fn, windows, keys, apogee_key="apogee")
         bands[k] = (stacked.min(axis=0), stacked.max(axis=0))
     return bands, min_apogee
 
-def plot_to(ax, xarr, yarr, band=None, apogee=None, **kwargs):
-    n = apogee if apogee is not None else len(yarr)
-    ax.plot(xarr[:n], yarr[:n], **kwargs)
-    if band is not None:
-        lower, upper = band
-        ax.fill_between(xarr[:len(lower)], lower, upper, alpha=0.2,
-                         color=kwargs.get('color', 'C0'), label='_nolegend_')
- 
+
+SOURCE_LABELS = {
+    'flight': 'Flight',
+    'ork': 'OpenRocket',
+    'ras': 'RAS',
+    'spec': 'Motor spec',
+}
+
+OVERLAY_ALIASES = {
+    'accel_v':    {'ork': 'ork_vel_total'},  
+    'thrust_ras': {'spec': 'thrust_spec'},   
+    # Example for the case you described:
+    # 'fdrag': {'ork': 'ork_drag', 'ras': 'ras_drag'},
+}
+
+# Legend label override for a *primary* column whose own name implies a
+# non-"Flight" source (e.g. thrust_ras is itself the RAS-measured series).
+PRIMARY_LABEL_OVERRIDES = {
+    'thrust_ras': 'RAS',
+}
+
+VELOCITY_DEPENDENT_KEYS = {'aoa', 'flight_angle', 'theta'}
+
+
+def _strip_source(key):
+    """'ork_altitude' -> ('altitude', 'ork'); bare keys -> (key, 'flight')."""
+    for src in SOURCE_LABELS:
+        prefix = src + '_'
+        if key.startswith(prefix):
+            return key[len(prefix):], src
+    return key, 'flight'
+
+
+def overlay_group(base_key, data):
+    """Every column in `data` representing the same quantity as `base_key`,
+    across sources, as {source: column_name}. Combines automatic
+    '<source>_<basename>' matching with OVERLAY_ALIASES for columns that
+    don't follow the convention."""
+    base_name, base_src = _strip_source(base_key)
+    group = {}
+    if base_key in data:
+        group[base_src] = base_key
+    for src in SOURCE_LABELS:
+        if src == base_src:
+            continue
+        candidate = base_name if src == 'flight' else f'{src}_{base_name}'
+        if candidate in data and candidate != base_key:
+            group.setdefault(src, candidate)
+    for src, col in OVERLAY_ALIASES.get(base_key, {}).items():
+        if col in data:
+            group[src] = col
+    return group
+
+
+def primary_label(key):
+    return PRIMARY_LABEL_OVERRIDES.get(key, 'Flight')
+
+
 def plot_windowed(ax, xarr, yarr, start, end, band=None, **kwargs):
-    '''Plot yarr vs xarr over the window [start:end), optionally shading a
-    (lower, upper) sensitivity band beneath it.
- 
-    This is the single, module-level version of what used to be plot_to():
-    one copy lived here, and a second copy was defined again inside graph2(),
-    silently shadowing this one for every call made from within it. Anything
-    that plots a windowed series with an optional band should call this one.'''
+    """Plot yarr vs xarr over the window [start:end), optionally shading a
+    (lower, upper) sensitivity band beneath it."""
     ax.plot(xarr[start:end], yarr[start:end], **kwargs)
     if band is not None:
         lower, upper = band
         n = min(end, len(lower))
         ax.fill_between(xarr[start:n], lower[start:n], upper[start:n], alpha=0.2,
                          color=kwargs.get('color', 'C0'), label='_nolegend_')
- 
+
+
 def diagnostic_grid(column_specs, row_builders, row_labels=None, suptitle=None,
                      col_width=4.5, row_height=3.8, wspace=0.35, hspace=0.55,
                      top_margin=0.90, left_margin=0.07):
-    '''Generic N-row x M-column diagnostic figure builder.
- 
-    column_specs: list of per-column identifying info (e.g. tuples of
-        (data_key, ork_key, label)) — one entry per column.
-    row_builders: list of functions, each with signature
-        fn(ax, col_spec) -> None, called once per (row, column) to draw
-        that cell. len(row_builders) determines the number of rows.
-    row_labels: optional list of strings, one per row, drawn as a bold
-        annotation to the left of each row's first axis instead of a
-        per-axis title — avoids "Parity"/"Parity"/"Parity" clutter
-        repeating across columns.
-    suptitle: optional figure-level title.
-    top_margin: fraction of figure height left below the suptitle for
-        the actual plot grid (e.g. 0.90 means the top 10% is reserved).
-    '''
+    """Generic N-row x M-column diagnostic figure builder.
+
+    column_specs: list of per-column identifying info — one entry per column.
+    row_builders: list of fn(ax, col_spec) -> None; len() sets the row count.
+    row_labels: optional per-row bold label drawn beside each row's first axis.
+    top_margin: fraction of figure height left below the suptitle for the grid.
+    """
     ncols = len(column_specs)
     nrows = len(row_builders)
     fig, axs = plt.subplots(nrows, ncols,
                              figsize=(col_width * ncols, row_height * nrows),
                              squeeze=False)
- 
+
     if suptitle:
         fig.suptitle(suptitle, fontweight='bold')
- 
+
     if row_labels:
         for row, label in enumerate(row_labels):
             axs[row, 0].annotate(label, xy=(-0.32, 0.5), xycoords='axes fraction',
                                   fontsize=11, fontweight='bold',
                                   ha='right', va='center', rotation=90)
- 
+
     for row, builder in enumerate(row_builders):
         for col, spec in enumerate(column_specs):
             builder(axs[row, col], spec)
- 
+
     fig.subplots_adjust(hspace=hspace, wspace=wspace, top=top_margin, left=left_margin)
     return fig, axs
- 
+
+
 def graph2(data, areas, build_data_fn=None, windows=(31, 51, 71, 91, 111),
            mach_min=0.08, start=15, ork_vel_min=20, flight_vel_min=20,
            hold=10, pct_err_denom_min=None):
@@ -437,134 +476,115 @@ def graph2(data, areas, build_data_fn=None, windows=(31, 51, 71, 91, 111),
             'ork_aoa': 1.0,          # degrees — AoA near 0 is expected/fine, not an error
             'ork_vel_total': 20,     # ft/s
         }
- 
+
     coast, apogee = areas["coast"], areas["apogee"]
     t = data['time']
     band_keys = ['accel_v', 'accel_total', 'fd', 'cd', 'fn']
     bands = {}
     if build_data_fn is not None:
         bands, band_apogee = compute_sensitivity_bands(build_data_fn, windows, band_keys)
- 
+
     def first_sustained_index(arr, threshold, hold=10):
-        '''Index of the first sample after which `arr` stays >= threshold for at
-        least `hold` consecutive samples. Ignores brief noise spikes that cross
-        threshold only momentarily. Returns 0 if never found (no masking applied).'''
-        arr= np.asarray(arr, float)
+        """Index of the first sample after which `arr` stays >= threshold for
+        at least `hold` consecutive samples. Ignores brief noise spikes.
+        Returns 0 if never found (no masking applied)."""
+        arr = np.asarray(arr, float)
         above = np.abs(arr) >= threshold
         for i in range(len(above) - hold):
             if above[i:i + hold].all():
                 return i
         return 0
- 
-    # OpenRocket-side liftoff index: mask everything before sustained ork velocity.
-    if 'ork_vel_total' in data:
-        ork_liftoff_idx = first_sustained_index(data['ork_vel_total'], ork_vel_min, hold=hold)
-    else:
-        ork_liftoff_idx = 0
- 
-    def ork_masked(key):
-        '''Return data[key] with NaN before the sustained-liftoff index.'''
+
+    # Liftoff indices per source: ork columns are masked unconditionally;
+    # flight columns are only masked for velocity-DERIVED ANGLE quantities
+    # (aoa, flight_angle, theta), since those are ill-defined near v=0.
+    ork_liftoff_idx = (first_sustained_index(data['ork_vel_total'], ork_vel_min, hold=hold)
+                        if 'ork_vel_total' in data else 0)
+    flight_liftoff_idx = (first_sustained_index(data['accel_v'], flight_vel_min, hold=hold)
+                           if 'accel_v' in data else 0)
+
+    def mask(key):
+        """NaN out samples before the appropriate liftoff index for this
+        column's source."""
         arr = np.asarray(data[key], float).copy()
-        arr[:ork_liftoff_idx] = np.nan
-        return arr
- 
-    # Flight-side liftoff index: mask velocity-DERIVED ANGLE quantities (aoa,
-    # flight_angle, theta) before sustained flight velocity — these are ill-defined
-    # near v=0 since they're computed from velocity direction.
-    if 'accel_v' in data:
-        flight_liftoff_idx = first_sustained_index(data['accel_v'], flight_vel_min, hold=hold)
-    else:
-        flight_liftoff_idx = 0
- 
-    VELOCITY_DEPENDENT_KEYS = {'aoa', 'flight_angle', 'theta'}
- 
-    def flight_masked(key):
-        '''Return data[key] with NaN before the sustained-liftoff index, for
-        quantities that are only meaningful once real flight velocity exists.'''
-        arr = np.asarray(data[key], float).copy()
-        if key in VELOCITY_DEPENDENT_KEYS:
+        base_name, src = _strip_source(key)
+        if src == 'ork':
+            arr[:ork_liftoff_idx] = np.nan
+        elif base_name in VELOCITY_DEPENDENT_KEYS:
             arr[:flight_liftoff_idx] = np.nan
         return arr
- 
+
     def shade(ax, x_end=None):
         ax.axvspan(0, t[coast], alpha=0.15, color='lightblue')
         ax.axvspan(t[coast], t[apogee], alpha=0.15, color='pink')
         if x_end is not None:
             ax.set_xlim(0, x_end)
- 
-    def fit_ylim(ax, key, overlay_key=None):
-        base = flight_masked(key) if key in VELOCITY_DEPENDENT_KEYS else np.asarray(data[key], float)
-        ys = [base[start:apogee]]
-        if overlay_key is not None and overlay_key in data:
-            ov = ork_masked(overlay_key)[start:apogee] if overlay_key.startswith('ork_') else \
-                 np.asarray(data[overlay_key][start:apogee], float)
-            ys.append(ov)
-        y = np.concatenate(ys)
+
+    def fit_ylim(ax, key, overlays=None):
+        parts = [mask(key)[start:apogee]]
+        for col in (overlays or {}).values():
+            if col != key:
+                parts.append(mask(col)[start:apogee])
+        y = np.concatenate(parts)
         y = y[np.isfinite(y)]
         if y.size == 0:
             return
         pad = (y.max() - y.min()) * 0.05 or 1
         ax.set_ylim(y.min() - pad, y.max() + pad)
- 
+
     # ---- page 1: Basics --------------------------------------------------
-    # A 3x2 grid of independent quantities. diagnostic_grid() crosses
-    # row_builders against column_specs, so to keep this exact layout we
-    # give it 2 generic column slots (0, 1) and build one row_builder per
-    # row of BASICS_LAYOUT, each closing over which row it owns.
-    ork_overlay_1 = {'altitude': 'ork_altitude', 'accel_total': 'ork_accel_total',
-                      'accel_v': 'ork_vel_total', 'aoa': 'ork_aoa'}
     BASICS_LAYOUT = [
         [('altitude', 'Altitude (ft)'), ('accel_v', 'Velocity (ft/s)')],
         [('accel_total', 'Acceleration (ft/s²)'), ('aoa', 'AoA (°)')],
         [('theta', 'Pitch (°)'), ('flight_angle', 'Flight Angle (°)')],
     ]
- 
+
     def _basics_row_builder(row):
         def builder(ax, col):
             key, lbl = BASICS_LAYOUT[row][col]
-            overlay_key = ork_overlay_1.get(key)
-            has_overlay = overlay_key is not None and overlay_key in data
-            plot_windowed(ax, t, flight_masked(key), start, apogee, band=bands.get(key),
-                          label='Flight' if has_overlay else None)
-            if has_overlay:
-                plot_windowed(ax, t, ork_masked(overlay_key), start, apogee, label='OpenRocket')
+            overlays = {s: c for s, c in overlay_group(key, data).items() if c != key}
+            plot_windowed(ax, t, mask(key), start, apogee, band=bands.get(key),
+                          label=primary_label(key) if overlays else None)
+            for src, col_name in overlays.items():
+                plot_windowed(ax, t, mask(col_name), start, apogee, label=SOURCE_LABELS[src])
+            if overlays:
                 ax.legend()
             ax.set(xlabel='Time (s)', ylabel=lbl, title=lbl)
             shade(ax, x_end=t[apogee])
-            fit_ylim(ax, key, overlay_key=overlay_key)
+            fit_ylim(ax, key, overlays=overlays)
         return builder
- 
+
     fig1, _ = diagnostic_grid(
         column_specs=[0, 1],
         row_builders=[_basics_row_builder(r) for r in range(len(BASICS_LAYOUT))],
         suptitle='Basics',
         col_width=6, row_height=3.3,
     )
- 
+
     # ---- page 1b: Overlay Diagnostics -------------------------------------
-    # This is the layout diagnostic_grid was actually designed for: three
-    # "kinds" of view (Raw / Parity / % Error) repeated across however many
-    # quantities have an OpenRocket overlay available.
-    overlay_present = [(k, ork_overlay_1[k], lbl) for k, lbl in [
-        ('altitude', 'Altitude (ft)'), ('accel_v', 'Velocity (ft/s)'),
-        ('accel_total', 'Acceleration (ft/s²)'), ('aoa', 'AoA (°)')
-    ] if k in ork_overlay_1 and ork_overlay_1[k] in data]
- 
+    # Raw / Parity / % Error, repeated across every quantity that has an
+    # OpenRocket overlay available (per the registry).
+    overlay_present = []
+    for k, lbl in [('altitude', 'Altitude (ft)'), ('accel_v', 'Velocity (ft/s)'),
+                    ('accel_total', 'Acceleration (ft/s²)'), ('aoa', 'AoA (°)')]:
+        ork_col = overlay_group(k, data).get('ork')
+        if ork_col:
+            overlay_present.append((k, ork_col, lbl))
+
     fig1b = None
     if overlay_present:
         def _raw_row(ax, spec):
             k, ok, lbl = spec
-            tt = t[start:apogee]
-            plot_windowed(ax, t, flight_masked(k), start, apogee, label='Flight', alpha=0.85)
-            plot_windowed(ax, t, ork_masked(ok), start, apogee, label='OpenRocket', alpha=0.85)
+            plot_windowed(ax, t, mask(k), start, apogee, label='Flight', alpha=0.85)
+            plot_windowed(ax, t, mask(ok), start, apogee, label='OpenRocket', alpha=0.85)
             ax.set(xlabel='Time (s)', ylabel=lbl, title=lbl)
             shade(ax, x_end=t[apogee])
             ax.legend(fontsize=7)
- 
+
         def _parity_row(ax, spec):
             k, ok, lbl = spec
-            flight = flight_masked(k)[start:apogee]
-            ork = ork_masked(ok)[start:apogee]
+            flight = mask(k)[start:apogee]
+            ork = mask(ok)[start:apogee]
             valid = np.isfinite(flight) & np.isfinite(ork)
             ax.scatter(ork[valid], flight[valid], s=4, alpha=0.4)
             if valid.any():
@@ -572,11 +592,11 @@ def graph2(data, areas, build_data_fn=None, windows=(31, 51, 71, 91, 111),
                 ax.plot(lims, lims, 'k--', linewidth=1, label='y = x')
             ax.set(xlabel=f'OpenRocket {lbl}', ylabel=f'Flight {lbl}')
             ax.legend(fontsize=7)
- 
+
         def _pct_err_row(ax, spec):
             k, ok, lbl = spec
-            flight = flight_masked(k)[start:apogee]
-            ork = ork_masked(ok)[start:apogee]
+            flight = mask(k)[start:apogee]
+            ork = mask(ok)[start:apogee]
             tt = t[start:apogee]
             denom = ork.copy()
             denom_min = pct_err_denom_min.get(ok, 1e-6)
@@ -586,7 +606,7 @@ def graph2(data, areas, build_data_fn=None, windows=(31, 51, 71, 91, 111),
             ax.axhline(0, color='black', linewidth=0.8)
             ax.set(xlabel='Time (s)', ylabel='% error')
             shade(ax, x_end=t[apogee])
- 
+
         fig1b, _ = diagnostic_grid(
             column_specs=overlay_present,
             row_builders=[_raw_row, _parity_row, _pct_err_row],
@@ -594,48 +614,42 @@ def graph2(data, areas, build_data_fn=None, windows=(31, 51, 71, 91, 111),
             suptitle='Overlay Diagnostics: Raw / Parity / % Error',
             col_width=4.5, row_height=4.0, hspace=0.5, top_margin=0.92, left_margin=0.08,
         )
- 
+
     # ---- page 2: Forces ----------------------------------------------------
-    # Independent panels again, so this is diagnostic_grid with a single row.
     page2_items = [
         ('thrust_ras', 'Thrust (lbf)'), ('fd', 'Drag (lbf)'),
         ('fn', 'Normal Force (lbf)'), ('lift', 'Lift (lbf)')
     ]
- 
+
     def _forces_cell(ax, spec):
         ka, lbl = spec
-        plot_windowed(ax, t, data[ka], start, apogee, band=bands.get(ka),
-                      label='RAS' if ka == 'thrust_ras' else 'Flight')
-        if ka == 'thrust_ras':
-            plot_windowed(ax, t, data['thrust_spec'], start, apogee, label='Motor spec')
-        if ka == 'fd' and 'ork_fd' in data:
-            plot_windowed(ax, t, ork_masked('ork_fd'), start, apogee, label='OpenRocket')
+        overlays = {s: c for s, c in overlay_group(ka, data).items() if c != ka}
+        plot_windowed(ax, t, mask(ka), start, apogee, band=bands.get(ka),
+                      label=primary_label(ka))
+        for src, col in overlays.items():
+            plot_windowed(ax, t, mask(col), start, apogee, label=SOURCE_LABELS[src])
         ax.set(xlabel='Time (s)', ylabel=lbl, title=lbl)
         shade(ax, x_end=t[apogee])
-        fit_ylim(ax, ka)
+        fit_ylim(ax, ka, overlays=overlays)
         ax.legend()
- 
+
     fig2, _ = diagnostic_grid(
         column_specs=page2_items,
         row_builders=[_forces_cell],
         suptitle='Forces',
         col_width=3.5, row_height=4,
     )
- 
+
     # ---- page 3/4 merged: Drag & Stability Studies -------------------------
-    # CD-vs-{time,aoa,mach} and SM-vs-{time,cna,mach} used to be two separate
-    # figures built from an identical pattern (scatter_with_band + overlay_ork
-    # per column). They're the same row builder applied to two y-quantities,
-    # so they're now two rows of one diagnostic_grid instead of two figures.
-    def scatter_with_band(ax, xarr, ykey, bands, apogee, mask, bins=40):
-        x = xarr[start:apogee][mask]
-        y = data[ykey][start:apogee][mask]
+    def scatter_with_band(ax, xarr, ykey, bands, apogee, valid_mask, bins=40):
+        x = xarr[start:apogee][valid_mask]
+        y = data[ykey][start:apogee][valid_mask]
         ok = np.isfinite(x) & np.isfinite(y)
         ax.scatter(x[ok], y[ok], s=4, alpha=0.5, label='Flight')
         if ykey in bands and len(x) > 0:
             lower, upper = bands[ykey]
             n = min(apogee, len(lower))
-            m = mask[start:n] if n > start else mask[:0]
+            m = valid_mask[start:n] if n > start else valid_mask[:0]
             lower, upper = lower[start:n][m], upper[start:n][m]
             x_band = xarr[start:n][m]
             bin_edges = np.linspace(np.nanmin(x_band), np.nanmax(x_band), bins + 1)
@@ -650,51 +664,50 @@ def graph2(data, areas, build_data_fn=None, windows=(31, 51, 71, 91, 111),
                 hi_med.append(np.nanmedian(upper[bmask]))
             ax.fill_between(centers, lo_med, hi_med, alpha=0.25, color='orange', label='Window sensitivity')
         ax.legend(fontsize=7)
- 
-    def overlay_ork(ax, xarr, ork_key, apogee, mask, color='green'):
-        if ork_key not in data:
-            return
-        x = xarr[start:apogee][mask]
-        y = ork_masked(ork_key)[start:apogee][mask]
+
+    def overlay_source(ax, xarr, col, apogee, valid_mask, src):
+        x = xarr[start:apogee][valid_mask]
+        y = mask(col)[start:apogee][valid_mask]
         ok = np.isfinite(x) & np.isfinite(y)
-        ax.scatter(x[ok], y[ok], s=4, alpha=0.5, color=color, label='OpenRocket')
+        color = 'green' if src == 'ork' else None
+        ax.scatter(x[ok], y[ok], s=4, alpha=0.5, color=color, label=SOURCE_LABELS[src])
         ax.legend(fontsize=7)
- 
+
     vel_mask = data['vel_mach'][start:apogee] >= mach_min
- 
+
     STUDY_ROWS = [
         {
-            'label': 'CD', 'y_key': 'cd', 'ork_key': 'ork_cd', 'y_label': 'CD',
+            'label': 'CD', 'y_key': 'cd', 'y_label': 'CD',
             'x_specs': [('time', 'Time (s)', 'CD vs Time'),
-                        ('aoa', 'AoA (°)', 'CD vs AoA'),
                         ('vel_mach', 'Mach', 'CD vs Mach')],
         },
         {
-            'label': 'SM', 'y_key': 'sm', 'ork_key': 'ork_sm', 'y_label': 'SM (cal)',
+            'label': 'SM', 'y_key': 'sm', 'y_label': 'SM (cal)',
             'x_specs': [('time', 'Time (s)', 'SM vs Time'),
-                        ('cna', 'CN\u03b1', 'SM vs CN\u03b1'),
                         ('vel_mach', 'Mach', 'SM vs Mach')],
         },
     ]
- 
+
     def _study_row_builder(row_cfg):
         def builder(ax, col):
             xk, xl, ttl = row_cfg['x_specs'][col]
             scatter_with_band(ax, data[xk], row_cfg['y_key'], bands, apogee, vel_mask)
-            overlay_ork(ax, data[xk], row_cfg['ork_key'], apogee, vel_mask)
+            for src, ov_col in overlay_group(row_cfg['y_key'], data).items():
+                if ov_col != row_cfg['y_key']:
+                    overlay_source(ax, data[xk], ov_col, apogee, vel_mask, src)
             ax.set(xlabel=xl, ylabel=row_cfg['y_label'], title=ttl)
             if xk == 'time':
                 shade(ax)
         return builder
- 
+
     fig34, _ = diagnostic_grid(
-        column_specs=[0, 1, 2],
+        column_specs=[0, 1],
         row_builders=[_study_row_builder(cfg) for cfg in STUDY_ROWS],
         row_labels=[cfg['label'] for cfg in STUDY_ROWS],
         suptitle='Drag & Stability Studies',
         col_width=4.5, row_height=4,
     )
- 
+
     plt.show()
     return fig1, fig1b, fig2, fig34
 
