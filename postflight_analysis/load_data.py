@@ -49,7 +49,7 @@ COLUMN_MAP = {
     "gyro": ["Flight_Time_(s)", "Gyro_X", "Gyro_Y", "Gyro_Z", "Accel_X", "Accel_Y", "Accel_Z"],
     "thrust": ["Time", "Thrust (N)"],
     "ras": ["Flight Time Rounded (s)", "Thrust (lb)", "Accel (ft/sec^2)", "Weight (lb)"],
-    "ork": ["Time (s)","Altitude (m)","Total acceleration (m/s²)", "Angle of attack (°)", "Total velocity (m/s)","Pitch rate (°/s)", "Yaw rate (°/s)","Stability margin calibers (​)", "Drag force (N)", "Drag coefficient (​)"],
+    "ork": ["Time (s)","Altitude (m)","Total acceleration (m/s²)", "Angle of attack (°)", "Total velocity (m/s)","Stability margin calibers (​)", "Drag force (N)", "Drag coefficient (​)", "Air temperature (°C)", "Air pressure (mbar)"],
     "set": ["timestamp (ns)", "sensors/thrust.value", "sensors/chamber_pressure.value", "sensors/injector_pressure.value", "sensors/run_tank_pressure.value"]
 }
 
@@ -99,7 +99,9 @@ ALIASES = {
         "ork_flight_angle":"Yaw rate (°/s)",
         "ork_sm": "Stability margin calibers (​)", 
         "ork_fd":"Drag force (N)", 
-        "ork_cd":"Drag coefficient (​)"
+        "ork_cd":"Drag coefficient (​)",
+        "ork_pressure":"Air pressure (mbar)",
+        "ork_temperature":"Air temperature (°C)"
     },
     "set": {
         "time": "timestamp (ns)",
@@ -151,7 +153,9 @@ UNITS = {
         "ork_flight_angle":"deg/s",
         "ork_sm": "dimensionless", 
         "ork_fd":"N", 
-        "ork_cd":"dimensionless"
+        "ork_cd":"dimensionless",
+        "ork_pressure":"mbar",
+        "ork_temperature":"degC"
     },
     "set": {
         "thrust": "N",
