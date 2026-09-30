@@ -50,7 +50,7 @@ def pad_to(arr, n):
 
 ### WE INTERRUPT THIS PROGRAM TO BRING YOU: smoothed velocity values do do do 
 # measurement noise (R): find the flat segment, use to find noise estimate that can be applied across stages and change accordingly
-def still_pad(pre_v, hold=10, min_steps=10, sigma_mult=5):
+def still_pad(pre_v, hold=3, min_steps=3, sigma_mult=5):
     '''find 'v' from the pre-liftoff values so that we can define where it actually is still, that 
     will be used later to estimate what the actual sensor noise is, calibrating it when its supposed to be flat 
 
@@ -58,21 +58,26 @@ def still_pad(pre_v, hold=10, min_steps=10, sigma_mult=5):
     rough noise level, finds an approximate onset, then refines once using
     the trimmed segment. Returns (v_pad_trimmed, onset_index_or_None).'''
     def find_onset(std_ref, center):
-        threshold = sigma_mult * std_ref # sample should be vary by x to be counted as motion start (vs. wind/hit)
-        deviation = np.abs(pre_v - center)
-        for i in range(len(deviation) - min_steps): # for values in array, if it meets threshold, return
-            if (deviation[i:i + min_steps] >= threshold).all():
+        threshold = sigma_mult * std_ref
+        if threshold <= 0:
+            nonzero_diffs = np.abs(np.diff(pre_v))
+            nonzero_diffs = nonzero_diffs[nonzero_diffs > 0]
+            floor = nonzero_diffs.min() if nonzero_diffs.size else 1.0
+            threshold = sigma_mult * floor
+        deviation = np.abs(pre_v - center)        
+        for i in range(len(deviation) - hold + 1):
+            if (deviation[i:i + hold] >= threshold).all():
                 return i
         return None
 
-    quarter = max(min_steps + 1, len(pre_v) // 4)
+    quarter = max(hold + 1, len(pre_v) // 4)
     rough_std = np.std(pre_v[:quarter])
     rough_center = np.median(pre_v[:quarter])
-    onset = find_onset(rough_std, rough_center) # once an acceptable standard deviation is found, find onset of when it meets it
+    onset = find_onset(rough_std, rough_center)
 
-    v_pad = pre_v if onset is None else pre_v[:onset] # velocity on pad, use entire portion if onset not present
+    v_pad = pre_v if onset is None else pre_v[:onset]
 
-    refined_std = np.std(v_pad) # find a second good portion for the velocity on pad, before onset
+    refined_std = np.std(v_pad)
     refined_center = np.median(v_pad)
     onset2 = find_onset(refined_std, refined_center)
 
@@ -117,7 +122,7 @@ def calibrate_noise_window(v_pad, window_options=(21, 41, 61, 81), poly_order=2,
     return best_window, true_r
 
 def build_r_series(v_pre, v_flight, window_options=(21, 41, 61, 81), poly_order=2,
-                             hold=10, sigma_mult=5, verbose=True):
+                             hold=3, sigma_mult=5, verbose=True):
     '''trims pre-liftoff data down to the true flat segment, calibrates a detrending window and applies across
     flight. floors result at the pad's true noise level, since
     baseline sensor noise doesn't disappear while moving.'''
