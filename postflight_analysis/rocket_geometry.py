@@ -301,7 +301,6 @@ class Rocket:
         self.parts=[UnitAwareBodyPart(p) for p in parts]
         self.fins= [UnitAwareFinSet(f) for f in fins]
         self.engine= engine
-        print("hiya", [(p.name, p.length if hasattr(p, 'length') else None, p.mass, p.cg) for p in self.parts])
 
 
     @classmethod

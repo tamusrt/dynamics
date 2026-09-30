@@ -16,7 +16,7 @@ from filterpy.kalman import KalmanFilter
 G_FT = 32.174   # ft/s^2, and the lbm-ft/(lbf-s^2) unit conversion
 IN_PER_FT = 12
 
-radius = 3
+radius = 2.5
 
 # math Functions 
 
@@ -48,71 +48,280 @@ def pad_to(arr, n):
     arr = np.asarray(arr, float)
     return arr[:n] if arr.size >= n else np.concatenate([arr, np.zeros(n - arr.size)])
 
-def _kalman_smooth_velocity(v, t):
-    '''Run a constant-acceleration KF + RTS smoother on a single velocity
-    component. Returns smoothed acceleration (state index 1) for the
-    same-length input v, t.'''
+### WE INTERRUPT THIS PROGRAM TO BRING YOU: smoothed velocity values do do do 
+# measurement noise (R): find the flat segment, use to find noise estimate that can be applied across stages and change accordingly
+def still_pad(pre_v, hold=10, min_steps=10, sigma_mult=5):
+    '''find 'v' from the pre-liftoff values so that we can define where it actually is still, that 
+    will be used later to estimate what the actual sensor noise is, calibrating it when its supposed to be flat 
+
+    cuts off the first quarter of `v` (assumed still) to get a
+    rough noise level, finds an approximate onset, then refines once using
+    the trimmed segment. Returns (v_pad_trimmed, onset_index_or_None).'''
+    def find_onset(std_ref, center):
+        threshold = sigma_mult * std_ref # sample should be vary by x to be counted as motion start (vs. wind/hit)
+        deviation = np.abs(pre_v - center)
+        for i in range(len(deviation) - min_steps): # for values in array, if it meets threshold, return
+            if (deviation[i:i + min_steps] >= threshold).all():
+                return i
+        return None
+
+    quarter = max(min_steps + 1, len(pre_v) // 4)
+    rough_std = np.std(pre_v[:quarter])
+    rough_center = np.median(pre_v[:quarter])
+    onset = find_onset(rough_std, rough_center) # once an acceptable standard deviation is found, find onset of when it meets it
+
+    v_pad = pre_v if onset is None else pre_v[:onset] # velocity on pad, use entire portion if onset not present
+
+    refined_std = np.std(v_pad) # find a second good portion for the velocity on pad, before onset
+    refined_center = np.median(v_pad)
+    onset2 = find_onset(refined_std, refined_center)
+
+    if onset2 is not None:
+        v_pad = pre_v[:onset2]
+    return v_pad, (onset2 if onset2 is not None else onset)
+
+def estimate_noise(v, window=41, poly_order=2):
+    '''find a rolling sensor noise variance for each time stamp, fit a polynominal, treat residual as noise. 
+    assumes that true signal is smooth compared to window length. decides noise changes over the flight (e.g. motor vibration,
+    transonic buffet) instead using average.'''
     n = len(v)
-    dt = np.diff(t)
-    dt = np.append(dt, dt[-1])  # pad so len(dt) == n, for step k -> k+1
+    half = window // 2
+    r_series = np.full(n, np.nan) # measurement noise array
+    for i in range(half, n - half): 
+        idx = np.arange(i - half, i + half + 1)
+        coeffs = np.polyfit(idx, v[idx], poly_order)
+        fit = np.polyval(coeffs, idx)
+        r_series[i] = np.var(v[idx] - fit)
+    if n > 2 * half: # if an odd amount, fix that shit 
+        r_series[:half] = r_series[half]
+        r_series[-half:] = r_series[-half - 1]
+    else:
+        r_series[:] = np.nanvar(v)  # clone, find the variance excepting where window too wide for array
+    return r_series
 
-    kf = KalmanFilter(dim_x=2, dim_z=1)  # state: [velocity, acceleration]
-    kf.x = np.array([[v[0]], [0.0]])
-    kf.P *= 100.0                         # initial state uncertainty
+def calibrate_noise_window(v_pad, window_options=(21, 41, 61, 81), poly_order=2, verbose=True):
+    '''grabs window size where rolling estimate produces the closest to TRUE
+    noise variance on the pad segment. where velocity all of its variance is considered noise.
+    Returns (best_window, true_pad_variance).'''
+    true_r = np.var(v_pad)
+    best_window, best_diff = window_options[0], np.inf
+    for w in window_options:
+        if w >= len(v_pad):
+            continue
+        est = estimate_noise(v_pad, window=w, poly_order=poly_order) # when the window is smaller 
+        diff = abs(np.nanmedian(est) - true_r)
+        if verbose:
+            print(f'window={w}: detrended est={np.nanmedian(est):.4f}, true={true_r:.4f}')
+        if diff < best_diff:
+            best_diff, best_window = diff, w
+    return best_window, true_r
 
-    kf.H = np.array([[1.0, 0.0]])         # we observe velocity directly
+def build_r_series(v_pre, v_flight, window_options=(21, 41, 61, 81), poly_order=2,
+                             hold=10, sigma_mult=5, verbose=True):
+    '''trims pre-liftoff data down to the true flat segment, calibrates a detrending window and applies across
+    flight. floors result at the pad's true noise level, since
+    baseline sensor noise doesn't disappear while moving.'''
+    v_pad, onset_idx = still_pad(v_pre, hold=hold, sigma_mult=sigma_mult)
+    best_window, r_floor = calibrate_noise_window(v_pad, window_options, poly_order, verbose)
+    r_series = estimate_noise(v_flight, window=best_window, poly_order=poly_order)
+    r_series = np.maximum(r_series, r_floor)
+    return r_series, {'onset_idx': onset_idx, 'window': best_window, 'r_floor': r_floor}
 
-    # measurement noise: how noisy is your velocity estimate (units: (ft/s)^2)
-    r_var = 1.0
-    kf.R = np.array([[r_var]])
-
-    # process noise: how much acceleration is "allowed" to change per step
-    # (units: (ft/s^2)^2 per unit time) -- this is your main tuning knob
-    q_accel_var = 400.0
-
-    xs, covs = [], []
+# process noise covariance matrix (Q): how much it should be able to vary
+def _forward_nis(t, v, r_v, q, dt=None, p0=100.0):
+    '''Forward-only KF pass (no RTS -- NIS is about one-step prediction
+    consistency, which the backward smoother would hide) with a SINGLE q
+    applied throughout. Returns the NIS value at each sample.'''
+    n = len(v)
+    r_v_arr = np.full(n, r_v, float) if np.isscalar(r_v) else np.asarray(r_v, float)
+    if dt is None:
+        dt = np.diff(t, prepend=t[0] - (t[1] - t[0]))
+ 
+    def F_of(d):
+        return np.array([[1.0, d], [0.0, 1.0]])
+ 
+    def Q_of(d):
+        return q * np.array([[d**4 / 4, d**3 / 2], [d**3 / 2, d**2]])
+ 
+    H = np.array([[1.0, 0.0]])
+    x = np.array([v[0], 0.0])
+    P = np.eye(2) * p0
+    nis = np.full(n, np.nan)
+ 
     for k in range(n):
-        step_dt = dt[k]
-        kf.F = np.array([[1.0, step_dt],
-                          [0.0, 1.0]])
-        # discretized white-noise-acceleration process noise model
-        kf.Q = q_accel_var * np.array([
-            [step_dt**4 / 4, step_dt**3 / 2],
-            [step_dt**3 / 2, step_dt**2]
-        ])
+        F, Q = F_of(dt[k]), Q_of(dt[k])
+        x, P = F @ x, F @ P @ F.T + Q            # predict
+        S = (H @ P @ H.T)[0, 0] + r_v_arr[k]      # predicted innovation variance
+        innov = v[k] - (H @ x)[0]                 # actual innovation
+        nis[k] = innov**2 / S
+        K = (P @ H.T / S).flatten()               # update
+        x = x + K * innov
+        P = (np.eye(2) - np.outer(K, H)) @ P
+    return nis
+ 
+def calibrate_q(t, v, r_v, burnout_idx, q_boost_options, q_coast_options, warmup=20):
+    '''Grid-search q_boost against the boost-segment NIS, then q_coast against
+    the coast-segment NIS (with q_boost fixed to whatever was just chosen).
+    `warmup` skips the first N samples of each segment, since NIS is
+    unreliable right after the filter starts or right after Q switches,
+    before P has settled.
+ 
+    Returns (best_q_boost, best_q_coast, diagnostics) where diagnostics has
+    the full score table for both sweeps, for plotting/sanity-checking.
+    '''
+    t, v = np.asarray(t, float), np.asarray(v, float)
+    dt = np.diff(t, prepend=t[0] - (t[1] - t[0]))
+    n = len(v)
+ 
+    # --- sweep q_boost: score against NIS within the boost segment only ---
+    boost_scores = []
+    for q_b in q_boost_options:
+        nis = _forward_nis(t, v, r_v, q_b, dt=dt)
+        seg = nis[warmup:burnout_idx]
+        score = abs(np.nanmean(seg) - 1.0)
+        boost_scores.append(score)
+    best_q_boost = q_boost_options[int(np.argmin(boost_scores))]
+ 
+    # --- sweep q_coast: run with q_boost fixed, switch to q_coast at burnout,
+    #     score against NIS within the coast segment only ---
+    def forward_nis_boost_coast(q_boost, q_coast):
+        r_v_arr = np.full(n, r_v, float) if np.isscalar(r_v) else np.asarray(r_v, float)
+        F_of = lambda d: np.array([[1.0, d], [0.0, 1.0]])
+        Q_of = lambda d, q: q * np.array([[d**4/4, d**3/2], [d**3/2, d**2]])
+        H = np.array([[1.0, 0.0]])
+        x = np.array([v[0], 0.0]); P = np.eye(2) * 100.0
+        nis = np.full(n, np.nan)
+        for k in range(n):
+            q = q_boost if k < burnout_idx else q_coast
+            F, Q = F_of(dt[k]), Q_of(dt[k], q)
+            x, P = F @ x, F @ P @ F.T + Q
+            S = (H @ P @ H.T)[0, 0] + r_v_arr[k]
+            innov = v[k] - (H @ x)[0]
+            nis[k] = innov**2 / S
+            K = (P @ H.T / S).flatten()
+            x = x + K * innov
+            P = (np.eye(2) - np.outer(K, H)) @ P
+        return nis
+ 
+    coast_scores = []
+    for q_c in q_coast_options:
+        nis = forward_nis_boost_coast(best_q_boost, q_c)
+        seg = nis[burnout_idx + warmup:]
+        score = abs(np.nanmean(seg) - 1.0)
+        coast_scores.append(score)
+    best_q_coast = q_coast_options[int(np.argmin(coast_scores))]
+ 
+    diagnostics = {
+        'q_boost_options': list(q_boost_options), 'boost_scores': boost_scores,
+        'q_coast_options': list(q_coast_options), 'coast_scores': coast_scores,
+        'boost_at_edge': int(np.argmin(boost_scores)) in (0, len(boost_scores) - 1),
+        'coast_at_edge': int(np.argmin(coast_scores)) in (0, len(coast_scores) - 1),
+    }
+    if diagnostics['boost_at_edge']:
+        print(f'WARNING: best q_boost ({best_q_boost:g}) is at the edge of '
+              f'q_boost_options -- the true optimum may be outside this range. '
+              f'Widen q_boost_options and rerun.')
+    if diagnostics['coast_at_edge']:
+        print(f'WARNING: best q_coast ({best_q_coast:g}) is at the edge of '
+              f'q_coast_options -- the true optimum may be outside this range. '
+              f'Widen q_coast_options and rerun.')
+    return best_q_boost, best_q_coast, diagnostics
 
-        kf.predict()
-        kf.update(np.array([[v[k]]]))
+# kalman filter application: state used is velocity (no acceleration rn), Q switches between different stages q, noise value found above changing by different pieces 
+def kalman_smooth(t, v, a=None, r_v=1.0, r_a=1.0, q_boost=4000.0, q_coast=50.0,
+                   burnout_idx=None, p0=100.0):
+    '''
+    finds (velocity_smoothed, acceleration_smoothed).
+    '''
+    t = np.asarray(t, float)
+    n = len(t)
+    v = np.asarray(v, float) # velocity measurements, during flight
+    a = np.full(n, np.nan) if a is None else np.asarray(a, float) # acceleration measurements (optional)
+    r_v_arr = np.full(n, r_v, float) if np.isscalar(r_v) else np.asarray(r_v, float) # noise variance in velocity (based on sesnor being a jerk)
+    burnout_idx = n if burnout_idx is None else burnout_idx # where burnout is
 
-        xs.append(kf.x.copy())
-        covs.append(kf.P.copy())
+    dt = np.diff(t, prepend=t[0] - (t[1] - t[0]))  # dt[k] = step INTO sample k
 
-    xs, covs = np.array(xs), np.array(covs)
+    def F_of(d):
+        return np.array([[1.0, d], [0.0, 1.0]])
 
-    # backward RTS pass -- uses future data too, removes forward-pass lag
-    Fs = [np.array([[1.0, dt[k]], [0.0, 1.0]]) for k in range(n)]
-    Qs = [q_accel_var * np.array([
-            [dt[k]**4 / 4, dt[k]**3 / 2],
-            [dt[k]**3 / 2, dt[k]**2]
-          ]) for k in range(n)]
+    def Q_of(d, q): # process noise covariance matrix, defining how much change is reasonable?
+        return q * np.array([[d**4 / 4, d**3 / 2], [d**3 / 2, d**2]])
 
-    xs_smooth, _, _, _ = kf.rts_smoother(xs, covs, Fs=Fs, Qs=Qs)
+    def q_at(k): # placing definition(based on whats actually happening) 
+        return q_boost if k < burnout_idx else q_coast
 
-    velocity_smoothed = xs_smooth[:, 0, 0]
-    accel_smoothed = xs_smooth[:, 1, 0]
-    return accel_smoothed
+    x = np.array([v[0], 3 * G_FT])   # state: [velocity, acceleration]; accel guess at 3G because of when liftoff starts 
+    P = np.eye(2) * p0       # pad, initial state uncertainty
 
+    xs_f, Ps_f, xs_p, Ps_p, Fs, Qs = [], [], [], [], [], []
+    for k in range(n):
+        F = F_of(dt[k])
+        Q = Q_of(dt[k], q_at(k))
+        Fs.append(F); Qs.append(Q)
 
-def acceleration(v_up, v_dr, v_cr, apogee, t):
-    '''accelerations are computed to apogee via a constant-acceleration
-    Kalman filter + RTS smoother; samples past apogee are zero padding'''
-    accelx, accely, accelz = (
-        pad_to(_kalman_smooth_velocity(v[:apogee], t[:apogee]), t.shape[0])
-        for v in (v_cr, v_dr, v_up)
-    )
+        x, P = F @ x, F @ P @ F.T + Q             # predict
+        xs_p.append(x.copy()); Ps_p.append(P.copy())
 
+        rows, zs, rs = [], [], []                  # stack whichever sensors reported
+        if np.isfinite(v[k]):
+            rows.append([1.0, 0.0]); zs.append(v[k]); rs.append(r_v_arr[k])
+        if np.isfinite(a[k]):
+            rows.append([0.0, 1.0]); zs.append(a[k]); rs.append(r_a)
+        if rows:                                    # update
+            H, z, R = np.array(rows), np.array(zs), np.diag(rs)
+            S = H @ P @ H.T + R
+            K = P @ H.T @ np.linalg.inv(S)
+            x = x + K @ (z - H @ x)
+            P = (np.eye(2) - K @ H) @ P
+        xs_f.append(x.copy()); Ps_f.append(P.copy())
+
+    # RTS backward pass -- each estimate also uses FUTURE data, removing
+    # forward-pass lag (e.g. the filter "knowing" burnout is about to happen)
+    xs, Ps = np.array(xs_f), np.array(Ps_f)
+    for k in range(n - 2, -1, -1):
+        F = Fs[k + 1]
+        P_pred = Ps_p[k + 1]
+        C = Ps_f[k] @ F.T @ np.linalg.inv(P_pred)
+        xs[k] = xs_f[k] + C @ (xs[k + 1] - xs_p[k + 1])
+        Ps[k] = Ps_f[k] + C @ (Ps[k + 1] - P_pred) @ C.T
+
+    return xs[:, 0], xs[:, 1]
+# ...AAAAND WE ARE BACK! 
+
+def acceleration(v_up, v_dr, v_cr, apogee, t, t_pre, v_pre, burnout_idx,
+                  q_boost_options=(1e4, 1e5, 1e6, 1e7, 1e8),
+                  q_coast_options=(1e1, 1e2, 1e3, 1e4)):
+    '''Accelerations are computed to apogee via a constant-acceleration
+    Kalman filter + RTS smoother; samples past apogee are zero-padded.'''
+    n_total = t.shape[0]
+    # i am trusting that whatever what was done by nachos "Correctness changes with Cluade" didn't throw a wrench in these mappings 
+
+    v_pad, onset_idx = still_pad(v_pre)
+    print('detected true motion onset in pad data at index', onset_idx,
+          '-- check this against a plot before trusting it')
+ 
+    components = {'x': v_cr, 'y': v_dr, 'z': v_up}
+ 
+    accel_out = {}
+    for axis, v in components.items():
+        r_series, r_info = build_r_series(v_pad, v[:apogee])
+ 
+        q_boost, q_coast, q_diag = calibrate_q(
+            t[:apogee], v[:apogee], r_series, burnout_idx,
+            q_boost_options, q_coast_options,
+        )
+        if q_diag['boost_at_edge'] or q_diag['coast_at_edge']:
+            print(f'axis {axis}: q calibration hit the edge of its options -- widen the range')
+ 
+        _, accel = kalman_smooth(
+            t[:apogee], v[:apogee], r_v=r_series,
+            q_boost=q_boost, q_coast=q_coast, burnout_idx=burnout_idx,
+        )
+        accel_out[axis] = pad_to(accel, n_total)
+ 
+    accelx, accely, accelz = accel_out['x'], accel_out['y'], accel_out['z']
     total = magnitude(accelx, accely, accelz)
-
     return accelx, accely, accelz, total
 
 def theta(v_dr,v_cr):
