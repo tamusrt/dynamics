@@ -10,7 +10,6 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 # ============================================================
 
 
-
 # ============================================================
 # UNIT CONVERSIONS
 # ============================================================
@@ -76,9 +75,18 @@ def read_input_file(filename):
     return values
 
 
-input_filename = input("Enter engine input filename: ").strip()
-INPUT_FILE = os.path.join(SCRIPT_DIR, input_filename)
-inputs = read_input_file(INPUT_FILE)
+input_filename = input(
+    "Enter engine input filename: "
+).strip()
+
+INPUT_FILE = os.path.join(
+    SCRIPT_DIR,
+    input_filename
+)
+
+inputs = read_input_file(
+    INPUT_FILE
+)
 
 
 # ============================================================
@@ -112,9 +120,6 @@ rse_comments = inputs["rse_comments"]
 # Component properties
 # ------------------------------------------------------------
 
-top_plumbing_mass = inputs["top_plumbing_mass"]
-top_plumbing_length = inputs["top_plumbing_length"]
-
 oxidizer_tank_mass = inputs["oxidizer_tank_mass"]
 oxidizer_tank_length = inputs["oxidizer_tank_length"]
 oxidizer_mass_initial = inputs["oxidizer_mass_initial"]
@@ -125,6 +130,7 @@ inter_plumbing_length = inputs["inter_plumbing_length"]
 combustion_chamber_mass = inputs["combustion_chamber_mass"]
 combustion_chamber_length = inputs["combustion_chamber_length"]
 fuel_mass_initial = inputs["fuel_mass_initial"]
+
 
 # ============================================================
 # READ THRUST CURVE FROM EXCEL / CSV
@@ -143,39 +149,80 @@ def read_thrust_curve(filename):
     file_extension = os.path.splitext(filename)[1].lower()
 
     if file_extension in [".xlsx", ".xls"]:
+
         data = pd.read_excel(filename)
+
     elif file_extension == ".csv":
+
         data = pd.read_csv(filename)
+
     else:
+
         raise ValueError(
             "Thrust input must be an Excel file (.xlsx/.xls) or CSV file (.csv)."
         )
 
-    required_columns = ["Time (s)", "Thrust (N)"]
+
+    required_columns = [
+        "Time (s)",
+        "Thrust (N)"
+    ]
+
 
     for column in required_columns:
+
         if column not in data.columns:
+
             raise ValueError(
                 f'Thrust input is missing the required column "{column}".'
             )
 
+
     # Collect only time and thrust.
-    data = data[required_columns].copy()
+    data = data[
+        required_columns
+    ].copy()
+
 
     # Convert values to numbers and remove invalid rows.
-    data["Time (s)"] = pd.to_numeric(data["Time (s)"], errors="coerce")
-    data["Thrust (N)"] = pd.to_numeric(data["Thrust (N)"], errors="coerce")
+    data["Time (s)"] = pd.to_numeric(
+        data["Time (s)"],
+        errors="coerce"
+    )
+
+    data["Thrust (N)"] = pd.to_numeric(
+        data["Thrust (N)"],
+        errors="coerce"
+    )
+
     data = data.dropna()
 
-    if len(data) < 2:
-        raise ValueError("Thrust input must contain at least two valid data points.")
 
-    time_values = data["Time (s)"].to_numpy(dtype=float)
-    thrust_values = data["Thrust (N)"].to_numpy(dtype=float)
+    if len(data) < 2:
+
+        raise ValueError(
+            "Thrust input must contain at least two valid data points."
+        )
+
+
+    time_values = data["Time (s)"].to_numpy(
+        dtype=float
+    )
+
+    thrust_values = data["Thrust (N)"].to_numpy(
+        dtype=float
+    )
+
 
     # Require strictly increasing time.
-    if np.any(np.diff(time_values) <= 0):
-        raise ValueError("Thrust-curve times must be strictly increasing.")
+    if np.any(
+        np.diff(time_values) <= 0
+    ):
+
+        raise ValueError(
+            "Thrust-curve times must be strictly increasing."
+        )
+
 
     # ------------------------------------------------------------
     # Find the end of the burn.
@@ -185,33 +232,61 @@ def read_thrust_curve(filename):
     # beginning of positive thrust where thrust returns to zero.
     # ------------------------------------------------------------
 
-    positive_indices = np.where(thrust_values > 0)[0]
+    positive_indices = np.where(
+        thrust_values > 0
+    )[0]
+
 
     if len(positive_indices) == 0:
-        raise ValueError("No positive thrust was found in the input file.")
+
+        raise ValueError(
+            "No positive thrust was found in the input file."
+        )
+
 
     first_positive_index = positive_indices[0]
+
 
     zero_after_burn = np.where(
         thrust_values[first_positive_index:] <= 0
     )[0]
 
+
     if len(zero_after_burn) == 0:
+
         raise ValueError(
             "No zero-thrust point was found after the positive thrust portion."
         )
 
-    burn_end_index = first_positive_index + zero_after_burn[0]
+
+    burn_end_index = (
+        first_positive_index
+        + zero_after_burn[0]
+    )
+
 
     # Keep the initial t=0 point through the first zero-thrust point.
-    time_values = time_values[:burn_end_index + 1]
-    thrust_values = thrust_values[:burn_end_index + 1]
+    time_values = time_values[
+        :burn_end_index + 1
+    ]
+
+    thrust_values = thrust_values[
+        :burn_end_index + 1
+    ]
+
 
     if len(time_values) < 2:
-        raise ValueError("The extracted thrust curve must contain at least two points.")
+
+        raise ValueError(
+            "The extracted thrust curve must contain at least two points."
+        )
+
 
     # Sampling intervals from the input data.
-    time_steps = np.diff(time_values)
+    time_steps = np.diff(
+        time_values
+    )
+
 
     return (
         time_values,
@@ -224,16 +299,29 @@ thrust_filename = input(
     "Enter Excel/CSV thrust curve filename: "
 ).strip()
 
-THRUST_FILE = os.path.join(SCRIPT_DIR, thrust_filename)
 
-time, thrust_array_N, time_steps = read_thrust_curve(THRUST_FILE)
+THRUST_FILE = os.path.join(
+    SCRIPT_DIR,
+    thrust_filename
+)
+
+
+time, thrust_array_N, time_steps = read_thrust_curve(
+    THRUST_FILE
+)
+
 
 # The time at the first zero-thrust point is now the burn time.
-rse_burn_time = time[-1] - time[0]
+rse_burn_time = (
+    time[-1]
+    - time[0]
+)
+
 
 # Use the thrust-curve burn time for propellant depletion.
 # This replaces the old custom cg_mass_burn_time input.
 cg_mass_burn_time = rse_burn_time
+
 
 # The normal collecting/sampling interval from the input file.
 collecting_interval = time_steps[0]
@@ -245,18 +333,17 @@ collecting_interval = time_steps[0]
 
 # Everything is measured from the top/tip of the engine.
 # Locations are calculated in inches.
+# The top plumbing component no longer exists, so the
+# oxidizer tank begins at the top/tip of the engine.
 
-top_plumbing_start = 0.0
+oxidizer_tank_start = 0.0
 
-oxidizer_tank_start = (
-    top_plumbing_start
-    + top_plumbing_length
-)
 
 inter_plumbing_start = (
     oxidizer_tank_start
     + oxidizer_tank_length
 )
+
 
 combustion_chamber_start = (
     inter_plumbing_start
@@ -276,20 +363,17 @@ engine_length_in = (
 # COMPONENT CG LOCATIONS
 # ============================================================
 
-top_plumbing_cg = (
-    top_plumbing_start
-    + top_plumbing_length / 2
-)
-
 oxidizer_tank_cg = (
     oxidizer_tank_start
     + oxidizer_tank_length / 2
 )
 
+
 inter_plumbing_cg = (
     inter_plumbing_start
     + inter_plumbing_length / 2
 )
+
 
 combustion_chamber_cg = (
     combustion_chamber_start
@@ -320,22 +404,28 @@ cg_mass_stop_index = np.searchsorted(
 
 
 if cg_mass_stop_index < 0:
+
     raise ValueError(
         "cg_mass_burn_time occurs before the first thrust point."
     )
 
 
-cg_mass_stop_time = time[cg_mass_stop_index]
-
-
+cg_mass_stop_time = time[
+    cg_mass_stop_index
+]
 
 
 # ============================================================
 # OUTPUT ARRAYS
 # ============================================================
 
-cg_array_mm = np.zeros(len(time))
-mass_array_g = np.zeros(len(time))
+cg_array_mm = np.zeros(
+    len(time)
+)
+
+mass_array_g = np.zeros(
+    len(time)
+)
 
 
 # ============================================================
@@ -350,7 +440,11 @@ for i, t in enumerate(time):
 
     if t <= cg_mass_stop_time:
 
-        burn_fraction = t / cg_mass_stop_time
+        burn_fraction = (
+            t
+            / cg_mass_stop_time
+        )
+
 
         # ----------------------------------------------------
         # REMAINING PROPELLANT
@@ -361,10 +455,12 @@ for i, t in enumerate(time):
             * (1 - burn_fraction)
         )
 
+
         fuel_mass = (
             fuel_mass_initial
             * (1 - burn_fraction)
         )
+
 
         # ----------------------------------------------------
         # OXIDIZER CG
@@ -379,11 +475,13 @@ for i, t in enumerate(time):
             )
         )
 
+
         # ----------------------------------------------------
         # FUEL CG
         # ----------------------------------------------------
 
         fuel_cg = combustion_chamber_cg
+
 
         # ----------------------------------------------------
         # TOTAL MASS
@@ -391,9 +489,7 @@ for i, t in enumerate(time):
 
         total_mass_kg = (
 
-            top_plumbing_mass
-
-            + oxidizer_tank_mass
+            oxidizer_tank_mass
 
             + inter_plumbing_mass
 
@@ -404,16 +500,12 @@ for i, t in enumerate(time):
             + fuel_mass
         )
 
+
         # ----------------------------------------------------
         # TOTAL MASS MOMENT
         # ----------------------------------------------------
 
         total_moment = (
-
-            top_plumbing_mass
-            * top_plumbing_cg
-
-            +
 
             oxidizer_tank_mass
             * oxidizer_tank_cg
@@ -439,6 +531,7 @@ for i, t in enumerate(time):
             * fuel_cg
         )
 
+
         # ----------------------------------------------------
         # WHOLE ENGINE CG
         # ----------------------------------------------------
@@ -448,10 +541,18 @@ for i, t in enumerate(time):
             / total_mass_kg
         )
 
+
         # Store values
 
-        cg_array_mm[i] = cg_in * IN_TO_MM
-        mass_array_g[i] = total_mass_kg * KG_TO_G
+        cg_array_mm[i] = (
+            cg_in
+            * IN_TO_MM
+        )
+
+        mass_array_g[i] = (
+            total_mass_kg
+            * KG_TO_G
+        )
 
 
     # --------------------------------------------------------
@@ -465,9 +566,17 @@ for i, t in enumerate(time):
 
     else:
 
-        cg_array_mm[i] = cg_array_mm[cg_mass_stop_index]
+        cg_array_mm[i] = (
+            cg_array_mm[
+                cg_mass_stop_index
+            ]
+        )
 
-        mass_array_g[i] = mass_array_g[cg_mass_stop_index]
+        mass_array_g[i] = (
+            mass_array_g[
+                cg_mass_stop_index
+            ]
+        )
 
 
 # ============================================================
@@ -475,14 +584,25 @@ for i, t in enumerate(time):
 # ============================================================
 
 wet_cg_mm = cg_array_mm[0]
+
 wet_mass_g = mass_array_g[0]
+
 
 # "Empty" here means the mass after the CUSTOM
 # CG/mass burn period, NOT necessarily the final
 # thrust-curve time.
 
-empty_cg_mm = cg_array_mm[cg_mass_stop_index]
-empty_mass_g = mass_array_g[cg_mass_stop_index]
+empty_cg_mm = (
+    cg_array_mm[
+        cg_mass_stop_index
+    ]
+)
+
+empty_mass_g = (
+    mass_array_g[
+        cg_mass_stop_index
+    ]
+)
 
 
 propellant_mass_g = (
@@ -513,7 +633,11 @@ rse_Itot = np.trapezoid(
 
 rse_avgThrust = (
     rse_Itot
-    / (time[-1] - time[0])
+    /
+    (
+        time[-1]
+        - time[0]
+    )
 )
 
 
@@ -550,9 +674,16 @@ rse_len_mm = (
 
 
 # ============================================================
-# PRINT RESULTS
+# RSE MASS METADATA
 # ============================================================
 
+# These are based on the mass model's actual wet/empty values.
+
+rse_initWt_g = wet_mass_g
+
+rse_propWt_g = propellant_mass_g
+
+rse_massFrac = mass_frac
 
 
 # ============================================================
@@ -562,6 +693,7 @@ rse_len_mm = (
 def build_rse_text():
 
     data_lines = []
+
 
     for t_i, cg_i, m_i, f_i in zip(
         time,
@@ -578,7 +710,10 @@ def build_rse_text():
             f't="{t_i:.6f}"/>'
         )
 
-    data_block = "\n".join(data_lines)
+
+    data_block = "\n".join(
+        data_lines
+    )
 
 
     rse_text = f"""<engine-database>
@@ -617,14 +752,113 @@ def build_rse_text():
 
 
 # ============================================================
-# RSE MASS METADATA
+# BUILD RASP / .ENG TEXT
 # ============================================================
 
-# These are based on the mass model's actual wet/empty values.
+def build_eng_text():
 
-rse_initWt_g = wet_mass_g
-rse_propWt_g = propellant_mass_g
-rse_massFrac = mass_frac
+    # --------------------------------------------------------
+    # RASP HEADER
+    #
+    # Format:
+    #
+    # NAME
+    # DIAMETER (mm)
+    # LENGTH (mm)
+    # DELAYS
+    # PROPELLANT MASS (kg)
+    # LOADED MASS (kg)
+    # MANUFACTURER
+    #
+    # All seven fields are separated by spaces.
+    # --------------------------------------------------------
+
+    eng_header = (
+        f"{rse_code} "
+        f"{rse_dia_mm:.6f} "
+        f"{rse_len_mm:.6f} "
+        f"{rse_delays} "
+        f"{rse_propWt_g / KG_TO_G:.6f} "
+        f"{rse_initWt_g / KG_TO_G:.6f} "
+        f"{rse_mfg}"
+    )
+
+
+    # --------------------------------------------------------
+    # RASP DATA POINTS
+    #
+    # RASP assumes an implicit initial 0,0 point.
+    #
+    # Therefore, if the input thrust curve contains an
+    # explicit 0,0 point, it is not written to the .eng file.
+    #
+    # The final zero-thrust point IS retained because it defines
+    # the motor burn time.
+    # --------------------------------------------------------
+
+    data_lines = []
+
+
+    for t_i, f_i in zip(
+        time,
+        thrust_array_N
+    ):
+
+        # Skip explicit initial 0,0 point.
+        if (
+            np.isclose(t_i, 0.0)
+            and np.isclose(f_i, 0.0)
+        ):
+            continue
+
+
+        data_lines.append(
+            f"   {t_i:.6f} {f_i:.6f}"
+        )
+
+
+    data_block = "\n".join(
+        data_lines
+    )
+
+
+    # --------------------------------------------------------
+    # COMMENTS
+    # --------------------------------------------------------
+
+    comment_lines = [
+        f"; {rse_code}",
+        f"; Manufacturer: {rse_mfg}",
+        f"; Type: {rse_Type}",
+        f"; RSE source data"
+    ]
+
+
+    if rse_comments:
+
+        comment_lines.append(
+            f"; {rse_comments}"
+        )
+
+
+    comments_block = "\n".join(
+        comment_lines
+    )
+
+
+    # --------------------------------------------------------
+    # COMPLETE .ENG FILE
+    # --------------------------------------------------------
+
+    eng_text = (
+        f"{comments_block}\n"
+        f"{eng_header}\n"
+        f"{data_block}\n"
+        f";\n"
+    )
+
+
+    return eng_text
 
 
 # ============================================================
@@ -638,20 +872,23 @@ RSE_OUTPUT_DIR = (
 
 
 # ============================================================
-# SAVE RSE
+# SAVE RSE + .ENG
 # ============================================================
 
 if __name__ == "__main__":
 
     print("\n==============================================")
-    print("               RSE FILE EXPORT")
+    print("             ENGINE FILE EXPORT")
     print("==============================================")
+
 
     try:
 
         user_input = input(
-            f'Press ENTER to save "{rse_code}.rse" or type "n" to skip: '
+            f'Press ENTER to save "{rse_code}.rse" '
+            f'and "{rse_code}.eng" or type "n" to skip: '
         )
+
 
     except EOFError:
 
@@ -660,15 +897,25 @@ if __name__ == "__main__":
 
     if user_input.strip().lower() != "n":
 
+        # ----------------------------------------------------
+        # Create output directory if it does not exist.
+        # ----------------------------------------------------
+
         os.makedirs(
             RSE_OUTPUT_DIR,
             exist_ok=True
         )
 
+
+        # ====================================================
+        # SAVE RSE FILE
+        # ====================================================
+
         rse_filename = os.path.join(
             RSE_OUTPUT_DIR,
             f"{rse_code}.rse"
         )
+
 
         with open(
             rse_filename,
@@ -680,7 +927,52 @@ if __name__ == "__main__":
                 build_rse_text()
             )
 
-        print(f"Saved RSE file to: {rse_filename}")
+
+        # ====================================================
+        # SAVE RASP .ENG FILE
+        # ====================================================
+
+        eng_filename = os.path.join(
+            RSE_OUTPUT_DIR,
+            f"{rse_code}.eng"
+        )
+
+
+        with open(
+            eng_filename,
+            "w",
+            encoding="utf-8"
+        ) as file:
+
+            file.write(
+                build_eng_text()
+            )
+
+
+        # ====================================================
+        # REPORT OUTPUT
+        # ====================================================
+
+        print()
+        print("Saved RSE file:")
+        print(
+            f"  {rse_filename}"
+        )
+
+        print()
+        print("Saved RASP .eng file:")
+        print(
+            f"  {eng_filename}"
+        )
+
+        print()
+        print("==============================================")
+        print("             EXPORT COMPLETE")
+        print("==============================================")
+
 
     else:
-        pass
+
+        print(
+            "File export skipped."
+        )
