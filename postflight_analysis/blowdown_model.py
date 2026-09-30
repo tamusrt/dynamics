@@ -132,6 +132,16 @@
 #     Therefore, predicted performance during large excursions in mixture
 #     ratio, particularly the late vapor tail, is probably decently wrong
 # 
+#
+#
+# KNOWN ISSUES
+# ---------------------
+# 
+#    - There is an issue with the pressures that in some cases will show a sharp spike/rise near gas phase. 
+#      I havent't troubleshooted this yet, but it is non-physical and can safely be ignored.
+#
+#
+#
 # Mikey Carlino
 # 09/27/2026
 
