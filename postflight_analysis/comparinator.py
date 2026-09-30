@@ -272,7 +272,7 @@ def build_solid(values: dict, t: np.array, df):
     engine = seng.SolidMotor(grain, hardware, offset_in=0)
     return engine 
 
-def calculate(data_dict, cutoff_dict, rocket=0):
+def calculate(data_dict, cutoff_dict, rocket):
     calc_array = []
     calc = {}
     titles = [...]
@@ -289,6 +289,11 @@ def calculate(data_dict, cutoff_dict, rocket=0):
     ras_bundle = find_bundle("ras")
     ork_bundle = find_bundle("ork")
 
+    if accel_bundle.pre_launch is not None:
+        t_pre = accel_bundle.pre_launch.time.magnitude    # s, the negative times
+        v_pre = accel_bundle.pre_launch.v_up.magnitude    # ft/s
+    else:
+        t_pre = v_pre = np.array([])
     time = accel_bundle.time.magnitude
     temperature = accel_bundle.temperature.magnitude
     pressure = accel_bundle.pressure.magnitude
@@ -320,6 +325,7 @@ def calculate(data_dict, cutoff_dict, rocket=0):
 
     cutoff_dict["apogee"] = apogee = np.where(altitude >= max(altitude))[0][0]
     cutoff_dict["coast"] = np.where(spec_thrust <= 5)[0][2]
+    print(cutoff_dict["coast"])
     cutoff_dict["uppies"] = 0
     theta = faa.theta(v_dr, v_cr)
 
@@ -332,7 +338,8 @@ def calculate(data_dict, cutoff_dict, rocket=0):
     calc["dyn_pressure"] = faa.dynamic_pressure(calc["density"], calc["accel_v"])
     calc["ork_density"] = faa.density(ork_pressure, ork_temperature)
     calc["ork_dyn_pressure"] = faa.dynamic_pressure(calc["ork_density"], ork_vel_total)
-    calc["ax"], calc["ay"], calc["az"], calc["accel_total"] = faa.acceleration(v_up, v_dr, v_cr, apogee, calc["time"])
+    calc["ax"], calc["ay"], calc["az"], calc["accel_total"] = faa.acceleration(v_up=v_up, v_dr=v_dr, v_cr=v_cr, apogee=apogee, t=calc["time"],
+    t_pre=t_pre, v_pre=v_pre, burnout_idx=cutoff_dict["coast"],)
     calc["accel_gs"] = faa.magnitude(gx_accel, gy_accel, gz_accel)
     calc["accel_fts2"] = calc["accel_gs"] * 32.2
     calc["density"] = faa.density(pressure, temperature)
@@ -349,10 +356,10 @@ def calculate(data_dict, cutoff_dict, rocket=0):
     calc["altitude"] = altitude
     #print(rocket.engine)          # is it None?
     #print(rocket.mass_at(0), rocket.mass_at(rocket.engine.grain.times_s[-1] if rocket.engine else None))
-    #calc["cgs"] = geo.total_cg(rocket, calc["time"])[1]
+    calc["cgs"] = geo.total_cg(rocket, calc["time"])[1]
     #print(calc["cgs"])
-    #calc["iyy"] = geo.total_iyy(rocket, calc["time"], calc["cgs"])
-    #calc["sm"] = faa.stability(time, calc["iyy"], gyro_y, calc["fn"])
+    calc["iyy"] = geo.total_iyy(rocket, calc["time"], calc["cgs"])
+    calc["sm"] = faa.stability(time, calc["iyy"], gyro_y, calc["fn"])
 
     #calc["sm2"] = faa.stability1(faa.frequency(calc["aoa"], sample_rate, calc["time"]), calc["iyy"], calc["accel_v"], calc["density"], calc["aoa"], calc["fn"])
 
@@ -667,7 +674,7 @@ def graph2(data, areas, build_data_fn=None, windows=(31, 51, 71, 91, 111),
 
     def scatter_with_band(ax, xarr, ykey, bands, apogee, valid_mask, bins=40):
         x = xarr[start:apogee][valid_mask]
-        y = data[ykey][start:apogee][valid_mask]
+        y = mask(ykey)[start:apogee][valid_mask]        # was: data[ykey][start:apogee][valid_mask]
         ok = np.isfinite(x) & np.isfinite(y)
         ax.scatter(x[ok], y[ok], s=4, alpha=0.5, label='Flight')
         if ykey in bands and len(x) > 0:
@@ -704,6 +711,11 @@ def graph2(data, areas, build_data_fn=None, windows=(31, 51, 71, 91, 111),
             'label': 'CD', 'y_key': 'cd', 'y_label': 'CD',
             'x_specs': [('time', 'Time (s)', 'CD vs Time'),
                         ('vel_mach', 'Mach', 'CD vs Mach')],
+        },
+        {
+            'label': 'SM', 'y_key': 'sm', 'y_label': 'SM (cal)',
+            'x_specs': [('time', 'Time (s)', 'SM vs Time'),
+                        ('vel_mach', 'Mach', 'SM vs Mach')],
         },
     ]
 
@@ -796,7 +808,7 @@ def main():
         for col in set_bundle.columns:
             setattr(set_bundle, col, set_bundle[col][:burnout])
         dictionary = ROCKET_ENGINES[engine_key][0]
-        #engine_used = build_hybrid(ROCKET_ENGINES[engine_key][0]["high_of"], set_bundle['time'], set_bundle) 
+        engine_used = build_hybrid(ROCKET_ENGINES[engine_key][0]["high_of"], set_bundle['time'], set_bundle) 
     elif ROCKET_ENGINES[engine_key][1] == "solid":
         thrust_bundle = find_bundle(interpolated_data, "thrust")
         spec_thrust = thrust_bundle['spec_thrust']
@@ -807,11 +819,10 @@ def main():
         burn_time = accel_bundle['time'][:burnout].magnitude
 
         burn_thrust = spec_thrust[:burnout].magnitude
-        #engine_used = build_solid(ROCKET_ENGINES[engine_key][0], accel_bundle['time'], thrust_bundle['spec_thrust'])
+        engine_used = build_solid(ROCKET_ENGINES[engine_key][0], accel_bundle['time'], thrust_bundle['spec_thrust'])
 
-    #rocket = geo.Rocket.from_file(candidates[0], engine=engine_used)
-
-    graph_values, cutoff_dict = calculate(interpolated_data, cutoff_dict)
+    rocket = geo.Rocket.from_file(candidates[0], engine=engine_used)
+    graph_values, cutoff_dict = calculate(interpolated_data, cutoff_dict, rocket)
     graph2(graph_values, cutoff_dict)
 
 
