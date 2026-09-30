@@ -23,9 +23,6 @@ rse_comments = ENGINE-2027-python
 # COMPONENTS
 # ============================================================
 
-top_plumbing_mass = 1.229235
-top_plumbing_length = 4.923
-
 oxidizer_tank_mass = 14.10672
 oxidizer_tank_length = 57.56
 oxidizer_mass_initial = 18.1437
