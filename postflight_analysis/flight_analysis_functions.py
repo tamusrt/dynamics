@@ -122,6 +122,8 @@ def build_r_series(v_pre, v_flight, window_options=(21, 41, 61, 81), poly_order=
     flight. floors result at the pad's true noise level, since
     baseline sensor noise doesn't disappear while moving.'''
     v_pad, onset_idx = still_pad(v_pre, hold=hold, sigma_mult=sigma_mult)
+    print(f'v_pre length={len(v_pre)}, onset_idx={onset_idx}, '
+      f'v_pad length={len(v_pad)}, v_pad var={np.var(v_pad) if len(v_pad) else "EMPTY"}')
     best_window, r_floor = calibrate_noise_window(v_pad, window_options, poly_order, verbose)
     r_series = estimate_noise(v_flight, window=best_window, poly_order=poly_order)
     r_series = np.maximum(r_series, r_floor)
@@ -290,7 +292,7 @@ def kalman_smooth(t, v, a=None, r_v=1.0, r_a=1.0, q_boost=4000.0, q_coast=50.0,
 # ...AAAAND WE ARE BACK! 
 
 def acceleration(v_up, v_dr, v_cr, apogee, t, t_pre, v_pre, burnout_idx,
-                  q_boost_options=(1e4, 1e5, 1e6, 1e7, 1e8),
+                  q_boost_options=(1e3, 1e4, 1e5, 1e6, 1e7),
                   q_coast_options=(1e1, 1e2, 1e3, 1e4)):
     '''Accelerations are computed to apogee via a constant-acceleration
     Kalman filter + RTS smoother; samples past apogee are zero-padded.'''
@@ -306,7 +308,9 @@ def acceleration(v_up, v_dr, v_cr, apogee, t, t_pre, v_pre, burnout_idx,
     accel_out = {}
     for axis, v in components.items():
         r_series, r_info = build_r_series(v_pad, v[:apogee])
- 
+        print(f'axis {axis}: v[:5]={v[:5]}, v[-5:]={v[-5:]}, '
+        f'has_nan={np.isnan(v).any()}, nan_count={np.isnan(v).sum()}, '
+        f'n_unique_diffs={len(set(np.round(np.diff(v[:20]), 6)))}')
         q_boost, q_coast, q_diag = calibrate_q(
             t[:apogee], v[:apogee], r_series, burnout_idx,
             q_boost_options, q_coast_options,

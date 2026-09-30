@@ -282,6 +282,8 @@ def calculate(data_dict, cutoff_dict, rocket):
         if not matches:
             raise KeyError(f"No dataset found containing '{substr}' in its key")
         return matches[0]
+    print("calculate")
+    print([k for k in data_dict.keys() if "accel" in k])
 
     accel_bundle = find_bundle("accel")
     gyro_bundle = find_bundle("gyro")
@@ -292,8 +294,10 @@ def calculate(data_dict, cutoff_dict, rocket):
     if accel_bundle.pre_launch is not None:
         t_pre = accel_bundle.pre_launch.time.magnitude    # s, the negative times
         v_pre = accel_bundle.pre_launch.v_up.magnitude    # ft/s
+        print(v_pre, len(v_pre))
     else:
         t_pre = v_pre = np.array([])
+
     time = accel_bundle.time.magnitude
     temperature = accel_bundle.temperature.magnitude
     pressure = accel_bundle.pressure.magnitude
@@ -775,6 +779,9 @@ def main():
             raise KeyError(f"No dataset found containing '{substr}' in its key")
         return matches[0]
 
+    print(find_bundle(data, "accel"))
+    print(find_bundle(data, "accel")['time'])
+    print(find_bundle(data, "accel").pre_launch['time'])
     flight_dir = Path(BASE_DIR) / rocket_name / flight
     candidates = [f for f in flight_dir.iterdir() if f.name.lower().endswith('.xml')]
 
@@ -791,6 +798,10 @@ def main():
                 print(f"{key}.{col}: non-numeric, sample = {raw[0]!r}")
 
     interpolated_data, cutoff_dict = ld.interpolate(data)
+    print("***")
+    print(find_bundle(interpolated_data, "accel").pre_launch['time'])
+    print([k for k in interpolated_data.keys() if "accel" in k])
+    print(find_bundle(interpolated_data, "accel").pre_launch['time'])
 
     for entry in interpolated_data:
         bundle = interpolated_data[entry]
