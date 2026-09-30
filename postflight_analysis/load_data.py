@@ -336,12 +336,21 @@ def load_file(path: Path, format: str | None = None) -> ArrayBundle:
     if raw_unit and time_col in df.columns:
         df[time_col] = Q_(df[time_col].to_numpy(), raw_unit).to("s").magnitude
 
-    if time_col and time_col in df.columns:
-        df = df[df[time_col] >= 0].reset_index(drop=True)
-        if len(df) and df[time_col].iloc[0] > 0:
-            df[time_col] = df[time_col] - df[time_col].iloc[0]
+    pre_df = None
 
-    return ArrayBundle(df, units=UNITS.get(group), group=group)
+    if time_col and time_col in df.columns:
+        pre_df = df[df[time_col] < 0].reset_index(drop=True)      # NEW: save the cut-off part
+        df = df[df[time_col] >= 0].reset_index(drop=True)          # same as before
+        if len(df) and df[time_col].iloc[0] > 0:
+            offset = df[time_col].iloc[0]
+            df[time_col] = df[time_col] - offset
+            pre_df[time_col] = pre_df[time_col] - offset           # NEW: keep same time base
+
+    bundle = ArrayBundle(df, units=UNITS.get(group), group=group)  # main bundle, unchanged
+    bundle.pre_launch = (ArrayBundle(pre_df, units=UNITS.get(group), group=group) if pre_df is not None and len(pre_df) else None)
+    return bundle
+
+    #return ArrayBundle(df, units=UNITS.get(group), group=group)
 
 
 def load(rocket, flight, format=None, base_dir=r"G:\Shared drives\TAMU-SRT\srt_general\9_flight_data"):
@@ -426,6 +435,7 @@ def interpolate(data):
         cutoffs[key] = len(new_time)
 
     accel_bundle = w_by_group(new_bundles, "accel")
+
     apogee_index = int(np.argmax(_magnitude(accel_bundle.altitude)))
 
     for key, bundle in new_bundles.items():
@@ -449,5 +459,5 @@ def interpolate(data):
             df = df.iloc[:apogee_index].reset_index(drop=True)
 
         new_bundles[key] = ArrayBundle(df, units=units_here, group=bundle.group)
-
+        new_bundles[key].pre_launch = getattr(data[key], "pre_launch", None)
     return new_bundles, cutoffs
