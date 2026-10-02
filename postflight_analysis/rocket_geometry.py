@@ -14,12 +14,6 @@ import pandas as pd
 from filterpy.kalman import KalmanFilter
 import hybrid_engine_cg as eng
 import load_data as ld
-
-from comparinator import ureg, Q_
-
-radius = 3
-
-
 import math
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
@@ -27,6 +21,20 @@ from typing import Callable, List, Optional
 
 import numpy as np
 from scipy import integrate as sci_integrate
+
+from comparinator import ureg, Q_
+
+# -- unit conversion, done ONCE here, not carried as pint Quantities --------
+# BodyPart/FinSet (parsed straight from OpenRocket XML) work in meters/kg.
+# Everything else in this file -- and everything downstream in
+# flight_analysis_functions.py -- works in plain floats in lb / inch /
+# lb*inch^2. These two scalars are the only place pint is used: as a
+# one-time unit lookup, not as a type that propagates through the math.
+M_TO_IN = Q_(1.0, ureg.m).to(ureg.inch).magnitude
+KG_TO_LB = Q_(1.0, ureg.kg).to(ureg.lb).magnitude
+
+radius = 3
+
 
 # Tags that are purely motor/engine related and are skipped outright, along
 # with everything nested inside them.
@@ -46,6 +54,13 @@ _POINT_LIKE = {"masscomponent", "parachute", "shockcord", "railbutton"}
 
 _FIN_TAGS = {"trapezoidfinset", "freeformfinset", "ellipticalfinset"}
 
+def strip_unit(val):
+    """Recursively strip Pint Quantity units to raw floats, ints, or arrays."""
+    if hasattr(val, "magnitude"):
+        return val.magnitude
+    if isinstance(val, (list, tuple)):
+        return [strip_unit(item) for item in val]
+    return val
 
 def _num(text: Optional[str], default: float = 0.0) -> float:
     """Parse a numeric field that may be prefixed with OpenRocket's 'auto'
@@ -201,8 +216,10 @@ class BodyPart:
         return (m2 - 2 * rocket_cg * m1 + rocket_cg ** 2 * m0) + 0.25 * mr
 
 class UnitAwareBodyPart:
-    """Wraps a metric BodyPart; exposes mass/cg/iyy as pint Quantities in
-    imperial units, matching solid_engine_cg.py's convention."""
+    """Wraps a metric BodyPart; exposes mass/cg/iyy as plain floats in
+    imperial units (lb, inch, lb*inch^2), matching what
+    flight_analysis_functions.py expects downstream. No pint Quantities
+    flow through here -- M_TO_IN/KG_TO_LB are plain scalar factors."""
     def __init__(self, part: BodyPart):
         self._p = part
         self.name = part.name
@@ -210,15 +227,17 @@ class UnitAwareBodyPart:
 
     @property
     def mass(self):
-        return Q_(self._p.mass, ureg.kg).to(ureg.lb)
+        return self._p.mass * KG_TO_LB
 
     @property
     def cg(self):
-        return Q_(self._p.cg, ureg.m).to(ureg.inch)
+        return self._p.cg * M_TO_IN
 
-    def iyy_about(self, rocket_cg):
-        rocket_cg_m = rocket_cg.to(ureg.m).magnitude
-        return Q_(self._p.iyy_about(rocket_cg_m), ureg.kg * ureg.m**2).to(ureg.lb * ureg.inch**2)
+    def iyy_about(self, rocket_cg_in):
+        """rocket_cg_in: plain float, inches (matches self.cg's units)."""
+        rocket_cg_m = rocket_cg_in / M_TO_IN
+        iyy_kg_m2 = self._p.iyy_about(rocket_cg_m)
+        return iyy_kg_m2 * KG_TO_LB * M_TO_IN**2
 
 @dataclass
 class FinSet:
@@ -271,28 +290,29 @@ class FinSet:
         return self.iyy_cm() + self.mass * d_squared
 
 class UnitAwareFinSet:
-    """Wraps a metric FinSet; exposes mass/cg/iyy as pint Quantities in
-    imperial units, matching solid_engine_cg.py's convention."""
+    """Wraps a metric FinSet; exposes mass/cg/iyy as plain floats in
+    imperial units (lb, inch, lb*inch^2) -- same convention as
+    UnitAwareBodyPart, no pint Quantities propagated."""
     def __init__(self, fin: FinSet):
         self._f = fin
         self.name = fin.name
 
     @property
     def mass(self):
-        return Q_(self._f.mass, ureg.kg).to(ureg.lb)
+        return self._f.mass * KG_TO_LB
 
     @property
     def cg(self):
-        return Q_(self._f.cg, ureg.m).to(ureg.inch)
+        return self._f.cg * M_TO_IN
 
-    def iyy_about(self, rocket_cg):
-        rocket_cg_m = rocket_cg.to(ureg.m).magnitude
+    def iyy_about(self, rocket_cg_in):
+        """rocket_cg_in: plain float, inches (matches self.cg's units)."""
+        rocket_cg_m = rocket_cg_in / M_TO_IN
         iyy_kg_m2 = self._f.iyy_about(rocket_cg_m)
-        return Q_(iyy_kg_m2, ureg.kg * ureg.m**2).to(ureg.lb * ureg.inch**2)
+        return iyy_kg_m2 * KG_TO_LB * M_TO_IN**2
     
-# --------------------------------------------------------------------------
+
 # the parser
-# --------------------------------------------------------------------------
 
 class Rocket: 
     def __init__(self, name: str, parts: List[BodyPart], fins: List[FinSet],
@@ -321,7 +341,6 @@ class Rocket:
                                 current_radius=0.0, parts=parts, fins=fins)
         if engine is None:
             return cls(name, parts, fins)
-        print(name, parts, fins, engine)
         return cls(name, parts, fins, engine=engine)   
 
     # -- static (structural-only) quantities, unchanged --------------
@@ -342,27 +361,38 @@ class Rocket:
         cg = self.cg
         return (sum(p.iyy_about(cg) for p in self.parts)
                 + sum(f.iyy_about(cg) for f in self.fins))
-    def mass_at(self, t: float = 0.0) -> float:
+    #######################
+    def mass_at(self, t: float | np.ndarray = 0.0):
+        # Structural mass, lb -- p.mass/f.mass are already plain floats
         structural = sum(p.mass for p in self.parts) + sum(f.mass for f in self.fins)
-        engine_mass = self.engine.mass_at(t) if self.engine is not None else 0.0
-        return structural + engine_mass
-    def cg_at(self, t):
-        structural_moment = (sum(p.mass * p.cg for p in self.parts)
-                            + sum(f.mass * f.cg for f in self.fins))
-        total_mass = self.mass_at(t)
+        
+        if self.engine is not None:
+            # engine.mass_at(t) is a 1D numpy array of raw floats
+            return structural + self.engine.mass_at(t)
+        # If no engine, return either a scalar or an array matching `t` shape
+        if isinstance(t, (list, np.ndarray)):
+            return np.full_like(t, structural, dtype=float)
+        return structural
+    def cg_at(self, t: float | np.ndarray = 0.0):
+        """Returns a plain float/array, CG station in inches."""
+        structural_moment = sum(p.mass * p.cg for p in self.parts) + \
+                            sum(f.mass * f.cg for f in self.fins)
+
+        total_mass = np.asarray(self.mass_at(t), dtype=float)
+
         total_moment = structural_moment
         if self.engine is not None:
-            total_moment = total_moment + self.engine.mass_at(t) * self.engine.cg_at(t)
+            e_mass = self.engine.mass_at(t)
+            e_cg = self.engine.cg_at(t)
+            total_moment = total_moment + (e_mass * e_cg)
 
-        unit = total_moment.units / total_mass.units          # will resolve to a length unit
-        mass_mag = np.asarray(total_mass.magnitude, dtype=float)
-        moment_mag = np.asarray(np.broadcast_to(total_moment.to(total_mass.units * unit).magnitude,
-                                                mass_mag.shape), dtype=float)
-        cg_mag = np.divide(moment_mag, mass_mag, out=np.zeros_like(mass_mag), where=mass_mag != 0)
-        return Q_(cg_mag, unit)
+        total_moment = np.asarray(total_moment, dtype=float)
 
+        cg_mag = np.divide(total_moment, total_mass, out=np.zeros_like(total_mass), where=total_mass != 0)
+        return cg_mag
     def iyy_at(self, t: float = 0.0, cg: float | None = None) -> float:
-        """Pitch-axis Iyy (kg*m^2) about the instantaneous cg, engine included."""
+        """Pitch-axis Iyy (lb*inch^2) about the instantaneous cg, engine
+        included. `cg`, if given, is a plain float/array in inches."""
         if cg is None:
             cg = self.cg_at(t)
         iyy = (sum(p.iyy_about(cg) for p in self.parts)
@@ -552,26 +582,22 @@ def _tube_mass(length, r_outer, r_inner, density):
     return density * math.pi * vol_over_pi
 
 def total_cg(rocket: "Rocket", times) -> tuple:
-    """Returns (masses, cgs) as pint Quantities wrapping numpy arrays,
-    over the given time array."""
+    """Returns (masses, cgs) as plain numpy arrays: masses in lb, cgs in
+    inches -- matching what flight_analysis_functions.py expects. No pint
+    Quantities in the output; units are documented here, not carried on
+    the values themselves."""
     times = np.asarray(times, dtype=float)
-
-    mass_quantities = [rocket.mass_at(t) for t in times]
-    mass_unit = mass_quantities[0].units
-    masses_mag = np.array([m.to(mass_unit).magnitude for m in mass_quantities])
-    masses = Q_(masses_mag, mass_unit)
-
-    cgs = rocket.cg_at(times)   # already returns one Quantity wrapping an array, if cg_at was updated per earlier messages
-
-    return masses, cgs
+    masses = np.asarray(rocket.mass_at(times), dtype=float)   # lb
+    cgs = np.asarray(rocket.cg_at(times), dtype=float)         # inch
+    return cgs
 
 def total_iyy(rocket: "Rocket", times, cgs=None):
+    """Returns a plain numpy array, Iyy in lb*inch^2 -- matching what
+    flight_analysis_functions.py expects (it divides this directly by
+    G_FT*IN_PER_FT**2 with no unit handling of its own)."""
     times = np.asarray(times, dtype=float)
     if cgs is None:
-        iyy_quantities = [rocket.iyy_at(t) for t in times]
+        iyys = np.array([rocket.iyy_at(t) for t in times], dtype=float)
     else:
-        iyy_quantities = [rocket.iyy_at(t, cg=c) for t, c in zip(times, cgs)]
-
-    iyy_unit = iyy_quantities[0].units
-    iyys_mag = np.array([i.to(iyy_unit).magnitude for i in iyy_quantities])
-    return Q_(iyys_mag, iyy_unit)
+        iyys = np.array([rocket.iyy_at(t, cg=c) for t, c in zip(times, cgs)], dtype=float)
+    return iyys
