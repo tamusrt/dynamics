@@ -219,7 +219,7 @@ def build_hybrid(cfg, t, ox_pressure_psi, thrust_lbf, ox_mdot_measured=None):
     elif m == "thrust":
         fuel_mdot = heng.fuel_mdot_from_thrust(t, thrust_lbf, ox_mdot,
                                                total_prop_burned_lbm=fc["total_prop_burned_lbm"])
-    elif m == "of_ratio":                                # your "high_of"/"low_of" case value
+    elif m == "of_ratio":                                
         fuel_mdot = ox_mdot / fc["of"]
     else:
         fuel_mdot = np.where(in_burn, fc["fuel_mdot"], 0.0)
@@ -343,8 +343,10 @@ def calculate(data_dict, cutoff_dict, rocket):
     calc["altitude"] = altitude
     #print(rocket.engine)          # is it None?
     #print(rocket.mass_at(0), rocket.mass_at(rocket.engine.grain.times_s[-1] if rocket.engine else None))
-    calc["cgs"] = geo.total_cg(rocket, calc["time"])[1]
-    #print(calc["cgs"])
+
+    calc["cgs"] = geo.total_cg(rocket, calc["time"])
+    print(calc["cgs"])
+    print('time shape:', calc["time"].shape, 'cgs shape:', calc["cgs"].shape)
     calc["iyy"] = geo.total_iyy(rocket, calc["time"], calc["cgs"])
     calc["sm"] = faa.stability(time, calc["iyy"], gyro_y, calc["fn"])
 
@@ -799,13 +801,15 @@ def main():
         thrust_bundle = find_bundle(interpolated_data, "thrust")  # fix meeeeeeee, but the intention is to initialize the engine component
         set_bundle = find_bundle(interpolated_data, "set")
 
-        time = set_bundle['time']
-        thrust = thrust_bundle['spec_thrust']
-        pressure = set_bundle['run_tank_pressure']
+        time = set_bundle['time'].magnitude 
+        thrust = thrust_bundle['spec_thrust'].magnitude
+        pressure = set_bundle['run_tank_pressure'].magnitude
 
         _, t_end = heng.burn_window_from_thrust(time, thrust)
         keep = time <= t_end
         engine_used = build_hybrid(cfg, time[keep], pressure[keep], thrust[keep])
+        print(engine_used)
+        print(engine_used.cg_at(time[keep]))
     elif ROCKET_ENGINES[engine_key][1] == "solid":
         thrust_bundle = find_bundle(interpolated_data, "thrust")
         spec_thrust = thrust_bundle['spec_thrust']

@@ -1,65 +1,31 @@
 """
 Hybrid rocket engine mass-distribution / CG model.
 
-HYBRID ONLY: constant-volume N2O tank + solid fuel grain. (No plunger, no
-liquid fuel tank -- that is the Lumina architecture and lives elsewhere.)
-
-How the time-dependent data gets in
------------------------------------
-Every time-dependent input is just a numpy array on a shared time base:
+All arrays on common steps:
 
     times_s        seconds
     pressure_psi   N2O tank pressure
     mdot_lbm_s     N2O mass flow rate out of the tank   <- time-dependent
     mdot_lbm_s     fuel mass flow rate (FuelGrain)       <- time-dependent
 
-You can type those in from sensor logs, or pull the N2O-tank arrays out of
-`blowdown_model.py` with `blowdown_ox_arrays()` (see below). The tank
-then uses the arrays like this:
+    total N2O mass = initial mass - integral(mdot) dt
+    liquid/vapor = solved from the constant tank volume: V = m_l*v_l + m_v*v_v
+    liquid CG = from the liquid column height inside the tank
 
-    total N2O mass   = initial mass - integral(mdot) dt     (or the exact
-                       mass history from the blowdown model, if you pass it)
-    liquid/vapor     = solved from the constant tank volume
-                       V = m_l*v_l + m_v*v_v
-    liquid CG        = from the liquid column height inside the tank
 
-Getting the arrays from the blowdown model
-------------------------------------------
-    import blowdown_model as bd            # the script runs on import
-    ox = blowdown_ox_arrays(vars(bd))      # dict of converted arrays
-
-    tank = OxidizerTank(
-        casing=tank_casing,
-        volume_in3=tank_casing.volume(),   # CONSTANT volume
-        initial_ox_mass_lbm=ox["mass_history_lbm"][0],
-        **ox,                              # times_s, pressure_psi, mdot_lbm_s,
-    )                                      # liquid_temp_F, mass_history_lbm, ...
-
-or, if you only have the CSV the blowdown model writes:
-
-    ox = ox_arrays_from_csv("lumina_thrust_curve.csv")   # time, P, mdot_ox only
-
-The fuel mdot for a hybrid is NOT in the blowdown model (its fuel flow is
-liquid ethanol). Give `FuelGrain` your own fuel mdot array (sensor, or a
+The fuel mdot for a hybrid differs as it is from a solid. Give `FuelGrain` your own fuel mdot array (sensor, or a
 regression-rate model).
 
-Liquid temperature (`liquid_temp_F`)
-------------------------------------
- - a number          : held constant for the whole burn
- - an array T(t)     : e.g. the blowdown model's temperature history
- - None              : equilibrium, T = Tsat(P(t)) (needs no extra input)
 The ullage vapor is always saturated at the measured tank pressure.
 
 Unit convention: masses lbm, lengths in, pressures psi, time s. SI
 conversions happen internally wherever CoolProp is called. Positions are
 measured along the engine axis, increasing toward the AFT end.
 
-ASSUMPTIONS -- check these against your hardware:
+ASSUMPTIONS:
  - Tank and grain are constant-cross-section cylinders.
- - Liquid and vapor are stratified. `liquid_end` says which end the liquid
-   pools at: for a tank forward of the injector under thrust that is the
-   AFT end. The default is "fwd" only to match the previous behavior --
-   set it explicitly.
+ - Liquid and vapor are stratified. `liquid_end` says the liquid
+   pools at the end towards aft. *****The default is "fwd" as a left over 
  - The grain regresses radially only (axial CG fixed at its midpoint).
  - Flow and pressure arrays share a time base.
 """
@@ -70,8 +36,9 @@ import math
 import warnings
 from dataclasses import dataclass
 from typing import Callable, Mapping, Optional, Union
-
+from pathlib import Path
 import numpy as np
+import pandas as pd
 
 try:
     from CoolProp.CoolProp import PropsSI
@@ -80,9 +47,7 @@ except ImportError:
     _HAS_COOLPROP = False
 
 
-# --------------------------------------------------------------------------
 # Unit conversions
-# --------------------------------------------------------------------------
 IN_TO_M = 0.0254
 IN3_TO_M3 = IN_TO_M ** 3
 LBM_TO_KG = 0.45359237
@@ -96,7 +61,7 @@ P_MAX_PA = 7.2e6          # just below the N2O critical pressure (7.245 MPa)
 TimeSeries = Union[None, float, np.ndarray, Callable[[np.ndarray], np.ndarray]]
 
 
-def _cumtrapz(y: np.ndarray, x: np.ndarray) -> np.ndarray:
+def cumulative(y: np.ndarray, x: np.ndarray) -> np.ndarray:
     """Cumulative trapezoidal integral of y dx, same length as y, starting at 0."""
     y = np.asarray(y, dtype=float)
     x = np.asarray(x, dtype=float)
@@ -123,70 +88,6 @@ def _is_scalar(t) -> bool:
     return np.isscalar(t) or np.asarray(t).ndim == 0
 
 
-# --------------------------------------------------------------------------
-# Loading the N2O-tank arrays from the blowdown model
-# --------------------------------------------------------------------------
-def blowdown_ox_arrays(ns: Mapping) -> dict:
-    """
-    Pull the N2O-tank arrays out of `blowdown_model.py` (SI) and return
-    them converted to this file's units, as keyword arguments for
-    `OxidizerTank`:
-
-        times_s, pressure_psi, mdot_lbm_s, liquid_temp_F,
-        mass_history_lbm, liquid_mass_history_lbm
-
-    `ns` is `vars(blowdown_module)` after `import blowdown_model`, or any
-    dict holding the model's variables: times, tank_pressures,
-    mdot_ox_history (required) and temperatures, m_ox_history,
-    m_ox_liquid_history (optional -- skipped if absent).
-
-    Note: the blowdown model is a LIQUID engine whose ox volume changes with
-    a plunger. For a constant-volume hybrid tank, use these arrays as
-    inputs (flow, pressure, temperature) -- the liquid/vapor split is
-    then recomputed for YOUR tank volume. Leave out
-    `liquid_mass_history_lbm` in that case (see `use_blowdown_split`).
-    """
-    out = {
-        "times_s": np.asarray(ns["times"], dtype=float),
-        "pressure_psi": np.asarray(ns["tank_pressures"], dtype=float) / PSI_TO_PA,
-        "mdot_lbm_s": np.asarray(ns["mdot_ox_history"], dtype=float) / LBM_TO_KG,
-    }
-    if "temperatures" in ns:
-        out["liquid_temp_F"] = (np.asarray(ns["temperatures"], dtype=float) - 273.15) * 9.0 / 5.0 + 32.0
-    else:
-        out["liquid_temp_F"] = None            # -> equilibrium Tsat(P)
-    if "m_ox_history" in ns:
-        out["mass_history_lbm"] = np.asarray(ns["m_ox_history"], dtype=float) / LBM_TO_KG
-    return out
-
-
-def use_blowdown_split(ox: dict, ns: Mapping) -> dict:
-    """
-    Add the blowdown model's own liquid-mass history to `ox` so the tank
-    uses it directly instead of solving the volume balance. Only valid
-    when your tank volume equals the blowdown model's (i.e. you are
-    checking against the simulation, not modeling a different tank).
-    """
-    ox = dict(ox)
-    ox["liquid_mass_history_lbm"] = np.asarray(ns["m_ox_liquid_history"], dtype=float) / LBM_TO_KG
-    return ox
-
-
-def ox_arrays_from_csv(path: str) -> dict:
-    """
-    Same as `blowdown_ox_arrays` but from the `lumina_thrust_curve.csv`
-    the blowdown model writes. The CSV has time, tank pressure and ox mdot
-    only, so temperature defaults to equilibrium and mass is integrated.
-    """
-    d = np.genfromtxt(path, delimiter=",", names=True)
-    return {
-        "times_s": d["time_s"],
-        "pressure_psi": d["Ptank_Pa"] / PSI_TO_PA,
-        "mdot_lbm_s": d["mdot_ox_kg_s"] / LBM_TO_KG,
-        "liquid_temp_F": None,
-    }
-
-
 def mdot_on_sensor_time(t_sensor_s, t_model_s, mdot_model, t_ignition_s: float = 0.0) -> np.ndarray:
     """
     Put a model mdot curve on YOUR sensor time base, so it can sit next to
@@ -206,9 +107,7 @@ def mdot_on_sensor_time(t_sensor_s, t_model_s, mdot_model, t_ignition_s: float =
                      np.asarray(mdot_model, dtype=float), left=0.0, right=0.0)
 
 
-# --------------------------------------------------------------------------
-# Building the flow arrays: burn window and fuel mdot
-# --------------------------------------------------------------------------
+# build the flow arrays: burn window and fuel mdot
 def burn_window_from_thrust(t_s, thrust, frac: float = 0.05) -> tuple[float, float]:
     """
     (t_ignition, t_burnout) from a thrust trace: first and last time it
@@ -230,15 +129,14 @@ def fuel_mdot_from_regression(
     fuel_density_lbm_in3: float, outer_radius_in: float,
 ) -> np.ndarray:
     """
-    Fuel mdot(t) from the hybrid regression law, so O/F drifts naturally:
+    Fuel mdot(t) found through hybrid regression law, drifting o/f during burn:
 
         G_ox   = mdot_ox / (pi * r_port^2)          [lbm/(in^2 s)]
         r_dot  = a * G_ox^n                          [in/s]
         mdot_f = rho_f * pi * L * d(r_port^2)/dt     [lbm/s]
 
-    The port radius is integrated step by step, so mdot_f follows the
-    growing port. `a` has units of (in/s)/(lbm/(in^2 s))^n and must be
-    fit to YOUR hot-fire data (see `fit_regression_a`).
+    port radius is integrated step by step, so mdot_f follows the
+    growing port. `a` has units of (in/s)/(lbm/(in^2 s))^n
     """
     t = np.asarray(t_s, dtype=float)
     mo = np.asarray(ox_mdot_lbm_s, dtype=float)
@@ -298,9 +196,7 @@ def fuel_mdot_from_thrust(
     return np.maximum(F / isp_s - np.asarray(ox_mdot_lbm_s, dtype=float), 0.0)
 
 
-# --------------------------------------------------------------------------
 # N2O saturation properties
-# --------------------------------------------------------------------------
 class N2OSaturation:
     """
     N2O saturation-dome lookups (the "steam table" for nitrous). The tank
@@ -308,7 +204,6 @@ class N2OSaturation:
     and `t_sat(P)` for the equilibrium liquid temperature.
     """
 
-    # *** PLACEHOLDER fallback table -- only used if CoolProp is missing.
     # Verify against NIST WebBook / ESDU 91022 before trusting it.
     _T = np.array([220, 230, 240, 250, 260, 270, 280, 290, 300, 305])
     _P = np.array([1.0e6, 1.4e6, 1.9e6, 2.5e6, 3.2e6, 4.0e6, 5.0e6, 6.2e6, 7.3e6, 7.9e6])
@@ -440,7 +335,7 @@ class OxidizerTank:
                 raise ValueError("Need either cross_section_area_in2 or casing.radius")
             self.cross_section_area_in2 = math.pi * self.casing.radius ** 2
 
-        cum = _cumtrapz(self.mdot_lbm_s, self.times_s)
+        cum = cumulative(self.mdot_lbm_s, self.times_s)
         if self.final_mass_lbm is not None and cum[-1] > 0:
             cum = cum * (self.initial_ox_mass_lbm - self.final_mass_lbm) / cum[-1]
         self._cum_mass_lost = cum
@@ -614,7 +509,7 @@ class FuelGrain:
         self.times_s = np.asarray(self.times_s, dtype=float)
         self.mdot_lbm_s = np.asarray(self.mdot_lbm_s, dtype=float)
         assert len(self.times_s) == len(self.mdot_lbm_s)
-        self._cum_mass_lost = _cumtrapz(self.mdot_lbm_s, self.times_s)
+        self._cum_mass_lost =cumulative(self.mdot_lbm_s, self.times_s)
         self.initial_fuel_mass_lbm = (
             self.fuel_density_lbm_in3 * math.pi * self.length_in
             * (self.outer_radius_in ** 2 - self.initial_port_radius_in ** 2)
@@ -665,7 +560,7 @@ class Engine:
         self.thrusts = np.asarray(thrusts, dtype=float)
         self.times_s = np.asarray(times_s, dtype=float)
         assert len(self.thrusts) == len(self.times_s)
-        cumulative = _cumtrapz(self.thrusts, self.times_s)
+        cumulative = cumulative(self.thrusts, self.times_s)
         self.total_impulse = cumulative[-1]
         self.burn_time = self.times_s[-1]
         self._curve_ready = True
@@ -765,9 +660,7 @@ class Engine:
         }
 
 
-# --------------------------------------------------------------------------
-# Legacy thrust-fraction model (kept only for comparison)
-# --------------------------------------------------------------------------
+# old version as comparison 
 @dataclass
 class EngineComponent2:
     name: str
@@ -843,9 +736,143 @@ class Engine2:
                   + plumbing_mass * self.plumbing.cg_offset())
         return self.offset + moment / total
 
+sol_ignis = {
+    "baseline": {
+        "ox_mdot": 6543,
+        "fuel_mdot": 1.45,
+        "tank": {
+            "dry_mass": 8.0, "offset": 10.0, "length": 24.0, "radius": 2.0,
+            "volume_in3": math.pi * 2.0**2 * 30.0,
+            "initial_ox_mass_lbm": 40.0,
+            "liquid_temp_F": 65.0,
+        },
+        "grain": {
+            "dry_mass": 3.0, "offset": 36.0, "length": 12.0, "radius": 1.5,
+            "outer_radius_in": 1.4, "initial_port_radius_in": 0.4,
+            "length_in": 12.0, "fuel_density_lbm_in3": 0.0417,
+        },
+        "plumbing": {"dry_mass": 2.0, "offset": 34.0, "length": 2.0},
+        "engine": {"length_in": 50.0, "offset_in": 0.0},
+    },
+    "high_of": {
+        "ox_mdot": 1.75,
+        "fuel_mdot": 1.10,
+        "flow": {
+            "ox_method": "constant",         # "constant" | "column" | "blowdown"
+            "ox_mdot": 0.9,                  # lbm/s, used if constant
+            "fuel_method": "regression",     # "regression" | "thrust" | "constant"
+            "n": 0.6,
+            "fuel_burned_lbm": 1.8,          # post-burn weigh-in; used to fit `a` (or give "a" directly)
+        },
+        "tank": {
+            "dry_mass": 6543, "offset": 10.0, "length": 24.0, "radius": 2.0,
+            "volume_in3": math.pi * 2.0**2 * 32.0,
+            "initial_ox_mass_lbm": 42.0,
+            "liquid_temp_F": 70.0,
+        },
+        "grain": {
+            "dry_mass": 3.0, "offset": 36.0, "length": 12.0, "radius": 1.5,
+            "outer_radius_in": 1.4, "initial_port_radius_in": 0.45,
+            "length_in": 12.0, "fuel_density_lbm_in3": 0.0417,
+        },
+        "plumbing": {"dry_mass": 2.0, "offset": 34.0, "length": 2.0},
+        "engine": {"length_in": 50.0, "offset_in": 0.0},
+    },
+}
+
+
+directional = Path(r"G:\Shared drives\TAMU-SRT\srt_general\9_flight_data\Morpheus\04232025_lone_star_cup\SPEC_thrust.csv")
+
+df = pd.read_csv('interp_set-5 full data - set-5 full data.csv', usecols=['chamber_pressure'])
+df_pressure = df['chamber_pressure']
+
+df = pd.read_csv('interp_SPEC_thrust.csv', usecols=['time','spec_thrust'])
+dftime = df['time']
+dfthrust = df['spec_thrust']
+df_pressure = df_pressure[:len(dftime)]
+
+def build_hybrid(cfg, t, ox_pressure_psi, thrust_lbf, ox_mdot_measured=None):
+    cfg = cfg["high_of"]
+    fc, gc = cfg["flow"], cfg["grain"]
+    t, ox_pressure_psi, thrust_lbf = (np.asarray(a, dtype=float) for a in (t, ox_pressure_psi, thrust_lbf))
+    assert len(t) == len(ox_pressure_psi) == len(thrust_lbf), "t, pressure and thrust must share one time base"
+    t_ign, t_end = burn_window_from_thrust(t, thrust_lbf)
+    in_burn = (t >= t_ign) & (t <= t_end)
+
+    if fc["ox_method"] == "constant":
+        ox_mdot = np.where(in_burn, fc["ox_mdot"], 0.0)
+    elif fc["ox_method"] == "column":                    # pass an already-trimmed array
+        ox_mdot = np.where(in_burn, np.asarray(ox_mdot_measured, dtype=float), 0.0)
+
+    geom = dict(port_radius0_in=gc["initial_port_radius_in"], length_in=gc["length_in"],
+                fuel_density_lbm_in3=gc["fuel_density_lbm_in3"], outer_radius_in=gc["outer_radius_in"])
+    m = fc["fuel_method"]
+    if m == "regression":
+        a = fc.get("a") or fit_regression_a(t, ox_mdot, fc["n"], fc["fuel_burned_lbm"], **geom)
+        fuel_mdot = fuel_mdot_from_regression(t, ox_mdot, a, fc["n"], **geom)
+    elif m == "thrust":
+        fuel_mdot = fuel_mdot_from_thrust(t, thrust_lbf, ox_mdot,
+                                               total_prop_burned_lbm=fc["total_prop_burned_lbm"])
+    elif m == "of_ratio":                                
+        fuel_mdot = ox_mdot / fc["of"]
+    else:
+        fuel_mdot = np.where(in_burn, fc["fuel_mdot"], 0.0)
+
+    tc = cfg["tank"]
+    tank_casing = EngineComponent(
+        name="ox_tank_casing",
+        dry_mass=tc["dry_mass"], 
+        offset=tc["offset"],
+        length=tc["length"], 
+        radius=tc["radius"],
+    )
+    tank = OxidizerTank(
+        casing=tank_casing,
+        volume_in3=tc["volume_in3"],
+        initial_ox_mass_lbm=tc["initial_ox_mass_lbm"],
+        liquid_temp_F=tc["liquid_temp_F"],
+        times_s=t, pressure_psi=df_pressure, mdot_lbm_s=ox_mdot,
+    )
+
+    gc = cfg["grain"]
+    grain_casing = EngineComponent(
+        name="grain_casing",
+        dry_mass=gc["dry_mass"], 
+        offset=gc["offset"],
+        length=gc["length"], radius=gc["radius"],
+    )
+    grain = FuelGrain(
+        casing=grain_casing,
+        outer_radius_in=gc["outer_radius_in"],
+        initial_port_radius_in=gc["initial_port_radius_in"],
+        length_in=gc["length_in"],
+        fuel_density_lbm_in3=gc["fuel_density_lbm_in3"],
+        times_s=t, mdot_lbm_s=fuel_mdot,
+    )
+
+    pc = cfg["plumbing"]
+    plumbing = EngineComponent(
+        name="plumbing", 
+        dry_mass=pc["dry_mass"],
+        offset=pc["offset"], 
+        length=pc["length"],
+    )
+
+    ec = cfg["engine"]
+    return Engine(
+        tank=tank, plumbing=plumbing, 
+        grain=grain,
+        length_in=ec["length_in"], 
+        offset_in=ec["offset_in"],
+    )
+
+
+engine_applied = build_hybrid(sol_ignis, dftime, df_pressure, dfthrust)
+print(engine_applied)
+print(engine_applied.cg_at(dftime))
+
 if __name__ == "__main__":
-    # --- 1. time-dependent arrays (replace with sensor logs, or with the
-    #        output of blowdown_ox_arrays(...) -- see the module docstring)
+
     t = np.linspace(0, 8, 161)
     burn = t < 7.5
     ox_mdot = np.where(burn, 0.95 - 0.04 * t, 0.0)                # lbm/s, decaying
@@ -873,7 +900,8 @@ if __name__ == "__main__":
         times_s=t, mdot_lbm_s=fuel_mdot,
     )
     engine = Engine(tank=tank, plumbing=plumbing, grain=grain, length_in=50.0, offset_in=0.0)
-
+    times = np.arange(0, 5 + 0.001, 0.001)
+    print(engine.cg_at(times))
     # --- 4. query at any time (scalar or array)
     for tt in (0.0, 2.0, 4.0, 6.0, 7.9):
         liq, vap, vf = tank.phase_split_at(tt)
