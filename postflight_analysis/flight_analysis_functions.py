@@ -294,44 +294,478 @@ def kalman_smooth(t, v, a=None, r_v=1.0, r_a=1.0, q_boost=4000.0, q_coast=50.0,
         Ps[k] = Ps_f[k] + C @ (Ps[k + 1] - P_pred) @ C.T
 
     return xs[:, 0], xs[:, 1]
-# ...AAAAND WE ARE BACK! 
+import numpy as np
 
+
+# ===========================================================================
+# Part 1: Measurement-noise (R) estimation
+#
+# Workflow: find the true pre-liftoff flat segment, use it to validate a
+# detrending-based noise estimator, then apply that estimator across the
+# whole flight so R can vary by stage (e.g. worse during motor burn) instead
+# of being a single guessed constant.
+# ===========================================================================
+def trim_to_true_pad(v, hold=10, sigma_mult=5):
+    '''`v` is your pre-liftoff velocity slice (e.g. v[:blue_raven_liftoff_idx]).
+    The Raven's own liftoff flag is conservative, so real motion (ignition,
+    initial rail travel) likely starts before that flag trips. This finds
+    where velocity actually departs from pad noise, not where the Raven's
+    3G/3ft-s threshold fires, so what you calibrate noise against is
+    genuinely flat/zero.
+
+    Bootstraps off the first quarter of `v` (assumed safely still) to get a
+    rough noise level, finds an approximate onset, then refines once using
+    the trimmed segment. Returns (v_pad_trimmed, onset_index_or_None).
+
+    ALWAYS sanity-check onset_index against a plot of v before trusting it
+    -- a handling bump or wind gust can look like sustained motion.
+    '''
+    def find_onset(std_ref, center):
+        threshold = sigma_mult * std_ref
+        if threshold <= 0:
+            # Degenerate case: the reference segment has exactly zero
+            # variance (e.g. integer-quantized sensor readings sitting
+            # dead-flat at rest, like Blue Raven velocity reporting exact
+            # 0s on the pad). A literal zero threshold makes even
+            # zero-deviation samples satisfy `deviation >= threshold`
+            # (0 >= 0 is True), falsely declaring onset at sample 0.
+            # Fall back to the sensor's own quantization step -- the
+            # smallest nonzero sample-to-sample change anywhere in v --
+            # so "no measurable variation yet" isn't mistaken for
+            # "constant deviation from center."
+            nonzero_diffs = np.abs(np.diff(v))
+            nonzero_diffs = nonzero_diffs[nonzero_diffs > 0]
+            floor = nonzero_diffs.min() if nonzero_diffs.size else 1.0
+            threshold = sigma_mult * floor
+        deviation = np.abs(v - center)
+        # `+ 1` so the final possible window -- the one ending exactly at
+        # the array's last sample -- actually gets tested. Without it,
+        # motion occurring only in the last `hold` samples (exactly the
+        # case where liftoff is right at the end of a short pre-liftoff
+        # buffer) can never be detected, no matter how real/large it is.
+        for i in range(len(deviation) - hold + 1):
+            if (deviation[i:i + hold] >= threshold).all():
+                return i
+        return None
+
+    quarter = max(hold + 1, len(v) // 4)
+    rough_std = np.std(v[:quarter])
+    rough_center = np.median(v[:quarter])
+    onset = find_onset(rough_std, rough_center)
+
+    v_pad = v if onset is None else v[:onset]
+
+    refined_std = np.std(v_pad)
+    refined_center = np.median(v_pad)
+    onset2 = find_onset(refined_std, refined_center)
+
+    if onset2 is not None:
+        v_pad = v[:onset2]
+    return v_pad, (onset2 if onset2 is not None else onset)
+
+
+def estimate_measurement_noise_series(v, window=41, poly_order=2):
+    '''Rolling sensor-noise-variance estimate, one value per sample. Fits a
+    low-order polynomial to each short window and treats the residual as
+    noise -- valid as long as the true signal is smooth relative to the
+    window length, which is usually true even during boost at a few hundred
+    Hz. Captures noise that changes over the flight (e.g. motor vibration,
+    transonic buffet) instead of averaging it into one global number.
+    Edge samples (within `window//2` of either end) reuse the nearest
+    computed value.'''
+    n = len(v)
+    half = window // 2
+    r_series = np.full(n, np.nan)
+    for i in range(half, n - half):
+        idx = np.arange(i - half, i + half + 1)
+        coeffs = np.polyfit(idx, v[idx], poly_order)
+        fit = np.polyval(coeffs, idx)
+        r_series[i] = np.var(v[idx] - fit)
+    if n > 2 * half:
+        r_series[:half] = r_series[half]
+        r_series[-half:] = r_series[-half - 1]
+    else:
+        r_series[:] = np.nanvar(v)  # window too wide for this array; fallback
+    return r_series
+
+
+def calibrate_noise_window(v_pad, window_options=(21, 41, 61, 81), poly_order=2, verbose=True,
+                            quantization_reference=None):
+    '''Pick the window size whose rolling estimate best reproduces the TRUE
+    noise variance on the pad segment (where the answer is known: velocity
+    truly isn't changing, so all of its variance IS noise). A window that
+    matches here is trustworthy elsewhere, since you can't check directly
+    once the rocket is actually moving.
+
+    quantization_reference: an array to derive the sensor's quantization
+        step from, if v_pad itself is perfectly flat (zero internal
+        variation, so v_pad's own diffs can't reveal the real step size).
+        Pass the untrimmed pre-launch buffer here (which contains the real
+        transition) rather than relying on v_pad alone. Falls back to
+        v_pad's own diffs, then to 1.0, only if this isn't provided.
+
+    Returns (best_window, true_pad_variance).'''
+    true_r = np.var(v_pad)
+    if true_r == 0:
+        # A perfectly flat pad segment doesn't mean the sensor has zero
+        # noise -- it means real noise is smaller than what the sensor can
+        # resolve (its quantization step), so measured variance reads as
+        # exactly 0. Treating that literal 0 as the true noise floor makes
+        # R ~ 0 downstream, which tells the Kalman filter to trust every
+        # reading completely -- it stops smoothing and just reproduces raw
+        # noise. Fall back to the standard uniform-quantization-noise
+        # estimate (step^2 / 12).
+        source = quantization_reference if quantization_reference is not None else v_pad
+        nonzero_diffs = np.abs(np.diff(source))
+        nonzero_diffs = nonzero_diffs[nonzero_diffs > 0]
+        step = nonzero_diffs.min() if nonzero_diffs.size else 1.0
+        true_r = step**2 / 12
+        if verbose:
+            print(f'pad variance was exactly 0 -- falling back to quantization '
+                  f'floor: step={step}, r_floor={true_r:.6g}')
+    best_window, best_diff = window_options[0], np.inf
+    for w in window_options:
+        if w >= len(v_pad):
+            continue
+        est = estimate_measurement_noise_series(v_pad, window=w, poly_order=poly_order)
+        diff = abs(np.nanmedian(est) - true_r)
+        if verbose:
+            print(f'window={w}: detrended est={np.nanmedian(est):.4f}, true={true_r:.4f}')
+        if diff < best_diff:
+            best_diff, best_window = diff, w
+    return best_window, true_r
+
+
+def build_r_series(v, liftoff_idx, window_options=(21, 41, 61, 81), poly_order=2,
+                    hold=10, sigma_mult=5, verbose=True):
+    '''End-to-end: trim pre-liftoff data down to the true flat segment,
+    calibrate a detrending window against it, then apply that window across
+    the whole flight. Floors the result at the pad's true noise level, since
+    baseline sensor noise doesn't disappear once the sensor is moving --
+    anything the rolling estimator reports below that floor is more likely a
+    fitting artifact than real physics.
+
+    Assumes the pad segment lives INSIDE `v`, before `liftoff_idx` (i.e. `t=0`
+    is somewhere on the pad). If your flight data starts AT the liftoff flag
+    instead (t=0 defined as the moment acceleration crosses threshold, so
+    there's no pre-liftoff data in `v` at all), use
+    build_r_series_from_pad() instead, with a genuinely separate pad array.
+    '''
+    v_pad, onset_idx = trim_to_true_pad(v[:liftoff_idx], hold=hold, sigma_mult=sigma_mult)
+    best_window, r_floor = calibrate_noise_window(v_pad, window_options, poly_order, verbose)
+    r_series = estimate_measurement_noise_series(v, window=best_window, poly_order=poly_order)
+    r_series = np.maximum(r_series, r_floor)
+    return r_series, {'onset_idx': onset_idx, 'window': best_window, 'r_floor': r_floor}
+
+
+def build_r_series_from_pad(v_pre, v_flight, window_options=(21, 41, 61, 81), poly_order=2,
+                             hold=10, sigma_mult=5, verbose=True):
+    '''Same idea as build_r_series, but for the case where the pad segment
+    is a SEPARATE array from the flight data being smoothed -- e.g. when
+    t=0 in your flight data is defined as the liftoff-detected instant, so
+    there's no pre-liftoff data inside it to slice out.
+
+    v_pre    : a genuinely pre-liftoff velocity segment (its own t_pre array
+               governs its timing; only the values matter here).
+    v_flight : the flight-data array to actually estimate a noise series for
+               (e.g. v_up[:apogee]) -- does NOT need any pad samples in it.
+    '''
+    v_pad, onset_idx = trim_to_true_pad(v_pre, hold=hold, sigma_mult=sigma_mult)
+    best_window, r_floor = calibrate_noise_window(
+        v_pad, window_options, poly_order, verbose,
+        quantization_reference=v_pre,  # v_pad alone may be perfectly flat (zero
+                                        # internal variation) if onset trimmed out
+                                        # all real motion -- v_pre still has the
+                                        # real transition to derive a step from.
+    )
+    r_series = estimate_measurement_noise_series(v_flight, window=best_window, poly_order=poly_order)
+    r_series = np.maximum(r_series, r_floor)
+    return r_series, {'onset_idx': onset_idx, 'window': best_window, 'r_floor': r_floor}
+
+
+# ===========================================================================
+# Part 2: Fused, boost/coast-aware Kalman smoother
+#
+# State: [velocity, acceleration]. Velocity is always observed (from v, the
+# corrected Blue Raven output). Acceleration is optionally ALSO observed
+# directly (pass `a`) if you have a second sensor -- the filter then fuses
+# both instead of only ever inferring acceleration from velocity's shape.
+#
+# Q (process noise) switches between q_boost and q_coast at `burnout_idx`,
+# since boost has large real acceleration changes sample-to-sample and
+# coast doesn't -- a single Q has to compromise between tracking real boost
+# transients and not chasing coast-phase noise.
+#
+# R (measurement noise) for velocity can be a single scalar OR a per-sample
+# array (e.g. from build_r_series above), so noise that changes by flight
+# stage is reflected rather than averaged into one constant.
+# ===========================================================================
+def kalman_smooth(t, v, a=None, r_v=1.0, r_a=1.0, q_boost=4000.0, q_coast=50.0,
+                   burnout_idx=None, p0=100.0):
+    '''
+    t          : time array
+    v          : velocity measurements (required) -- e.g. corrected Blue Raven v
+    a          : acceleration measurements (optional) -- pass if you have a
+                 second sensor to fuse; a[k] = NaN means "no reading at k"
+    r_v        : velocity measurement-noise variance. Scalar or array of len(t)
+                 (use build_r_series() for the array form).
+    r_a        : acceleration measurement-noise variance (scalar; extend to an
+                 array the same way as r_v if that sensor's noise also varies).
+    q_boost    : process-noise variance (accel allowed to change per unit
+                 time) before `burnout_idx`. Tune against real thrust-curve
+                 sharpness -- too small and the boost peak gets smeared/lagged.
+    q_coast    : process-noise variance from `burnout_idx` onward. Tune down
+                 until ripple in the smoothed output disappears without
+                 visibly lagging the real (slow) coast-phase decay.
+    burnout_idx: sample index where boost ends / coast begins (your 'coast'
+                 index elsewhere in the codebase). None = q_boost the whole way.
+    p0         : initial state uncertainty. Not very sensitive -- the RTS
+                 backward pass revises early estimates anyway. Pick roughly
+                 (plausible initial guess error)^2; 100 means "I could be off
+                 by about 10 units" on both velocity and acceleration.
+
+    Returns (velocity_smoothed, acceleration_smoothed).
+    '''
+    t = np.asarray(t, float)
+    n = len(t)
+    v = np.asarray(v, float)
+    a = np.full(n, np.nan) if a is None else np.asarray(a, float)
+    r_v_arr = np.full(n, r_v, float) if np.isscalar(r_v) else np.asarray(r_v, float)
+    burnout_idx = n if burnout_idx is None else burnout_idx
+
+    dt = np.diff(t, prepend=t[0] - (t[1] - t[0]))  # dt[k] = step INTO sample k
+
+    def F_of(d):
+        return np.array([[1.0, d], [0.0, 1.0]])
+
+    def Q_of(d, q):
+        return q * np.array([[d**4 / 4, d**3 / 2], [d**3 / 2, d**2]])
+
+    def q_at(k):
+        return q_boost if k < burnout_idx else q_coast
+
+    x = np.array([v[0], 0.0])   # state: [velocity, acceleration]; accel guess
+    P = np.eye(2) * p0          # starts at 0 -- corrected within a few samples
+
+    xs_f, Ps_f, xs_p, Ps_p, Fs, Qs = [], [], [], [], [], []
+    for k in range(n):
+        F = F_of(dt[k])
+        Q = Q_of(dt[k], q_at(k))
+        Fs.append(F); Qs.append(Q)
+
+        x, P = F @ x, F @ P @ F.T + Q             # predict
+        xs_p.append(x.copy()); Ps_p.append(P.copy())
+
+        rows, zs, rs = [], [], []                  # stack whichever sensors reported
+        if np.isfinite(v[k]):
+            rows.append([1.0, 0.0]); zs.append(v[k]); rs.append(r_v_arr[k])
+        if np.isfinite(a[k]):
+            rows.append([0.0, 1.0]); zs.append(a[k]); rs.append(r_a)
+        if rows:                                    # update
+            H, z, R = np.array(rows), np.array(zs), np.diag(rs)
+            S = H @ P @ H.T + R
+            K = P @ H.T @ np.linalg.inv(S)
+            x = x + K @ (z - H @ x)
+            P = (np.eye(2) - K @ H) @ P
+        xs_f.append(x.copy()); Ps_f.append(P.copy())
+
+    # RTS backward pass -- each estimate also uses FUTURE data, removing
+    # forward-pass lag (e.g. the filter "knowing" burnout is about to happen)
+    xs, Ps = np.array(xs_f), np.array(Ps_f)
+    for k in range(n - 2, -1, -1):
+        F = Fs[k + 1]
+        P_pred = Ps_p[k + 1]
+        C = Ps_f[k] @ F.T @ np.linalg.inv(P_pred)
+        xs[k] = xs_f[k] + C @ (xs[k + 1] - xs_p[k + 1])
+        Ps[k] = Ps_f[k] + C @ (Ps[k + 1] - P_pred) @ C.T
+
+    return xs[:, 0], xs[:, 1]
+
+
+# ===========================================================================
+# Part 3: Process-noise (Q) calibration
+#
+# R was calibrated against something KNOWN (the pad, where true velocity is
+# genuinely flat). Q needs the same treatment instead of a guessed round
+# number. The check used here: a correctly-tuned filter's own prediction
+# error should match how uncertain the filter THINKS it is. That ratio is
+# the normalized innovation squared (NIS). Averaged over many samples, NIS
+# should be close to 1 if Q (and R) are consistent with reality:
+#   NIS >> 1 : real errors are bigger than the filter expects -> Q too small
+#              (filter is overconfident, e.g. output looks laggy/oversmoothed
+#              relative to real transients)
+#   NIS << 1 : real errors are smaller than the filter expects -> Q too large
+#              (filter is underconfident, e.g. output looks noisy/jittery)
+# This needs no external reference (no OpenRocket curve, no known-still
+# segment) -- it checks the filter against its own measurements.
+# ===========================================================================
+def _forward_nis(t, v, r_v, q, dt=None, p0=100.0):
+    '''Forward-only KF pass (no RTS -- NIS is about one-step prediction
+    consistency, which the backward smoother would hide) with a SINGLE q
+    applied throughout. Returns the NIS value at each sample.'''
+    n = len(v)
+    r_v_arr = np.full(n, r_v, float) if np.isscalar(r_v) else np.asarray(r_v, float)
+    if dt is None:
+        dt = np.diff(t, prepend=t[0] - (t[1] - t[0]))
+
+    def F_of(d):
+        return np.array([[1.0, d], [0.0, 1.0]])
+
+    def Q_of(d):
+        return q * np.array([[d**4 / 4, d**3 / 2], [d**3 / 2, d**2]])
+
+    H = np.array([[1.0, 0.0]])
+    x = np.array([v[0], 0.0])
+    P = np.eye(2) * p0
+    nis = np.full(n, np.nan)
+
+    for k in range(n):
+        F, Q = F_of(dt[k]), Q_of(dt[k])
+        x, P = F @ x, F @ P @ F.T + Q            # predict
+        S = (H @ P @ H.T)[0, 0] + r_v_arr[k]      # predicted innovation variance
+        innov = v[k] - (H @ x)[0]                 # actual innovation
+        nis[k] = innov**2 / S
+        K = (P @ H.T / S).flatten()               # update
+        x = x + K * innov
+        P = (np.eye(2) - np.outer(K, H)) @ P
+    return nis
+
+
+def calibrate_q(t, v, r_v, burnout_idx, q_boost_options, q_coast_options, warmup=20):
+    '''Grid-search q_boost against the boost-segment NIS, then q_coast against
+    the coast-segment NIS (with q_boost fixed to whatever was just chosen).
+    `warmup` skips the first N samples of each segment, since NIS is
+    unreliable right after the filter starts or right after Q switches,
+    before P has settled.
+
+    Returns (best_q_boost, best_q_coast, diagnostics) where diagnostics has
+    the full score table for both sweeps, for plotting/sanity-checking.
+    '''
+    t, v = np.asarray(t, float), np.asarray(v, float)
+    dt = np.diff(t, prepend=t[0] - (t[1] - t[0]))
+    n = len(v)
+
+    # --- sweep q_boost: score against NIS within the boost segment only ---
+    boost_scores = []
+    for q_b in q_boost_options:
+        nis = _forward_nis(t, v, r_v, q_b, dt=dt)
+        seg = nis[warmup:burnout_idx]
+        score = abs(np.nanmean(seg) - 1.0)
+        boost_scores.append(score)
+    best_q_boost = q_boost_options[int(np.argmin(boost_scores))]
+
+    # --- sweep q_coast: run with q_boost fixed, switch to q_coast at burnout,
+    #     score against NIS within the coast segment only ---
+    def forward_nis_boost_coast(q_boost, q_coast):
+        r_v_arr = np.full(n, r_v, float) if np.isscalar(r_v) else np.asarray(r_v, float)
+        F_of = lambda d: np.array([[1.0, d], [0.0, 1.0]])
+        Q_of = lambda d, q: q * np.array([[d**4/4, d**3/2], [d**3/2, d**2]])
+        H = np.array([[1.0, 0.0]])
+        x = np.array([v[0], 0.0]); P = np.eye(2) * 100.0
+        nis = np.full(n, np.nan)
+        for k in range(n):
+            q = q_boost if k < burnout_idx else q_coast
+            F, Q = F_of(dt[k]), Q_of(dt[k], q)
+            x, P = F @ x, F @ P @ F.T + Q
+            S = (H @ P @ H.T)[0, 0] + r_v_arr[k]
+            innov = v[k] - (H @ x)[0]
+            nis[k] = innov**2 / S
+            K = (P @ H.T / S).flatten()
+            x = x + K * innov
+            P = (np.eye(2) - np.outer(K, H)) @ P
+        return nis
+
+    coast_scores = []
+    for q_c in q_coast_options:
+        nis = forward_nis_boost_coast(best_q_boost, q_c)
+        seg = nis[burnout_idx + warmup:]
+        score = abs(np.nanmean(seg) - 1.0)
+        coast_scores.append(score)
+    best_q_coast = q_coast_options[int(np.argmin(coast_scores))]
+
+    diagnostics = {
+        'q_boost_options': list(q_boost_options), 'boost_scores': boost_scores,
+        'q_coast_options': list(q_coast_options), 'coast_scores': coast_scores,
+        'boost_at_edge': int(np.argmin(boost_scores)) in (0, len(boost_scores) - 1),
+        'coast_at_edge': int(np.argmin(coast_scores)) in (0, len(coast_scores) - 1),
+    }
+    if diagnostics['boost_at_edge']:
+        print(f'WARNING: best q_boost ({best_q_boost:g}) is at the edge of '
+              f'q_boost_options -- the true optimum may be outside this range. '
+              f'Widen q_boost_options and rerun.')
+    if diagnostics['coast_at_edge']:
+        print(f'WARNING: best q_coast ({best_q_coast:g}) is at the edge of '
+              f'q_coast_options -- the true optimum may be outside this range. '
+              f'Widen q_coast_options and rerun.')
+    return best_q_boost, best_q_coast, diagnostics
+
+
+# ===========================================================================
+# Part 4: Per-axis acceleration, calibrated end to end
+# ===========================================================================
 def acceleration(v_up, v_dr, v_cr, apogee, t, t_pre, v_pre, burnout_idx,
-                  q_boost_options=(1e3, 1e4, 1e5, 1e6, 1e7),
+                  q_boost_options=(1e4, 1e5, 1e6, 1e7, 1e8),
                   q_coast_options=(1e1, 1e2, 1e3, 1e4)):
     '''Accelerations are computed to apogee via a constant-acceleration
-    Kalman filter + RTS smoother; samples past apogee are zero-padded.'''
-    n_total = t.shape[0]
-    # i am trusting that whatever what was done by nachos "Correctness changes with Cluade" didn't throw a wrench in these mappings 
+    Kalman filter + RTS smoother; samples past apogee are zero-padded.
 
-    v_pad, onset_idx = still_pad(v_pre)
-    print('detected true motion onset in pad data at index', onset_idx,
-          '-- check this against a plot before trusting it')
- 
+    t, v_up, v_dr, v_cr : flight data starting AT liftoff (t=0 is the
+        instant acceleration crosses the 3G liftoff threshold) -- these do
+        NOT contain any pre-liftoff/pad samples.
+    t_pre, v_pre        : a SEPARATE segment of genuinely pre-liftoff data
+        (recorded before the 3G flag fired), used only to calibrate
+        measurement noise. `t_pre` isn't used numerically here beyond
+        existing as the natural pairing for v_pre -- pass it in case you
+        later want noise estimates that account for uneven pre-liftoff
+        sample spacing.
+    burnout_idx         : sample index (within t/v_*, i.e. relative to
+        liftoff) where boost ends and coast begins.
+
+    NOTE: only one pre-liftoff velocity series is available (v_pre), so it's
+    used as the noise-calibration reference for ALL THREE axes below. If you
+    have separate pre-liftoff data for the horizontal axes too, pass each
+    one through its own build_r_series_from_pad call instead -- horizontal
+    pad noise could look different from vertical.
+    '''
+    n_total = t.shape[0]
+
+    # NOTE: build_r_series_from_pad() does its own trim_to_true_pad() call
+    # internally, and specifically needs the RAW v_pre (not an already-
+    # trimmed v_pad) to derive a quantization-noise floor when the trimmed
+    # segment turns out perfectly flat -- a pre-trimmed array has zero
+    # internal variation by definition, so there'd be nothing left to
+    # derive a real step size from. Pass v_pre through untouched; any
+    # "trim once outside the loop" optimization here would silently
+    # reintroduce that bug.
+
+    # NOTE: confirm this axis mapping is intentional -- cr/dr/up don't
+    # obviously map to x/y/z without knowing your frame convention.
     components = {'x': v_cr, 'y': v_dr, 'z': v_up}
- 
+
     accel_out = {}
     for axis, v in components.items():
-        r_series, r_info = build_r_series(v_pad, v[:apogee])
-        print(f'axis {axis}: v[:5]={v[:5]}, v[-5:]={v[-5:]}, '
-        f'has_nan={np.isnan(v).any()}, nan_count={np.isnan(v).sum()}, '
-        f'n_unique_diffs={len(set(np.round(np.diff(v[:20]), 6)))}')
+        r_series, r_info = build_r_series_from_pad(v_pre, v[:apogee])
+        print(f'axis {axis}: detected true motion onset in pad data at index '
+              f'{r_info["onset_idx"]} -- check this against a plot before trusting it')
+
         q_boost, q_coast, q_diag = calibrate_q(
             t[:apogee], v[:apogee], r_series, burnout_idx,
             q_boost_options, q_coast_options,
         )
         if q_diag['boost_at_edge'] or q_diag['coast_at_edge']:
             print(f'axis {axis}: q calibration hit the edge of its options -- widen the range')
- 
+
         _, accel = kalman_smooth(
             t[:apogee], v[:apogee], r_v=r_series,
             q_boost=q_boost, q_coast=q_coast, burnout_idx=burnout_idx,
         )
         accel_out[axis] = pad_to(accel, n_total)
- 
+
     accelx, accely, accelz = accel_out['x'], accel_out['y'], accel_out['z']
     total = magnitude(accelx, accely, accelz)
     return accelx, accely, accelz, total
+
+# ...AAAAND WE ARE BACK! 
 
 def theta(v_dr,v_cr):
     '''azimuth of the velocity vector in the horizontal plane, degrees in (-180, 180]'''
