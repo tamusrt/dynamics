@@ -20,13 +20,16 @@ ORIGIN = "https://tamusrt.github.io"
 class Rig:
     """A temporary repo layout, a helper on a free port, and a runner that fakes the three commands."""
 
-    def __init__(self, build_fails=False, convert_fails=False, hold=None, sweep_writes=31):
+    def __init__(self, build_fails=False, convert_fails=False, hold=None, sweep_writes=31, publish=False, push_fails=False, with_ork=False, corrects=True):
         self.tmp = tempfile.TemporaryDirectory()
         self.repo = Path(self.tmp.name)
         aero = self.repo / "aero_modeling"
         (aero / "R" / "RASA").mkdir(parents=True)
         (aero / "R" / "RASA" / "a.csv").write_text("old csv")
         (aero / "R" / "RASA" / "r.CDX1").write_text("cdx")
+        if with_ork:  # a design file, so the .CDX1 is checked against it before the sweep
+            (aero / "R" / "a.ork").write_text("ork")
+        self.corrects = corrects
         config = aero / "whatif_config.json"
         config.write_text(json.dumps({
             "default": "R",
@@ -36,8 +39,10 @@ class Rig:
         self.calls = []
         self.opened = []
         self.build_fails, self.convert_fails, self.hold, self.sweep_writes = build_fails, convert_fails, hold, sweep_writes
+        self.push_fails, self.stopped = push_fails, threading.Event()
         ctx = local_helper.load_context(config, self.repo, "python")
-        self.helper = local_helper.Helper(ctx, runner=self.run, probe=lambda module: True, opener=self.opened.append)
+        self.helper = local_helper.Helper(ctx, runner=self.run, probe=lambda module: True, opener=self.opened.append,
+                                          auto_publish=publish, on_published=self.stopped.set)
         self.server = local_helper.serve(self.helper, 0)
         self.port = self.server.server_address[1]
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
@@ -60,6 +65,17 @@ class Rig:
         if "ras_csv" in script:
             Path(text[text.index("--out") + 1]).write_text("new csv")
             return 1 if self.convert_fails else 0
+        if "fix_cdx.py" in script:
+            on_line("r.CDX1 was corrected (2 values)." if self.corrects else "r.CDX1 already matches a.ork.")
+            return 0
+        if text[0] == "git":
+            if text[1] == "diff":
+                return 1  # the CSV changed
+            if text[1] in ("push", "pull") and self.push_fails:
+                return 1
+            if text[1] == "rev-parse":
+                on_line("abc1234")
+            return 0
         if "build_site.py" in script:
             site = Path(text[text.index("--site") + 1]) / "predictions"
             site.mkdir(parents=True, exist_ok=True)
@@ -272,6 +288,62 @@ def test_config_without_alpha_dir_is_refused():
             assert "alpha_dir" in str(error)
         else:
             raise AssertionError("a rocket without alpha_dir cannot be updated")
+
+
+@with_rig(publish=True)
+def test_a_good_update_commits_only_the_csv_and_cdx_pushes_and_stops(rig):
+    rig.post("sweep")
+    rig.wait_idle()
+    rig.post("update")
+    st = rig.wait_idle()
+    assert st["error"] is None and st["published"]["commit"] == "abc1234"
+    git = [c[1:] for c in rig.calls if c[0] == "git"]
+    paths = ["aero_modeling/R/RASA/a.csv", "aero_modeling/R/RASA/r.CDX1"]
+    assert git[0] == ["add", "--", *paths]
+    assert ["commit", "-m", "Update R RASAero CSV", "--", *paths] in git and ["push"] in git
+    assert rig.stopped.wait(2)
+
+
+@with_rig(publish=True, push_fails=True)
+def test_a_failed_push_is_an_error_and_the_helper_keeps_running(rig):
+    rig.post("sweep")
+    rig.wait_idle()
+    rig.post("update")
+    st = rig.wait_idle()
+    assert "could not be pushed" in st["error"] and st["published"] is None
+    assert not rig.stopped.is_set()
+
+
+@with_rig()
+def test_without_publishing_nothing_is_committed(rig):
+    rig.post("sweep")
+    rig.wait_idle()
+    rig.post("update")
+    st = rig.wait_idle()
+    assert st["error"] is None and st["published"] is None
+    assert not any(c[0] == "git" for c in rig.calls)
+
+
+@with_rig(with_ork=True)
+def test_a_corrected_cdx_is_opened_in_rasaero_until_a_sweep_succeeds(rig):
+    rig.post("sweep")
+    st = rig.wait_idle()
+    assert st["error"] is None, st["error"]
+    sweeps = [c for c in rig.calls if any("rasaero_sweep.py" in p for p in c)]
+    assert "--open" in sweeps[-1] and sweeps[-1][-1].endswith("r.CDX1")
+    rig.corrects = False  # the next press: the file matches and RASAero measured it, so no reopening
+    rig.post("sweep")
+    rig.wait_idle()
+    sweeps = [c for c in rig.calls if any("rasaero_sweep.py" in p for p in c)]
+    assert "--open" not in sweeps[-1]
+
+
+@with_rig(with_ork=True, corrects=False)
+def test_a_cdx_that_matches_uses_the_rasaero_already_open(rig):
+    rig.post("sweep")
+    assert rig.wait_idle()["error"] is None
+    sweeps = [c for c in rig.calls if any("rasaero_sweep.py" in p for p in c)]
+    assert "--open" not in sweeps[-1]
 
 
 if __name__ == "__main__":
