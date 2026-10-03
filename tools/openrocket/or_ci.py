@@ -1530,7 +1530,7 @@ SITE_HTML = r"""<!doctype html>
 </div>
 <header>
   <h1>OpenRocket performance</h1>
-  <div class="tabs"><button id="tab-history">History</button><button id="tab-flight">Flight plots</button><button id="tab-changelog">Changelog</button><button id="tab-predictions">Predictions</button><button id="tab-vision">Vision</button></div>
+  <div class="tabs"><button id="tab-history">History</button><button id="tab-flight">Flight plots</button><button id="tab-changelog">Changelog</button><button id="tab-predictions">JARVIS predictions</button><button id="tab-vision">Vision</button></div>
   <span class="sub" id="sub"></span>
   <span class="hctl">
     <label class="sub" id="units-label">units <select id="units"><option value="metric">metric (m, m/s, kPa)</option><option value="imperial">imperial (ft, ft/s, psi)</option></select></label>
