@@ -196,3 +196,21 @@ python tools/whatif/tests/browser_test.py --site site --require-predictions --sh
 Open `site/predictions/index.html`. It loads Plotly from cdn.plot.ly. `--dry-run` prints the commands and the motor chosen.
 To read OpenRocket's numbers from a History site, build the History site into `site/` first (the Action does).
 For a single rocket by hand, `flight_sim.whatif.build` takes `--history-site <folder>` and `--history-motor <file name>`.
+
+## The JARVIS message in Discord
+
+Every site build on `main` sends a **JARVIS simulation** message: a link to VISION, Jarvis's apogee in
+every saved condition next to OpenRocket's, and a ⚠️ line when the stability margin falls below 1.0
+caliber, when the RASAero table does not match the rocket (run Update CSV), or when OpenRocket's saved
+runs used a different motor from the motor file (`jarvis_note.py`). `vision_shot.py` takes a picture of
+the whole flight in VISION for it, published as `predictions/vision.png`.
+
+How it reaches Discord:
+
+* **With a Discord webhook** (recommended): the message goes straight to the channel, with the picture.
+  In Discord: the channel's settings (gear) → Integrations → Webhooks → New Webhook → pick the channel →
+  Copy Webhook URL. In this repository: Settings → Secrets and variables → Actions → New repository
+  secret, name `DISCORD_WEBHOOK_URL`, paste the URL. Treat the URL like a password: anyone with it can
+  post in the channel.
+* **Without one**: it is a comment on the commit, which the Discord GitHub bot shows as text (the
+  picture shows on GitHub only).

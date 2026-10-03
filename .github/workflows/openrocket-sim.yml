@@ -189,16 +189,6 @@ jobs:
           pip install ./flight_sim_src
           python tools/whatif/build_site.py --config aero_modeling/whatif_config.json --site site
 
-      # ---- A short Jarvis note for the commit comment (the Discord GitHub bot shows it) ----
-      - name: Write the Jarvis note (main only)
-        if: always() && github.ref == 'refs/heads/main' && steps.predictions.outcome == 'success'
-        continue-on-error: true
-        env:
-          LIVE_URL: ${{ vars.LIVE_SITE_URL || format('https://{0}.github.io/{1}', github.repository_owner, github.event.repository.name) }}
-        run: |
-          fs="${{ vars.FLIGHT_SIM_REF || 'main' }}@$(git -C flight_sim_src rev-parse --short HEAD)"
-          python tools/whatif/jarvis_note.py --site site --live-url "$LIVE_URL" --flightsim "$fs" --out jarvis_note.md
-
       # ---- Real-browser check of the built site, before it goes live ----
       # Opens the site in Chromium and clicks through History, Predictions and Vision (tools/whatif/tests/browser_test.py).
       # If the predictions build above worked, the Predictions page and Vision must be there and working; if it
@@ -236,6 +226,21 @@ jobs:
             --browser "${{ steps.browser.outcome }}" --report browser_report.json \
             --commit "${{ github.sha }}" \
             --run-url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+
+      # ---- The JARVIS message: a picture of the whole flight in VISION, the apogees and any warnings ----
+      # (tools/whatif/vision_shot.py and jarvis_note.py). The picture is published with the site as
+      # predictions/vision.png. A problem here never stops the site from going live.
+      - name: Take the VISION picture and write the JARVIS message (main only)
+        if: always() && github.ref == 'refs/heads/main' && steps.predictions.outcome == 'success' && hashFiles('site/index.html') != ''
+        continue-on-error: true
+        env:
+          LIVE_URL: ${{ vars.LIVE_SITE_URL || format('https://{0}.github.io/{1}', github.repository_owner, github.event.repository.name) }}
+        run: |
+          python tools/whatif/vision_shot.py --site site --out site/predictions/vision.png || echo "::warning title=No VISION picture::the JARVIS message goes out without it"
+          pic=""
+          if [ -f site/predictions/vision.png ]; then pic="--picture"; fi
+          fs="${{ vars.FLIGHT_SIM_REF || 'main' }}@$(git -C flight_sim_src rev-parse --short HEAD)"
+          python tools/whatif/jarvis_note.py --site site --live-url "$LIVE_URL" --flightsim "$fs" --out jarvis_note.md $pic --stamp "${GITHUB_SHA::7}"
 
       - name: Keep the pictures the browser test took
         if: always() && hashFiles('browser_test_pictures/*.png') != ''
@@ -278,12 +283,19 @@ jobs:
           } > comment.md
           gh api "repos/${{ github.repository }}/commits/${{ github.sha }}/comments" -F body=@comment.md >/dev/null
 
-      # Its own comment, so Discord shows it as a separate message next to the OpenRocket one.
-      - name: Comment the Jarvis note
+      # Its own message, separate from the OpenRocket one. With a Discord webhook (repository secret
+      # DISCORD_WEBHOOK_URL, tools/whatif/README.md) it goes straight to the channel with the VISION picture;
+      # without one it is a commit comment, which the Discord GitHub bot shows as text.
+      - name: Send the JARVIS message
         if: always() && hashFiles('jarvis_note.md') != ''
         env:
           GH_TOKEN: ${{ github.token }}
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
         run: |
+          if [ -n "$DISCORD_WEBHOOK_URL" ]; then
+            if python tools/whatif/discord_post.py --note jarvis_note.json --picture site/predictions/vision.png; then exit 0; fi
+            echo "::warning title=Discord post failed::sending the JARVIS message as a commit comment instead"
+          fi
           {
             cat jarvis_note.md
             echo
