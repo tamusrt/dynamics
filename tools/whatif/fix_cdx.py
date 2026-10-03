@@ -8,9 +8,12 @@ the tube lengths have come out wrong). This rewrites, from the .ork:
   nose cone   length and diameter
   body tubes  each tube's length (when both files have the same number of tubes; otherwise the
               difference in total length goes into the last tube), and every part's Location
-  fins        count, root chord, tip chord, span, sweep distance, thickness
+  fins        count, root chord, tip chord, span, sweep distance, thickness, and position
+              (RASAero's "Distance from the base of the tube": from the aft end of the fins' tube
+              to the fins' leading edge; 0 puts the whole fin behind the tube, the root chord
+              puts its trailing edge at the tube's end)
   boat tail   length, front and rear diameter
-Everything else in the file (fin Location, surface, launch site, simulations) is kept as it is.
+Everything else in the file (surface, launch site, simulations) is kept as it is.
 The old file is kept next to it as <name>.before-fix. Prints one line per value it changed.
 """
 
@@ -47,11 +50,14 @@ def read_ork_shape(path: Path) -> dict:
         root = ET.fromstring(archive.read(next((n for n in names if n.endswith(".ork")), names[0])))
     shape: dict = {"tubes": []}
     radius = 0.0
+    station = 0.0  # from the nose tip, in metres
     for stage in root.iter("stage"):
         for part in _kids(stage):
             if part.tag not in BODY:
                 continue
-            length = _num(part, "length") / IN
+            length_m = _num(part, "length")
+            start, station = station, station + length_m
+            length = length_m / IN
             if part.tag == "nosecone":
                 radius = _num(part, "aftradius")
                 shape["nose"] = {"Length": length, "Diameter": 2 * radius / IN}
@@ -63,7 +69,9 @@ def read_ork_shape(path: Path) -> dict:
                                  "RearDiameter": 2 * _num(part, "aftradius") / IN}
             for child in _kids(part):
                 if child.tag == "trapezoidfinset":
+                    lead = _fin_leading_edge(child, start, length_m)
                     shape["fins"] = {
+                        "Location": (start + length_m - lead) / IN,
                         "Count": _num(child, "fincount", 4), "Chord": _num(child, "rootchord") / IN,
                         "TipChord": _num(child, "tipchord") / IN, "Span": _num(child, "height") / IN,
                         "SweepDistance": _num(child, "sweeplength") / IN, "Thickness": _num(child, "thickness") / IN,
@@ -71,6 +79,25 @@ def read_ork_shape(path: Path) -> dict:
     if "nose" not in shape or "fins" not in shape or not shape["tubes"]:
         raise ValueError(f"{path}: needs a nose cone, body tubes and a trapezoidal fin set")
     return shape
+
+
+def _fin_leading_edge(fins: ET.Element, tube_start: float, tube_length: float) -> float:
+    """Where the fins' root leading edge is, from the nose tip (OpenRocket's axial offset rules)."""
+    root = _num(fins, "rootchord")
+    node = fins.find("axialoffset")
+    if node is None:
+        node = fins.find("position")
+    if node is None:
+        return tube_start
+    value = float(node.text or 0.0)
+    method = node.attrib.get("method", node.attrib.get("type", "top"))
+    if method == "absolute":
+        return value
+    if method == "bottom":
+        return tube_start + tube_length - root + value
+    if method == "middle":
+        return tube_start + 0.5 * (tube_length - root) + value
+    return tube_start + value
 
 
 def _fmt(value: float) -> str:
@@ -84,7 +111,8 @@ def _set(element: ET.Element, tag: str, value: float, where: str, changes: list[
         return
     old = _num(element, tag)
     if abs(old - value) > 5e-4:
-        changes.append(f"{where} {tag}: {_fmt(old)} -> {_fmt(value)} in" if tag != "Count" else f"{where} fin count: {_fmt(old)} -> {_fmt(value)}")
+        label = {"Location": "distance from the base of the tube"}.get(tag, tag)
+        changes.append(f"{where} {label}: {_fmt(old)} -> {_fmt(value)} in" if tag != "Count" else f"{where} fin count: {_fmt(old)} -> {_fmt(value)}")
         node.text = _fmt(value)
 
 
