@@ -45,7 +45,7 @@ def newest_thrust_curve(folder: Path) -> tuple[Path, str]:
     """
     files = [p for p in folder.glob("*") if p.is_file() and p.suffix.lower() in _MOTOR_SUFFIXES]
     if not files:
-        raise SystemExit(f"{folder}: no .eng or .rse thrust curve in it")
+        raise SystemExit(f"There is no .eng or .rse motor file in {folder}.")
     stems: dict[str, list[Path]] = {}
     for path in files:
         stems.setdefault(path.stem, []).append(path)
@@ -60,25 +60,25 @@ def plan(config_path: Path, site: Path) -> list[dict]:
     rockets = config["rockets"]
     default = config.get("default") or next(iter(rockets))
     if default not in rockets:
-        raise SystemExit(f"{config_path}: default rocket {default!r} is not in 'rockets'")
+        raise SystemExit(f"{config_path}: the default rocket {default!r} is not listed under 'rockets'.")
     base = config_path.parent
     builds = []
     for key, spec in rockets.items():
         missing = [k for k in _FILES if k not in spec]
         if missing or not ("motor" in spec or "motor_dir" in spec):
             needs = [*missing, *([] if "motor" in spec or "motor_dir" in spec else ["motor or motor_dir"])]
-            raise SystemExit(f"{config_path}: rocket {key!r} needs {', '.join(needs)}")
+            raise SystemExit(f"{config_path}: rocket {key!r} is missing these settings: {', '.join(needs)}.")
         paths = {k: base / spec[k] for k in (*_FILES, "rasaero") if k in spec}
         note = ""
         if "motor_dir" in spec:
             if not (base / spec["motor_dir"]).is_dir():
-                raise SystemExit(f"rocket {key!r}: motor_dir {base / spec['motor_dir']} is not a folder")
+                raise SystemExit(f"Rocket {key!r}: the motor_dir {base / spec['motor_dir']} is not a folder.")
             paths["motor"], note = newest_thrust_curve(base / spec["motor_dir"])
         else:
             paths["motor"] = base / spec["motor"]
         absent = [str(p) for p in paths.values() if not p.exists()]
         if absent:
-            raise SystemExit(f"rocket {key!r}: missing file(s): " + "; ".join(absent))
+            raise SystemExit(f"Rocket {key!r}: these files are missing: " + "; ".join(absent))
         out = site / "predictions" if key == default else site / "predictions" / key.lower()
         cmd = [
             sys.executable, "-m", "flight_sim.whatif.build",
