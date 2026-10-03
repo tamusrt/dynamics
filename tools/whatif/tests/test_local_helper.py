@@ -325,14 +325,19 @@ def test_without_publishing_nothing_is_committed(rig):
 
 
 @with_rig(with_ork=True)
-def test_the_cdx_is_checked_then_opened_in_rasaero_every_time(rig):
-    for corrects in (True, False):
-        rig.corrects = corrects
-        rig.post("sweep")
-        assert rig.wait_idle()["error"] is None
-        names = [" ".join(c) for c in rig.calls[-2:]]
-        assert "fix_cdx.py" in names[0] and "rasaero_sweep.py" in names[1]
-        assert rig.calls[-1][-2:] == ["--open", str(rig.repo / "aero_modeling" / "R" / "RASA" / "r.CDX1")]
+def test_a_corrected_cdx_stops_before_rasaero_so_it_can_be_opened_again(rig):
+    rig.post("sweep")
+    st = rig.wait_idle()
+    assert "Nothing was typed into RASAero" in st["error"] and "File, Open" in st["error"]
+    assert not any("rasaero_sweep.py" in " ".join(c) for c in rig.calls)
+
+
+@with_rig(with_ork=True, corrects=False)
+def test_a_matching_cdx_goes_to_the_rasaero_already_open(rig):
+    rig.post("sweep")
+    assert rig.wait_idle()["error"] is None
+    sweep = [c for c in rig.calls if "rasaero_sweep.py" in " ".join(c)][-1]
+    assert sweep[-2:] == ["--expect", "r.CDX1"] and "--open" not in sweep
 
 
 if __name__ == "__main__":
