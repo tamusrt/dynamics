@@ -38,18 +38,18 @@ def foreground_title() -> str | None:
 def run_sweep(out_dir: Path, window: str, countdown: int) -> int:
     """Switch to RASAero and dump alpha0.txt to alpha30.txt into ``out_dir``; returns an exit code."""
     if sys.platform != "win32":
-        print("The RASAero sweep only runs on Windows.", flush=True)
+        print("Step 3 only works on Windows, where RASAero runs.", flush=True)
         return 2
     try:
         import pyautogui  # noqa: PLC0415  (only this script needs it)
     except ImportError:
-        print("pyautogui is not installed: run  pip install pyautogui", flush=True)
+        print("pyautogui is not installed. Run: pip install pyautogui", flush=True)
         return 2
 
     out_dir.mkdir(parents=True, exist_ok=True)
     folder = out_dir.resolve().as_posix()
     for left in range(countdown, 0, -1):
-        print(f"Switching to RASAero in {left} s", flush=True)
+        print(f"Switching to RASAero in {left} s. Do not touch the keyboard or mouse.", flush=True)
         time.sleep(1)
 
     # alt-tab to rasaero
@@ -58,8 +58,8 @@ def run_sweep(out_dir: Path, window: str, countdown: int) -> int:
     title = foreground_title()
     if title is None or window.lower() not in title.lower():
         print(
-            f"Stopped: after Alt+Tab the window in front is {title!r}, not RASAero. "
-            "Click in RASAero, then click back to the page and try again.",
+            f"Stopped. The window in front was {title!r}, not RASAero. "
+            "Click inside RASAero, then click back on the page and press the Create button again.",
             flush=True,
         )
         return 3

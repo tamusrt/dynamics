@@ -182,14 +182,60 @@ jobs:
           path: flight_sim_src
 
       - name: Build the predictions page (main only)
+        id: predictions
         if: always() && github.ref == 'refs/heads/main' && steps.flightsim.outcome == 'success'
         continue-on-error: true          # a predictions-page problem must never block the history site
         run: |
           pip install ./flight_sim_src
           python tools/whatif/build_site.py --config aero_modeling/whatif_config.json --site site
 
-      - name: Upload the site for GitHub Pages
+      # ---- Real-browser check of the built site, before it goes live ----
+      # Opens the site in Chromium and clicks through History, Predictions and Vision (tools/whatif/tests/browser_test.py).
+      # If the predictions build above worked, the Predictions page and Vision must be there and working; if it
+      # did not (for example flight_sim could not be checked out), only the History tab is checked here.
+      # This step may fail without stopping the run: the step after it decides what to do about it.
+      - name: Install the browser for the check (main only)
         if: always() && github.ref == 'refs/heads/main' && hashFiles('site/index.html') != ''
+        run: |
+          pip install playwright
+          python -m playwright install --with-deps chromium
+
+      - name: Click through the built site in a real browser (main only)
+        id: browser
+        if: always() && github.ref == 'refs/heads/main' && hashFiles('site/index.html') != ''
+        continue-on-error: true
+        env:
+          REQUIRE: ${{ steps.predictions.outcome == 'success' && '--require-predictions' || '' }}
+        run: python tools/whatif/tests/browser_test.py --site site --shots browser_test_pictures --report browser_report.json $REQUIRE
+
+      # ---- If this push broke Predictions or Vision, the site keeps showing the last good ones ----
+      # Takes the Predictions page and Vision that are live now and puts them in the site in place of the broken
+      # new ones, and writes build_status.json, which makes the History page show a large red Error bar at the top
+      # saying what broke (tools/whatif/site_status.py). The site is still published. A problem in the History
+      # tab itself fails this step: nothing is published, and the site that is live now stays as it is.
+      # LIVE_SITE_URL is an optional repository variable, for a site that is not at <owner>.github.io/<repo>.
+      - name: Keep the last good Predictions and Vision if this push broke them (main only)
+        id: status
+        if: always() && github.ref == 'refs/heads/main' && hashFiles('site/index.html') != ''
+        env:
+          LIVE_URL: ${{ vars.LIVE_SITE_URL || format('https://{0}.github.io/{1}', github.repository_owner, github.event.repository.name) }}
+        run: |
+          python tools/whatif/site_status.py --site site --config aero_modeling/whatif_config.json \
+            --live-url "$LIVE_URL" \
+            --flightsim "${{ steps.flightsim.outcome }}" --predictions "${{ steps.predictions.outcome }}" \
+            --browser "${{ steps.browser.outcome }}" --report browser_report.json \
+            --commit "${{ github.sha }}" \
+            --run-url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+
+      - name: Keep the pictures the browser test took
+        if: always() && hashFiles('browser_test_pictures/*.png') != ''
+        uses: actions/upload-artifact@v7
+        with:
+          name: browser-test-pictures-${{ github.sha }}
+          path: browser_test_pictures/
+
+      - name: Upload the site for GitHub Pages
+        if: always() && github.ref == 'refs/heads/main' && hashFiles('site/index.html') != '' && steps.status.outcome != 'failure'
         uses: actions/upload-pages-artifact@v5
         with:
           path: site
@@ -208,6 +254,13 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           {
+            python - <<'PY'
+          import json, pathlib
+          status = pathlib.Path("site/build_status.json")
+          if status.is_file():
+              for problem in json.loads(status.read_text(encoding="utf-8")).get("problems", []):
+                  print(f"**ERROR ({problem['area']}):** {problem['message']}\n")
+          PY
             cat or_ci_results/report.md
             echo
             if [ -f or_ci_results/history/history.md ]; then cat or_ci_results/history/history.md; echo; fi
@@ -236,6 +289,21 @@ jobs:
         run: |
           python tools/whatif/tests/test_build_site.py
           python tools/whatif/tests/test_local_helper.py
+          python tools/whatif/tests/test_site_status.py
+      # The same click-through as above, on a made-up History site (no OpenRocket needed), so every
+      # push to any branch checks the History page, its tabs and the Jarvis lines in a real browser.
+      - name: Install the browser for the click-through
+        run: |
+          pip install playwright
+          python -m playwright install --with-deps chromium
+      - name: Click through a made-up site in a real browser
+        run: python tools/whatif/tests/browser_test.py --synthetic --shots browser_test_pictures
+      - name: Keep the pictures the browser test took
+        if: always() && hashFiles('browser_test_pictures/*.png') != ''
+        uses: actions/upload-artifact@v7
+        with:
+          name: browser-test-pictures-synthetic-${{ github.sha }}
+          path: browser_test_pictures/
 
   # Publishes the site built above. Runs only for pushes to main; the URL is shown on the run
   # and under Settings -> Pages. Pages must be set to "GitHub Actions" as the source (once).
