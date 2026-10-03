@@ -34,9 +34,10 @@ class Rig:
                               "rasaero": "R/RASA/r.CDX1", "alpha_dir": "R/RASA/alpha"}},
         }))
         self.calls = []
+        self.opened = []
         self.build_fails, self.convert_fails, self.hold, self.sweep_writes = build_fails, convert_fails, hold, sweep_writes
         ctx = local_helper.load_context(config, self.repo, "python")
-        self.helper = local_helper.Helper(ctx, runner=self.run, probe=lambda module: True)
+        self.helper = local_helper.Helper(ctx, runner=self.run, probe=lambda module: True, opener=self.opened.append)
         self.server = local_helper.serve(self.helper, 0)
         self.port = self.server.server_address[1]
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
@@ -67,20 +68,22 @@ class Rig:
             return 1 if self.build_fails else 0
         raise AssertionError(script)
 
-    def request(self, method, path, origin=ORIGIN, host=None):
+    def request(self, method, path, origin=ORIGIN, host=None, body=None):
         conn = http.client.HTTPConnection("127.0.0.1", self.port)
         headers = {"Host": host or f"127.0.0.1:{self.port}"}
         if origin:
             headers["Origin"] = origin
-        conn.request(method, path, headers=headers)
+        if body is not None:
+            headers["Content-Type"] = "application/json"
+        conn.request(method, path, body=body, headers=headers)
         response = conn.getresponse()
         body = response.read()
         result = (response.status, dict(response.getheaders()), body)
         conn.close()
         return result
 
-    def post(self, job, **kw):
-        status, headers, body = self.request("POST", f"/api/{job}", **kw)
+    def post(self, job, body=None, **kw):
+        status, headers, body = self.request("POST", f"/api/{job}", body=None if body is None else json.dumps(body), **kw)
         return status, json.loads(body or b"{}"), headers
 
     def status(self):
@@ -226,6 +229,37 @@ def test_a_missing_problem_blocks_the_job():
         assert rig.status()["updateAvailable"] is False
     finally:
         rig.close()
+
+
+@with_rig()
+def test_the_page_can_open_the_two_folders_and_nothing_else(rig):
+    st = rig.status()
+    ras = str(rig.repo / "aero_modeling" / "R" / "RASA")
+    assert st["folders"] == {"rasaero": ras, "repo": str(rig.repo)}
+    status, body, _ = rig.post("open", {"target": "rasaero"})
+    assert status == 200 and body == {"opened": "rasaero"} and rig.opened == [Path(ras)]
+    assert rig.post("open", {"target": "repo"})[0] == 200 and rig.opened[-1] == rig.repo
+    for bad in ({"target": "../../etc"}, {"target": "C:\\Windows"}, {"target": ""}, {}, {"path": str(rig.repo)}):
+        status, body, _ = rig.post("open", bad)
+        assert status == 400 and "can only open" in body["error"], (bad, status, body)
+    assert rig.post("open")[0] == 400  # no body at all
+    assert len(rig.opened) == 2
+
+
+@with_rig()
+def test_opening_a_folder_follows_the_same_origin_rules(rig):
+    assert rig.post("open", {"target": "repo"}, origin=None)[0] == 403
+    assert rig.post("open", {"target": "repo"}, origin="https://evil.example")[0] == 403
+    assert rig.post("open", {"target": "repo"}, host="evil.example")[0] == 403
+    assert rig.opened == []
+
+
+@with_rig()
+def test_opening_a_folder_that_is_missing_says_so(rig):
+    import shutil
+    shutil.rmtree(rig.repo / "aero_modeling" / "R" / "RASA")
+    status, body, _ = rig.post("open", {"target": "rasaero"})
+    assert status == 400 and "does not exist" in body["error"] and rig.opened == []
 
 
 def test_config_without_alpha_dir_is_refused():

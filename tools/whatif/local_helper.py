@@ -4,13 +4,15 @@
 
 A web page cannot press keys in RASAero or write files on your computer, so this small
 server does it and the page's buttons talk to it. It listens on 127.0.0.1 only, accepts
-requests only from the team's Pages site and from itself, and does exactly three things:
+requests only from the team's Pages site and from itself, and does exactly four things:
 
   sweep   run tools/whatif/rasaero_sweep.py (RASAero "Run Test" for alpha 0 to 30)
   update  turn the 31 alpha files into the aero CSV, rebuild the page and 3D flight
           (tools/whatif/build_site.py, as the GitHub Action does), restoring the old
           CSV if the build fails
   cancel  stop the job that is running
+  open    show one of two folders in the file manager: the one that holds the RASAero
+          save file, or the dynamics folder (the page's "Open the folder" buttons)
 
 It also serves the rebuilt site at http://127.0.0.1:8765/predictions/ so the updated page
 can be looked at before anything is committed. Publishing is a normal commit and push of
@@ -42,6 +44,8 @@ ALPHA_COUNT = 31
 DEFAULT_PORT = 8765
 DEFAULT_ORIGIN = "https://tamusrt.github.io"
 Runner = Callable[[list, Callable[[str], None], threading.Event], int]
+Opener = Callable[[Path], None]
+OPEN_TARGETS = ("rasaero", "repo")
 
 
 @dataclass
@@ -69,10 +73,10 @@ def load_context(config_path: Path, repo: Path, python: str, key: str | None = N
     rockets = config["rockets"]
     key = key or config.get("default") or next(iter(rockets))
     if key not in rockets:
-        raise SystemExit(f"{config_path}: no rocket {key!r}")
+        raise SystemExit(f"{config_path}: there is no rocket named {key!r}.")
     spec = rockets[key]
     if "alpha_dir" not in spec:
-        raise SystemExit(f"{config_path}: rocket {key!r} needs an 'alpha_dir' (where RASAero's files go)")
+        raise SystemExit(f"{config_path}: rocket {key!r} needs an 'alpha_dir' setting (the folder for RASAero's files).")
     base = config_path.parent
     helper = config.get("helper", {})
     default = key == (config.get("default") or next(iter(rockets)))
@@ -128,23 +132,34 @@ def import_probe(python: str, module: str) -> bool:
         return False
 
 
+def open_in_file_manager(folder: Path) -> None:
+    """Show ``folder`` in Explorer, Finder or the desktop's file manager."""
+    if sys.platform == "win32":
+        os.startfile(folder)  # type: ignore[attr-defined]  # noqa: S606
+    else:
+        subprocess.Popen(["open" if sys.platform == "darwin" else "xdg-open", str(folder)])  # noqa: S603, S607
+
+
 class Helper:
     """The jobs, one at a time, and the status the page polls."""
 
-    def __init__(self, ctx: Context, runner: Runner | None = None, probe: Callable[[str], bool] | None = None) -> None:
+    def __init__(
+        self, ctx: Context, runner: Runner | None = None, probe: Callable[[str], bool] | None = None, opener: Opener | None = None
+    ) -> None:
         self.ctx = ctx
+        self.opener = opener or open_in_file_manager
         self.runner = runner or (lambda cmd, on_line, cancel: subprocess_runner(cmd, on_line, cancel, ctx.repo))
         probe = probe or (lambda module: import_probe(ctx.python, module))
         self.sweep_problem: str | None = None
         self.update_problem: str | None = None
         if sys.platform != "win32" and runner is None:
-            self.sweep_problem = "The RASAero sweep only runs on Windows."
+            self.sweep_problem = "Step 3 only works on Windows, where RASAero runs."
         elif not probe("pyautogui"):
-            self.sweep_problem = "pyautogui is missing: run  pip install pyautogui  with the Python that runs the helper."
+            self.sweep_problem = "pyautogui is missing. In a terminal run: pip install pyautogui. Then restart the helper."
         if not probe("flight_sim.whatif.ras_csv"):
             self.update_problem = (
-                "The Python that runs the helper cannot import flight_sim.whatif.ras_csv: "
-                "install the flight_sim folder (pip install -e <path>) from the branch that has it."
+                "Python cannot find flight_sim. In a terminal run: pip install -e <your flight_sim folder>. "
+                "Use the flight_sim branch that has the Update CSV code. Then restart the helper."
             )
         self.lock = threading.Lock()
         self.cancel_event = threading.Event()
@@ -163,6 +178,24 @@ class Helper:
             if path.is_file() and path.stat().st_size > 0:
                 found[n] = path
         return found
+
+    def folders(self) -> dict:
+        """The two folders the page may open, by name: the RASAero save file's folder, and the repo."""
+        ras = self.ctx.cdx.parent if self.ctx.cdx else self.ctx.alpha_dir.parent
+        return {"rasaero": ras, "repo": self.ctx.repo}
+
+    def open_folder(self, target: str) -> str | None:
+        """Show a folder in the file manager. Only the names in OPEN_TARGETS work. Returns an error text, or None."""
+        folder = self.folders().get(target) if target in OPEN_TARGETS else None
+        if folder is None:
+            return "The helper can only open the RASAero folder or the dynamics folder."
+        if not folder.is_dir():
+            return f"The folder {folder} does not exist."
+        try:
+            self.opener(folder)
+        except OSError as exc:
+            return f"Could not open {folder}: {exc}"
+        return None
 
     def _rel(self, path: Path) -> str:
         try:
@@ -198,6 +231,7 @@ class Helper:
                 "updateAvailable": self.update_problem is None,
                 "updateProblem": self.update_problem,
                 "publish": publish,
+                "folders": {name: str(path) for name, path in self.folders().items()},
             }
 
     # ---- jobs ----
@@ -208,7 +242,7 @@ class Helper:
             return problem
         with self.lock:
             if self.busy:
-                return f"Still busy with the {self.busy}."
+                return "Still busy: wait for the current step to finish."
             self.busy, self.error, self.progress = job, None, 0
             self.log.clear()
             self.cancel_event = threading.Event()
@@ -239,7 +273,7 @@ class Helper:
             self.error = error
             if error is None:
                 self.finished = {"job": job, "time": iso(datetime.now(timezone.utc).timestamp())}
-                self.log.append("Done." if job == "update" else f"Done: {ALPHA_COUNT} RASAero files written.")
+                self.log.append("Done." if job == "update" else f"Done: {ALPHA_COUNT} RASAero files created.")
 
     def _step(self, cmd: list) -> int:
         return self.runner(cmd, self._say, self.cancel_event)
@@ -249,9 +283,9 @@ class Helper:
         code = self._step([ctx.python, "-u", HERE / "rasaero_sweep.py", "--out", ctx.alpha_dir, "--window", ctx.window, "--countdown", "5"])
         if code != 0:
             last = [line for line in self.log if line.strip()][-1:] or ["no output"]
-            return f"The RASAero sweep stopped: {last[0]}"
+            return f"Step 3 stopped: {last[0]}"
         if len(self.alpha_files()) < ALPHA_COUNT:
-            return f"The sweep ended but only {len(self.alpha_files())} of {ALPHA_COUNT} files exist."
+            return f"Step 3 ended, but only {len(self.alpha_files())} of {ALPHA_COUNT} files exist. Run it again."
         return None
 
     def _update(self) -> str | None:
@@ -259,18 +293,18 @@ class Helper:
         files = self.alpha_files()
         if len(files) < ALPHA_COUNT:
             missing = [n for n in range(ALPHA_COUNT) if n not in files]
-            return f"Only {len(files)} of {ALPHA_COUNT} RASAero files are in {ctx.alpha_dir} (missing alpha {', '.join(map(str, missing[:6]))}{' ...' if len(missing) > 6 else ''}). Run step 1 first."
+            return f"Only {len(files)} of {ALPHA_COUNT} RASAero files found in {ctx.alpha_dir}. Missing: alpha {', '.join(map(str, missing[:6]))}{' ...' if len(missing) > 6 else ''}. Run step 3 first."
         if ctx.cdx and ctx.cdx.exists() and min(p.stat().st_mtime for p in files.values()) < ctx.cdx.stat().st_mtime - 60:
-            self._say(f"Warning: some RASAero files are older than {ctx.cdx.name}; if the rocket changed since, run step 1 again.")
+            self._say(f"Warning: some RASAero files are older than {ctx.cdx.name}. If the rocket changed since then, run step 3 again.")
         old = ctx.csv.read_bytes() if ctx.csv.exists() else None
         temp = ctx.csv.with_name(ctx.csv.name + ".tmp")
         self._say("Turning the RASAero files into the CSV")
         code = self._step([ctx.python, "-m", "flight_sim.whatif.ras_csv", "--in", ctx.alpha_dir, "--out", temp])
         if code != 0:
             temp.unlink(missing_ok=True)
-            return "Converting the RASAero files failed; the CSV is unchanged."
+            return "Could not turn the RASAero files into a CSV. The CSV is unchanged. See the lines above."
         os.replace(temp, ctx.csv)
-        self._say("Rebuilding the model and rerunning the 6-DOF sim")
+        self._say("Rebuilding the page (Jarvis and the detailed flight). This takes a few minutes.")
         code = self._step([ctx.python, HERE / "build_site.py", "--config", ctx.config, "--site", ctx.site])
         if code != 0:
             if old is not None:
@@ -323,12 +357,12 @@ def make_handler(helper: Helper) -> type:
             """The request's allowed origin ('' when there is none); None after sending a refusal."""
             origin = self.headers.get("Origin")
             if not self._host_ok():
-                self._json(403, {"error": "wrong Host header"})
+                self._json(403, {"error": "Blocked: wrong Host header."})
                 return None
             if origin is None and not need_origin:
                 return ""
             if origin not in self._origins():
-                self._json(403, {"error": "origin not allowed"})
+                self._json(403, {"error": "Blocked: this page is not allowed to control the helper."})
                 return None
             return origin
 
@@ -362,7 +396,15 @@ def make_handler(helper: Helper) -> type:
             if origin is None:
                 return
             job = urlparse(self.path).path.removeprefix("/api/")
-            if job == "cancel":
+            if job == "open":
+                try:
+                    size = min(int(self.headers.get("Content-Length") or 0), 1024)
+                    target = str(json.loads(self.rfile.read(size) or b"{}").get("target", ""))
+                except (ValueError, AttributeError):
+                    target = ""
+                error = helper.open_folder(target)
+                self._json(400 if error else 200, {"error": error} if error else {"opened": target}, origin)
+            elif job == "cancel":
                 helper.cancel()
                 self._json(200, {"cancelled": True}, origin)
             elif job in ("sweep", "update"):
@@ -397,7 +439,7 @@ def main(argv: list | None = None) -> int:
     helper = Helper(ctx)
     ctx.site.mkdir(parents=True, exist_ok=True)
     if not args.no_build and helper.update_problem is None and not (ctx.site / ctx.page_url.strip("/") / "index.html").exists():
-        print("Building the page once so there is something to show ...", flush=True)
+        print("Building the page once, so there is something to show. This takes a few minutes.", flush=True)
         subprocess_runner([ctx.python, HERE / "build_site.py", "--config", ctx.config, "--site", ctx.site], print, threading.Event(), repo)
     server = serve(helper, ctx.port)
     url = f"http://127.0.0.1:{ctx.port}{ctx.page_url}"
@@ -407,7 +449,7 @@ def main(argv: list | None = None) -> int:
     for problem in (helper.sweep_problem, helper.update_problem):
         if problem:
             print(f"  NOTE: {problem}")
-    print("Leave this window open and use the Update CSV section at the bottom of the page. Ctrl+C stops it.", flush=True)
+    print("Leave this window open. Use the Update CSV section at the bottom of the page. Press Ctrl+C to stop.", flush=True)
     try:
         server.serve_forever()
     except KeyboardInterrupt:

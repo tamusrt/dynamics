@@ -1419,15 +1419,27 @@ SITE_HTML = r"""<!doctype html>
 <script src="https://cdn.plot.ly/plotly-basic-2.35.2.min.js" charset="utf-8"></script>
 <style>
   :root { color-scheme: light dark; --bg:#fff; --fg:#1f2328; --muted:#59636e; --card:#f6f8fa; --line:#d0d7de;
-          --up:#1a7f37; --down:#cf222e; --flat:#8c959f; --accent:#0969da; --hover:#eaeef2; }
+          --up:#1a7f37; --down:#cf222e; --flat:#8c959f; --accent:#0969da; --hover:#eaeef2; --errbg:#cf222e; --errline:#82071e; }
   @media (prefers-color-scheme: dark) { :root { --bg:#0d1117; --fg:#e6edf3; --muted:#9198a1; --card:#161b22; --line:#30363d;
-          --up:#3fb950; --down:#f85149; --flat:#6e7681; --accent:#58a6ff; --hover:#21262d; } }
+          --up:#3fb950; --down:#f85149; --flat:#6e7681; --accent:#58a6ff; --hover:#21262d; --errbg:#b62324; --errline:#f85149; } }
   * { box-sizing:border-box; }
   html, body { height:100%; }
   body { margin:0; display:flex; flex-direction:column; overflow:hidden; background:var(--bg); color:var(--fg); font:14px/1.45 -apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif; }
+  .bigerror { flex:none; background:var(--errbg); color:#fff; padding:14px 20px 16px; border-bottom:4px solid var(--errline); }
+  .bigerror[hidden] { display:none; }
+  .bigerror .be-title { font-size:30px; font-weight:800; letter-spacing:.03em; text-transform:uppercase; margin-right:14px; }
+  .bigerror .be-sub { font-size:17px; opacity:.95; }
+  .bigerror ul { margin:8px 0 6px 22px; padding:0; } .bigerror li { font-size:18px; font-weight:600; margin:4px 0; }
+  .bigerror a { color:#fff; font-size:15px; font-weight:600; text-decoration:underline; }
   header { flex:none; padding:12px 16px; border-bottom:1px solid var(--line); display:flex; flex-wrap:wrap; gap:6px 16px; align-items:baseline; }
   header h1 { font-size:18px; margin:0; } header .sub { color:var(--muted); font-size:13px; }
+  .hctl { margin-left:auto; display:flex; flex-wrap:wrap; gap:6px 16px; align-items:baseline; }   /* units and stability stay together when the header wraps */
   .layout { flex:1; min-height:0; display:grid; grid-template-columns:300px 1fr; }
+  .layout.wide { grid-template-columns:1fr; }       /* Predictions and Vision fill the page: no list on the left */
+  .layout.wide nav { display:none; }
+  main.frame { padding:0; overflow:hidden; }
+  main.frame iframe { flex:1 1 auto; width:100%; height:100%; border:0; display:block; background:var(--bg); }
+  .framemsg { margin:24px 16px; color:var(--muted); }
   nav { border-right:1px solid var(--line); background:var(--card); padding:10px 8px; overflow:auto; }
   main { padding:14px 16px 24px; min-width:0; min-height:0; overflow:auto; display:flex; flex-direction:column; }
   main > section { display:flex; flex-direction:column; flex:1; min-height:0; }
@@ -1507,20 +1519,27 @@ SITE_HTML = r"""<!doctype html>
   td .d { color:var(--muted); font-size:11px; margin-left:4px; } td .d.up { color:var(--up); } td .d.down { color:var(--down); }
   .legend { color:var(--muted); font-size:12px; margin-top:14px; }
   a { color:var(--accent); }
-  @media (max-width: 760px) { body { overflow:auto; } main > section > .fwrap { flex-direction:column; } .ypanel { width:auto; } .layout { grid-template-columns:1fr; } nav { border-right:0; border-bottom:1px solid var(--line); max-height:45vh; } .chartbox, .chartbox.tall { min-height:340px; } }
+  @media (max-width: 760px) { main.frame iframe { min-height:85vh; } body { overflow:auto; } main > section > .fwrap { flex-direction:column; } .ypanel { width:auto; } .layout { grid-template-columns:1fr; } nav { border-right:0; border-bottom:1px solid var(--line); max-height:45vh; } .chartbox, .chartbox.tall { min-height:340px; } }
 </style>
 </head>
 <body>
+<div class="bigerror" id="bigerror" role="alert" hidden>
+  <div><span class="be-title">Error</span><span class="be-sub" id="be-sub"></span></div>
+  <ul id="be-list"></ul>
+  <a id="be-link" target="_blank" rel="noopener" hidden>See what went wrong in the build</a>
+</div>
 <header>
   <h1>OpenRocket performance</h1>
-  <div class="tabs"><button id="tab-history">History</button><button id="tab-flight">Flight plots</button><button id="tab-changelog">Changelog</button><a id="tab-whatif" href="predictions/" hidden>Predictions</a></div>
+  <div class="tabs"><button id="tab-history">History</button><button id="tab-flight">Flight plots</button><button id="tab-changelog">Changelog</button><button id="tab-predictions">Predictions</button><button id="tab-vision">Vision</button></div>
   <span class="sub" id="sub"></span>
-  <label class="sub" style="margin-left:auto">units <select id="units"><option value="metric">metric (m, m/s, kPa)</option><option value="imperial">imperial (ft, ft/s, psi)</option></select></label>
-  <label class="sub">stability <select id="stab"><option value="cal">calibers</option><option value="pct">% of body length</option></select></label>
+  <span class="hctl">
+    <label class="sub" id="units-label">units <select id="units"><option value="metric">metric (m, m/s, kPa)</option><option value="imperial">imperial (ft, ft/s, psi)</option></select></label>
+    <label class="sub" id="stab-label">stability <select id="stab"><option value="cal">calibers</option><option value="pct">% of body length</option></select></label>
+  </span>
 </header>
-<div class="layout">
+<div class="layout" id="layout">
   <nav id="nav"></nav>
-  <main>
+  <main id="main">
    <section id="view-flight" hidden>
     <div class="row" id="fpresets"></div>
     <div class="row" id="fcontrols"></div>
@@ -1539,8 +1558,11 @@ SITE_HTML = r"""<!doctype html>
     <div class="row" id="metrics"></div>
     <div class="chartbox"><div id="hplot" style="position:absolute;inset:10px"></div><div class="empty" id="empty" hidden>Select simulations in the list.</div></div>
     <div id="latest"></div>
+    <p class="legend" id="jarvisnote" hidden></p>
     <p class="legend">Three views: <b>Absolute</b> and <b>Δ line</b> plot each simulation over commit date; <b>Δ bars</b> puts commits on the x-axis with one bar per commit, green for an increase and red for a decrease from the previous version (outlined in the simulation's colour when several are ticked). Hover for the commit, author, message and change; click a point or bar to open the commit on GitHub; drag to zoom, double-click to reset. Tick several simulations to compare them (wind cases, engine curves, designs). Views are linkable: the URL updates as you select. Simulated headlessly with OpenRocket 24.12, wind turbulence off, fixed seed. Generated by <code>or_ci.py history --site</code>.</p>
    </section>
+   <section id="view-predictions" hidden></section>
+   <section id="view-vision" hidden></section>
   </main>
 </div>
 <script id="data" type="application/json">__DATA__</script>
@@ -1559,8 +1581,9 @@ const ALL = [];  // {id, file, sim, rows}
 for (const [file, sims] of Object.entries(DATA.designs)) for (const [sim, rows] of Object.entries(sims)) ALL.push({ id: `${file}|${sim}`, file, sim, rows });
 const VIEWS = [['abs', 'Absolute'], ['dline', 'Δ line'], ['dbar', 'Δ bars']];
 const state = { metric: DATA.metrics[0].key, view: 'abs', sel: new Set(), units: DATA.default_units || 'metric', stab: DATA.default_stability || 'cal',
-                tab: 'history', fx: 'altitude', fys: [{ key: 'stability', side: 'l' }], fapo: true, fprev: false };   // fys: Y variables in order, side l|r
+                tab: 'history', fx: 'altitude', fys: [{ key: 'stability', side: 'l' }], fapo: true, fprev: false, jarvis: true };   // fys: Y variables in order, side l|r
 const FVARS = DATA.flight_vars || {};
+const FRAMES = { predictions: 'predictions/index.html', vision: 'predictions/viewer/index.html' };   // pages shown inside this one
 // Y variables travel in the URL as 'altitude,velocity_total:r' (':r' = right axis)
 const parseFys = s => s.split(',').map(x => { const [key, side] = x.split(':'); return { key, side: side === 'r' ? 'r' : 'l' }; }).filter(f => FVARS[f.key]);
 const fysText = fys => fys.map(f => f.key + (f.side === 'r' ? ':r' : '')).join(',');
@@ -1586,11 +1609,12 @@ function readHash() {
   state.view = VIEWS.some(v => v[0] === p.get('view')) ? p.get('view') : (p.get('delta') === '1' ? 'dline' : 'abs');
   if (p.get('units') === 'metric' || p.get('units') === 'imperial') state.units = p.get('units');
   if (p.get('stab') === 'cal' || p.get('stab') === 'pct') state.stab = p.get('stab');
-  state.tab = ['flight', 'changelog'].includes(p.get('tab')) ? p.get('tab') : 'history';
+  state.tab = ['flight', 'changelog', 'predictions', 'vision'].includes(p.get('tab')) ? p.get('tab') : 'history';
   if (FVARS[p.get('fx')]) state.fx = p.get('fx');
   if (p.has('fy')) { const fys = parseFys(p.get('fy')); if (FVARS[p.get('fy2')]) fys.push({ key: p.get('fy2'), side: 'r' }); state.fys = fys; }   // fy2: old links
   if (p.has('apo')) state.fapo = p.get('apo') !== '0';
   state.fprev = p.get('prev') === '1';
+  state.jarvis = p.get('jarvis') !== '0';
   applyStab();
   const s = p.get('sel');
   // names may contain '%' ("Seymour_10 [85%]"); a link re-encoded by a chat app must not crash the page
@@ -1602,7 +1626,7 @@ function writeHash() {
   const p = new URLSearchParams();
   p.set('tab', state.tab); p.set('units', state.units); p.set('stab', state.stab);
   if (state.tab === 'flight') { p.set('fx', state.fx); p.set('fy', fysText(state.fys)); p.set('apo', state.fapo ? '1' : '0'); if (state.fprev) p.set('prev', '1'); }
-  else { p.set('metric', state.metric); p.set('view', state.view); }
+  else if (!FRAMES[state.tab]) { p.set('metric', state.metric); p.set('view', state.view); if (!state.jarvis) p.set('jarvis', '0'); }
   p.set('sel', [...state.sel].map(encodeURIComponent).join(','));
   history.replaceState(null, '', '#' + p.toString());
 }
@@ -1665,6 +1689,10 @@ function buildMetrics() {
   for (const [key, text] of VIEWS) { const b = document.createElement('button'); b.textContent = text; b.className = key === state.view ? 'on' : '';
     b.title = key === 'abs' ? 'Value of each version over commit date' : key === 'dline' ? 'Change from the previous version over commit date' : 'Change from the previous version, one bar per commit (green up, red down)';
     b.onclick = () => { state.view = key; update(); }; mrow.appendChild(b); }
+  if (jarvisShown()) {
+    const j = document.createElement('button'); j.textContent = 'Jarvis'; j.className = state.jarvis ? 'on' : ''; j.id = 'jarvis-toggle'; j.style.marginLeft = '10px';
+    j.title = 'Draw Jarvis, the quick model, as a dashed line next to OpenRocket'; j.onclick = () => { state.jarvis = !state.jarvis; update(); }; mrow.appendChild(j);
+  }
 }
 
 // ---- history chart (Plotly) ----
@@ -1689,6 +1717,30 @@ function openCommit(div) {   // click a point or bar -> the commit on GitHub
 function seriesOf(a, key) {   // successful versions with this metric, in display units, with per-point delta
   const ok = a.rows.filter(r => r.ok && r.m[key] != null);
   return ok.map((r, i) => { const v = val(r, key); return { r, v, d: i ? v - val(ok[i - 1], key) : null }; });
+}
+// Jarvis, the quick model, flown on every commit: jarvis_by_commit.json, written next to this page by tools/whatif/build_site.py
+// ({designs: {file: {note, skipped, sims: {sim: {sha: {metric: value}}}}}}, the metrics in the same units as the data above).
+let JARVIS = null;
+function setJarvis(j) { JARVIS = j && j.designs ? j : null; if (state.tab === 'history') update(); }
+function loadJarvis() {
+  if (typeof fetch !== 'function') return;
+  try { fetch('jarvis_by_commit.json').then(r => r.ok ? r.json() : null).then(setJarvis).catch(() => {}); } catch (e) { /* no Jarvis lines */ }
+}
+function jarvisOf(a) { const d = JARVIS && JARVIS.designs[a.file]; return d && d.sims && d.sims[a.sim] || null; }
+const jarvisShown = () => state.view !== 'dbar' && ALL.some(a => state.sel.has(a.id) && jarvisOf(a));
+function jarvisSeries(a, key) {   // Jarvis's number for each version it was flown on, in display units, with OpenRocket's alongside
+  const by = jarvisOf(a); if (!by) return [];
+  const f = specOf(key).factor, orv = new Map(seriesOf(a, key).map(p => [p.r.sha, p.v]));
+  const pts = a.rows.filter(r => by[r.sha] && by[r.sha][key] != null).map(r => ({ r, v: by[r.sha][key] * f, o: orv.has(r.sha) ? orv.get(r.sha) : null }));
+  return pts.map((p, i) => Object.assign(p, { d: i ? p.v - pts[i - 1].v : null }));
+}
+function jarvisNote() {
+  const box = document.getElementById('jarvisnote'), on = state.tab === 'history' && state.jarvis && jarvisShown();
+  box.hidden = !on; if (!on) return;
+  const notes = new Set(); let skipped = 0;
+  for (const a of ALL) if (state.sel.has(a.id) && jarvisOf(a)) { const d = JARVIS.designs[a.file]; notes.add(d.note); skipped += d.skipped || 0; }
+  box.textContent = 'Dashed lines are Jarvis, the quick model. ' + [...notes].filter(Boolean).join(' ') + '. Jarvis is a fast estimate: it should follow the way OpenRocket moves from version to version, not match every number.'
+    + (skipped ? ` ${skipped} older version${skipped > 1 ? 's' : ''} could not be flown.` : '');
 }
 const dirColor = (d, tol) => d == null || Math.abs(d) < tol ? css('--flat') : d > 0 ? css('--up') : css('--down');
 
@@ -1724,13 +1776,20 @@ function draw() {
   const delta = state.view === 'dline', tol = Math.pow(10, -spec.dec) / 2, traces = [];
   for (const a of ALL) {
     if (!state.sel.has(a.id)) continue;
-    const pts = seriesOf(a, state.metric); if (!pts.length) continue;
-    const col = colorOf.get(a.id);
-    traces.push({ type: 'scatter', mode: 'lines+markers', name: simLabel(a),
+    const pts = seriesOf(a, state.metric), col = colorOf.get(a.id);
+    if (pts.length) traces.push({ type: 'scatter', mode: 'lines+markers', name: simLabel(a),
                   x: pts.map(p => new Date(p.r.t * 1000).toISOString()), y: pts.map(p => delta ? (p.d ?? 0) : p.v), customdata: pts.map(p => ({ sha: p.r.sha })),
                   line: { color: col, width: 2 }, marker: { size: 9, color: pts.map(p => dirColor(p.d, tol)), line: { color: col, width: 1.5 } },
                   hovertemplate: pts.map(p => `<b>${p.r.short}</b> \u00b7 ${p.r.date} \u00b7 ${p.r.author}<br>${simLabel(a)}: ${fmt(p.v, spec.dec)}${unit}`
                                    + (p.d != null ? `<br>\u0394 vs previous: ${p.d >= 0 ? '+' : ''}${fmt(p.d, spec.dec)}${unit}` + (p.v - p.d ? ` (${(p.d / (p.v - p.d) * 100).toFixed(1)}%)` : '') : '')
+                                   + `<br>${p.r.message}<extra></extra>`) });
+    const jp = state.jarvis ? jarvisSeries(a, state.metric) : [];
+    if (jp.length) traces.push({ type: 'scatter', mode: 'lines+markers', name: simLabel(a) + ' (Jarvis)',
+                  x: jp.map(p => new Date(p.r.t * 1000).toISOString()), y: jp.map(p => delta ? (p.d ?? 0) : p.v), customdata: jp.map(p => ({ sha: p.r.sha })),
+                  line: { color: col, width: 2, dash: 'dash' }, marker: { size: 7, symbol: 'diamond', color: col },
+                  hovertemplate: jp.map(p => `<b>${p.r.short}</b> \u00b7 ${p.r.date} \u00b7 ${p.r.author}<br>${simLabel(a)}, Jarvis: ${fmt(p.v, spec.dec)}${unit}`
+                                   + (p.o != null ? `<br>OpenRocket: ${fmt(p.o, spec.dec)}${unit} (Jarvis ${p.v - p.o >= 0 ? '+' : ''}${fmt(p.v - p.o, spec.dec)})` : '')
+                                   + (p.d != null ? `<br>\u0394 vs previous Jarvis: ${p.d >= 0 ? '+' : ''}${fmt(p.d, spec.dec)}${unit}` : '')
                                    + `<br>${p.r.message}<extra></extra>`) });
   }
   empty.hidden = traces.length > 0; empty.textContent = 'Select simulations in the list.';
@@ -2044,12 +2103,68 @@ function drawChangelog() {
   box.innerHTML = h || '<p class="legend">No changelog yet: it starts with the second committed version of a design.</p>';
 }
 
-const TABS = { history: 'tab-history', flight: 'tab-flight', changelog: 'tab-changelog' };
-// The predictions page is built by tools/whatif/build_site.py; show its link only when it was deployed.
-if (typeof fetch === 'function') fetch('predictions/index.html', { method: 'HEAD' }).then(r => { if (r.ok) document.getElementById('tab-whatif').hidden = false; }).catch(() => {});
+const TABS = { history: 'tab-history', flight: 'tab-flight', changelog: 'tab-changelog', predictions: 'tab-predictions', vision: 'tab-vision' };
+// Predictions (Jarvis) and Vision (see FRAMES) are pages built by tools/whatif/build_site.py. They open inside this page, in frames, so
+// the tabs above keep working. The frame is made the first time its tab opens, so nothing loads before it is wanted.
+const FRAMES_MISSING = { predictions: 'The Predictions page has not been built yet. It appears here after the next successful run of the GitHub Action on main (see tools/whatif/README.md).',
+                         vision: 'Vision has not been built yet. It appears here together with the Predictions page, after the next successful run of the GitHub Action on main.' };
+const frames = {};
+function frameHash() { return 'embed=1&units=' + state.units + '&stab=' + state.stab; }
+// ---- the big Error bar: a push that broke something (build_status.json, written by the workflow) or a tab that cannot be loaded ----
+const AREAS = { predictions: 'Predictions', vision: 'Vision', build: 'Predictions and Vision', history: 'History', jarvis: 'Jarvis lines' };
+const SHOWN = { last_good: p => ' Showing the last good version' + (p.since ? ' from ' + p.since : '') + ' instead.',
+                as_built: () => ' There is no earlier version, so this is the new one as built.', none: () => ' There is no earlier version to show.' };
+let BUILD = null;
+const FRAME_ERRORS = {};
+function errorLines() {
+  const out = [];
+  if (BUILD) for (const p of BUILD.problems) {
+    out.push({ area: p.area, text: (AREAS[p.area] || p.area) + ': ' + p.message.trim().replace(/\.+$/, '') + '.' + (SHOWN[p.shown] ? SHOWN[p.shown](p) : '') });
+  }
+  for (const [tab, text] of Object.entries(FRAME_ERRORS)) if (!out.some(o => o.area === tab || o.area === 'build')) out.push({ area: tab, text: AREAS[tab] + ': ' + text });
+  return out;
+}
+function renderBigError() {
+  const box = document.getElementById('bigerror'), list = document.getElementById('be-list'), link = document.getElementById('be-link'), items = errorLines();
+  box.hidden = !items.length; list.innerHTML = '';
+  for (const o of items) { const li = document.createElement('li'); li.textContent = o.text; list.appendChild(li); }
+  document.getElementById('be-sub').textContent = BUILD && BUILD.commit ? 'The latest push (' + String(BUILD.commit).slice(0, 7) + ') broke something.' : '';
+  link.hidden = !(BUILD && BUILD.run_url); if (BUILD && BUILD.run_url) link.href = BUILD.run_url;
+}
+function setBuildStatus(s) { BUILD = s && Array.isArray(s.problems) && s.problems.length ? s : null; renderBigError(); }
+function loadBuildStatus() {
+  if (typeof fetch !== 'function') return;
+  try { fetch('build_status.json', { cache: 'no-store' }).then(r => r.ok ? r.json() : null).then(setBuildStatus).catch(() => {}); } catch (e) { /* no status file: nothing to report */ }
+}
+function frameMissing(tab) {
+  const holder = document.getElementById('view-' + tab); holder.innerHTML = ''; delete frames[tab];
+  const d = document.createElement('p'); d.className = 'framemsg'; d.textContent = FRAMES_MISSING[tab]; holder.appendChild(d);
+  FRAME_ERRORS[tab] = 'the page is missing (404), so it cannot be shown.'; renderBigError();
+}
+function syncPredictions() {   // units and stability are chosen in this page's header; pass them on to the frame
+  const f = frames.predictions; if (!f || !f.loaded) return;
+  try {
+    const here = f.contentWindow.location.hash.slice(1);
+    const p = new URLSearchParams(here); p.set('units', state.units); p.set('stab', state.stab); p.set('embed', '1');
+    if (p.toString() !== here) f.contentWindow.location.hash = p.toString();
+  } catch (e) { /* a frame we may not look into (a file opened from disk): it keeps its own choice */ }
+}
+function showFrame(tab) {
+  if (frames[tab]) { if (tab === 'predictions') syncPredictions(); return; }
+  const holder = document.getElementById('view-' + tab); holder.innerHTML = '';
+  const f = document.createElement('iframe');
+  f.title = tab === 'vision' ? 'Vision: the flight in 3D' : 'Jarvis predictions';
+  f.src = FRAMES[tab] + (tab === 'predictions' ? '#' + frameHash() : '');
+  f.onload = () => { f.loaded = true; if (tab === 'predictions') syncPredictions(); };
+  frames[tab] = f; holder.appendChild(f);
+  if (typeof fetch === 'function') fetch(FRAMES[tab], { method: 'HEAD' }).then(r => { if (!r.ok) frameMissing(tab); }).catch(() => {});
+}
 for (const [name, id] of Object.entries(TABS)) document.getElementById(id).onclick = () => { state.tab = name; update(); };
 function update() {
   unitSel.value = state.units; stabSel.value = state.stab; assignColors(); writeHash(); refreshNav();
+  const framed = !!FRAMES[state.tab];
+  document.getElementById('layout').classList.toggle('wide', framed); document.getElementById('main').classList.toggle('frame', framed);
+  document.getElementById('units-label').hidden = document.getElementById('stab-label').hidden = state.tab === 'vision';   // Vision has no units to choose
   for (const [name, id] of Object.entries(TABS)) {
     document.getElementById(id).className = state.tab === name ? 'on' : '';
     document.getElementById('view-' + name).hidden = state.tab !== name;
@@ -2058,11 +2173,13 @@ function update() {
   if (state.tab !== 'history') Plotly.purge(hplot);
   if (state.tab === 'flight') { buildFlightControls(); drawFlight(); }
   else if (state.tab === 'changelog') drawChangelog();
-  else { buildMetrics(); draw(); drawTable(); }
+  else if (state.tab === 'history') { buildMetrics(); draw(); drawTable(); }
+  jarvisNote();
+  if (framed) showFrame(state.tab);
   const shown = state.tab === 'flight' ? fplot : state.tab === 'history' ? hplot : null;
   if (shown && shown.data && Plotly.Plots) requestAnimationFrame(() => Plotly.Plots.resize(shown));
 }
-readHash(); buildNav(); update();
+readHash(); buildNav(); update(); loadJarvis(); loadBuildStatus();
 window.addEventListener('hashchange', () => { readHash(); update(); });
 </script>
 </body>
