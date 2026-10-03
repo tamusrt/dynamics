@@ -56,10 +56,10 @@ def rasaero_windows(window: str) -> dict[int, str]:
     return found
 
 
-def open_in_rasaero(cdx: Path, window: str, pyautogui, wait_s: float = 45.0) -> str | None:
+def open_in_rasaero(cdx: Path, window: str, pyautogui, wait_s: float = 45.0) -> tuple[str | None, int | None]:
     """Open ``cdx`` the way a double-click does, wait for its new RASAero window and bring it to the front.
 
-    Returns None when RASAero with the file is the window in front, or what went wrong.
+    Returns (None, the window) when RASAero with the file is the window in front, or (what went wrong, None).
     """
     import ctypes  # noqa: PLC0415  (Windows only)
     import os  # noqa: PLC0415
@@ -69,14 +69,14 @@ def open_in_rasaero(cdx: Path, window: str, pyautogui, wait_s: float = 45.0) -> 
     try:
         os.startfile(str(cdx.resolve()))  # type: ignore[attr-defined]  # noqa: S606
     except OSError as exc:
-        return f"Windows could not open {cdx.name} ({exc}). Is RASAero II the program that opens .CDX1 files?"
+        return f"Windows could not open {cdx.name} ({exc}). Is RASAero II the program that opens .CDX1 files?", None
     deadline = time.time() + wait_s
     new: list[int] = []
     while time.time() < deadline and not new:
         time.sleep(0.5)
         new = [h for h in rasaero_windows(window) if h not in before]
     if not new:
-        return f"No new RASAero window appeared within {wait_s:.0f} s after opening {cdx.name}."
+        return f"No new RASAero window appeared within {wait_s:.0f} s after opening {cdx.name}.", None
     time.sleep(4.0)  # let RASAero finish loading the rocket
     handle = max(new)
     user32 = ctypes.windll.user32  # type: ignore[attr-defined]
@@ -85,9 +85,24 @@ def open_in_rasaero(cdx: Path, window: str, pyautogui, wait_s: float = 45.0) -> 
     user32.SetForegroundWindow(handle)
     time.sleep(0.8)
     if user32.GetForegroundWindow() != handle:
-        return "RASAero opened the file but could not be brought to the front."
-    print(f"RASAero has {cdx.name} open. The older RASAero window still has the old rocket: close it without saving.", flush=True)
-    return None
+        return "RASAero opened the file but could not be brought to the front.", None
+    print(f"RASAero has {cdx.name} open", flush=True)
+    return None, handle
+
+
+def close_rasaero(handle: int) -> None:
+    """End the RASAero that was opened for the sweep (it saved nothing, so nothing is lost)."""
+    import ctypes  # noqa: PLC0415  (Windows only)
+    from ctypes import wintypes  # noqa: PLC0415
+
+    user32, kernel32 = ctypes.windll.user32, ctypes.windll.kernel32  # type: ignore[attr-defined]
+    pid = wintypes.DWORD()
+    user32.GetWindowThreadProcessId(handle, ctypes.byref(pid))
+    process = kernel32.OpenProcess(0x0001, False, pid.value)  # PROCESS_TERMINATE
+    if process:
+        kernel32.TerminateProcess(process, 0)
+        kernel32.CloseHandle(process)
+        print("Closed the RASAero window that was opened for this", flush=True)
 
 
 def run_sweep(out_dir: Path, window: str, countdown: int, open_file: Path | None = None) -> int:
@@ -107,11 +122,13 @@ def run_sweep(out_dir: Path, window: str, countdown: int, open_file: Path | None
         print(f"Switching to RASAero in {left} s. Do not touch the keyboard or mouse.", flush=True)
         time.sleep(1)
 
-    if open_file is not None:  # the file was just corrected: open it afresh instead of using the RASAero already open
-        problem = open_in_rasaero(open_file, window, pyautogui)
+    opened = None
+    if open_file is not None:  # open the file afresh, so RASAero measures exactly what is on disk
+        problem, opened = open_in_rasaero(open_file, window, pyautogui)
         if problem:
-            print(f"Stopped before typing anything. {problem} Open {open_file.name} in RASAero yourself "
-                  "(File, Open), click inside it, then click back on the page and press the Create button again.", flush=True)
+            print(f"Stopped before typing anything. {problem} If this keeps happening, stop the helper and start it with "
+                  f"--no-open (python tools/whatif/local_helper.py --no-open), open {open_file.name} in RASAero yourself, "
+                  "click inside it, then click back on the page and press the Create button.", flush=True)
             return 4
     else:
         # alt-tab to rasaero
@@ -150,6 +167,9 @@ def run_sweep(out_dir: Path, window: str, countdown: int, open_file: Path | None
         # tab back to file select
         pyautogui.typewrite(["tab", "tab", "tab", "tab"])
         print(f"Finished {alpha}", flush=True)
+    if opened is not None:
+        time.sleep(1.5)  # let RASAero finish writing the last file
+        close_rasaero(opened)
     return 0
 
 
@@ -159,7 +179,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--out", type=Path, required=True, help="folder for alpha0.txt ... alpha30.txt")
     parser.add_argument("--window", default="RASAero", help="text the RASAero window title contains")
     parser.add_argument("--countdown", type=int, default=5, help="seconds before switching windows")
-    parser.add_argument("--open", type=Path, default=None, help="open this .CDX1 in a new RASAero window first")
+    parser.add_argument("--open", type=Path, default=None, help="open this .CDX1 in a new RASAero window first, and close it after")
     args = parser.parse_args(argv)
     return run_sweep(args.out, args.window, args.countdown, args.open)
 
