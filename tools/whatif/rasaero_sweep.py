@@ -35,7 +35,62 @@ def foreground_title() -> str | None:
     return buffer.value
 
 
-def run_sweep(out_dir: Path, window: str, countdown: int) -> int:
+def rasaero_windows(window: str) -> dict[int, str]:
+    """Visible top-level windows whose title contains ``window`` (Windows only): handle -> title."""
+    import ctypes  # noqa: PLC0415  (Windows only)
+    from ctypes import wintypes  # noqa: PLC0415
+
+    user32 = ctypes.windll.user32  # type: ignore[attr-defined]
+    found: dict[int, str] = {}
+
+    @ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+    def visit(handle, _):
+        if user32.IsWindowVisible(handle):
+            buffer = ctypes.create_unicode_buffer(512)
+            user32.GetWindowTextW(handle, buffer, 512)
+            if window.lower() in buffer.value.lower():
+                found[int(handle)] = buffer.value
+        return True
+
+    user32.EnumWindows(visit, 0)
+    return found
+
+
+def open_in_rasaero(cdx: Path, window: str, pyautogui, wait_s: float = 45.0) -> str | None:
+    """Open ``cdx`` the way a double-click does, wait for its new RASAero window and bring it to the front.
+
+    Returns None when RASAero with the file is the window in front, or what went wrong.
+    """
+    import ctypes  # noqa: PLC0415  (Windows only)
+    import os  # noqa: PLC0415
+
+    before = set(rasaero_windows(window))
+    print(f"Opening {cdx.name} in RASAero", flush=True)
+    try:
+        os.startfile(str(cdx.resolve()))  # type: ignore[attr-defined]  # noqa: S606
+    except OSError as exc:
+        return f"Windows could not open {cdx.name} ({exc}). Is RASAero II the program that opens .CDX1 files?"
+    deadline = time.time() + wait_s
+    new: list[int] = []
+    while time.time() < deadline and not new:
+        time.sleep(0.5)
+        new = [h for h in rasaero_windows(window) if h not in before]
+    if not new:
+        return f"No new RASAero window appeared within {wait_s:.0f} s after opening {cdx.name}."
+    time.sleep(4.0)  # let RASAero finish loading the rocket
+    handle = max(new)
+    user32 = ctypes.windll.user32  # type: ignore[attr-defined]
+    pyautogui.press("alt")  # Windows only lets a program bring a window forward right after a key press
+    user32.ShowWindow(handle, 9)  # SW_RESTORE
+    user32.SetForegroundWindow(handle)
+    time.sleep(0.8)
+    if user32.GetForegroundWindow() != handle:
+        return "RASAero opened the file but could not be brought to the front."
+    print(f"RASAero has {cdx.name} open. The older RASAero window still has the old rocket: close it without saving.", flush=True)
+    return None
+
+
+def run_sweep(out_dir: Path, window: str, countdown: int, open_file: Path | None = None) -> int:
     """Switch to RASAero and dump alpha0.txt to alpha30.txt into ``out_dir``; returns an exit code."""
     if sys.platform != "win32":
         print("Step 3 only works on Windows, where RASAero runs.", flush=True)
@@ -52,9 +107,16 @@ def run_sweep(out_dir: Path, window: str, countdown: int) -> int:
         print(f"Switching to RASAero in {left} s. Do not touch the keyboard or mouse.", flush=True)
         time.sleep(1)
 
-    # alt-tab to rasaero
-    pyautogui.hotkey("alt", "tab")
-    time.sleep(0.8)
+    if open_file is not None:  # the file was just corrected: open it afresh instead of using the RASAero already open
+        problem = open_in_rasaero(open_file, window, pyautogui)
+        if problem:
+            print(f"Stopped before typing anything. {problem} Open {open_file.name} in RASAero yourself "
+                  "(File, Open), click inside it, then click back on the page and press the Create button again.", flush=True)
+            return 4
+    else:
+        # alt-tab to rasaero
+        pyautogui.hotkey("alt", "tab")
+        time.sleep(0.8)
     title = foreground_title()
     if title is None or window.lower() not in title.lower():
         print(
@@ -97,8 +159,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--out", type=Path, required=True, help="folder for alpha0.txt ... alpha30.txt")
     parser.add_argument("--window", default="RASAero", help="text the RASAero window title contains")
     parser.add_argument("--countdown", type=int, default=5, help="seconds before switching windows")
+    parser.add_argument("--open", type=Path, default=None, help="open this .CDX1 in a new RASAero window first")
     args = parser.parse_args(argv)
-    return run_sweep(args.out, args.window, args.countdown)
+    return run_sweep(args.out, args.window, args.countdown, args.open)
 
 
 if __name__ == "__main__":

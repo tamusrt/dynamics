@@ -22,8 +22,8 @@ from __future__ import annotations
 import argparse
 import shutil
 import sys
-import zipfile
 import xml.etree.ElementTree as ET
+import zipfile
 from pathlib import Path
 
 IN = 0.0254
