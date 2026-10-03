@@ -15,3 +15,6 @@ or_ci_results/
 site/
 
 node_modules/
+
+# rasaero.CDX1 as it was before tools/whatif/fix_cdx.py corrected it
+*.before-fix
