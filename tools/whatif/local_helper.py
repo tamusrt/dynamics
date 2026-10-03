@@ -31,6 +31,7 @@ import re
 import subprocess
 import sys
 import threading
+import time
 from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -146,9 +147,14 @@ class Helper:
     """The jobs, one at a time, and the status the page polls."""
 
     def __init__(
-        self, ctx: Context, runner: Runner | None = None, probe: Callable[[str], bool] | None = None, opener: Opener | None = None
+        self, ctx: Context, runner: Runner | None = None, probe: Callable[[str], bool] | None = None, opener: Opener | None = None,
+        auto_publish: bool = False, on_published: Callable[[], None] | None = None,
     ) -> None:
         self.ctx = ctx
+        # after a good update: commit and push the CSV and .CDX1, then on_published (main stops the helper)
+        self.auto_publish = auto_publish
+        self.on_published = on_published
+        self.published: dict | None = None
         self.opener = opener or open_in_file_manager
         self.runner = runner or (lambda cmd, on_line, cancel: subprocess_runner(cmd, on_line, cancel, ctx.repo))
         probe = probe or (lambda module: import_probe(ctx.python, module))
@@ -234,6 +240,8 @@ class Helper:
                 "updateAvailable": self.update_problem is None,
                 "updateProblem": self.update_problem,
                 "publish": publish,
+                "autoPublish": self.auto_publish,
+                "published": self.published,
                 "folders": {name: str(path) for name, path in self.folders().items()},
             }
 
@@ -277,20 +285,29 @@ class Helper:
             if error is None:
                 self.finished = {"job": job, "time": iso(datetime.now(timezone.utc).timestamp())}
                 self.log.append("Done." if job == "update" else f"Done: {ALPHA_COUNT} RASAero files created.")
+        if error is None and job == "update" and self.published and self.on_published:
+            self.on_published()
 
     def _step(self, cmd: list) -> int:
         return self.runner(cmd, self._say, self.cancel_event)
+
+    def _collect(self, cmd: list, said: list) -> int:
+        """Run a step, showing its lines and also keeping them in ``said``."""
+        def line(text: str) -> None:
+            said.append(text)
+            self._say(text)
+        return self.runner(cmd, line, self.cancel_event)
 
     def _sweep(self) -> str | None:
         ctx = self.ctx
         # OpenRocket's RASAero export does not always copy the shape exactly: correct the .CDX1 from the .ork first.
         if ctx.cdx is not None and ctx.ork is not None and ctx.cdx.exists() and ctx.ork.exists():
             self._say(f"Checking {ctx.cdx.name} against {ctx.ork.name}")
-            start = len(self.log)
-            code = self._step([ctx.python, "-u", HERE / "fix_cdx.py", "--ork", ctx.ork, "--cdx", ctx.cdx])
+            said = []
+            code = self._collect([ctx.python, "-u", HERE / "fix_cdx.py", "--ork", ctx.ork, "--cdx", ctx.cdx], said)
             if code != 0:
                 return f"Could not check {ctx.cdx.name} against {ctx.ork.name}. See the lines above. Nothing was run in RASAero."
-            if any("was corrected" in line for line in self.log[start:]):
+            if any("was corrected" in line for line in said):
                 self.reopen_cdx = True
         # RASAero still has the old rocket open (also after a failed try): the sweep opens the corrected file itself
         reopen = ["--open", ctx.cdx] if self.reopen_cdx and ctx.cdx is not None else []
@@ -325,6 +342,33 @@ class Helper:
             if old is not None:
                 ctx.csv.write_bytes(old)
             return "The rebuild failed, so the old CSV was put back. See the lines above."
+        return self._publish() if self.auto_publish else None
+
+    def _git(self, *args: str) -> int:
+        return self._step(["git", *args])
+
+    def _publish(self) -> str | None:
+        """Commit the CSV and the .CDX1 (nothing else) and push them, so the site rebuilds for everyone."""
+        ctx = self.ctx
+        paths = [self._rel(ctx.csv)] + ([self._rel(ctx.cdx)] if ctx.cdx is not None and ctx.cdx.exists() else [])
+        self._say("Publishing: committing " + " and ".join(paths) + " and pushing to GitHub")
+        if self._git("add", "--", *paths) != 0:
+            return "The CSV is updated, but git could not add it. Publish it by hand with the commands below."
+        if self._git("diff", "--cached", "--quiet", "--", *paths) == 0:
+            self._say("Nothing new to publish: GitHub already has this CSV.")
+        else:
+            if self._git("commit", "-m", f"Update {ctx.key} RASAero CSV", "--", *paths) != 0:
+                return "The CSV is updated, but git could not commit it. See the lines above."
+            if self._git("push") != 0:
+                self._say("GitHub has newer commits: pulling them, then pushing again")
+                if self._git("pull", "--rebase", "--autostash") != 0 or self._git("push") != 0:
+                    return ("The CSV is updated and committed on this computer, but it could not be pushed. "
+                            "In a terminal in the dynamics folder run: git pull, then git push.")
+        said: list[str] = []
+        self._collect(["git", "rev-parse", "--short", "HEAD"], said)
+        commit = next((line.strip() for line in said if line.strip()), "")
+        self.published = {"commit": commit, "time": iso(datetime.now(timezone.utc).timestamp())}
+        self._say(f"Published (commit {commit}). The site rebuilds by itself; the helper stops in a few seconds.")
         return None
 
 
@@ -448,10 +492,12 @@ def main(argv: list | None = None) -> int:
     parser.add_argument("--port", type=int, help=f"default {DEFAULT_PORT}")
     parser.add_argument("--python", default=sys.executable, help="Python that has flight_sim (and pyautogui)")
     parser.add_argument("--no-build", action="store_true", help="do not build the site on start when it is missing")
+    parser.add_argument("--no-publish", action="store_true", help="after Update CSV, do not commit, push and stop: show the commands instead")
     args = parser.parse_args(argv)
 
     ctx = load_context(args.config.resolve(), repo, args.python, args.rocket, args.port)
-    helper = Helper(ctx)
+    stop = threading.Event()
+    helper = Helper(ctx, auto_publish=not args.no_publish, on_published=stop.set)
     ctx.site.mkdir(parents=True, exist_ok=True)
     if not args.no_build and helper.update_problem is None and not (ctx.site / ctx.page_url.strip("/") / "index.html").exists():
         print("Building the page once, so there is something to show. This takes a few minutes.", flush=True)
@@ -465,10 +511,22 @@ def main(argv: list | None = None) -> int:
         if problem:
             print(f"  NOTE: {problem}")
     print("Leave this window open. Use the Update CSV section at the bottom of the page. Press Ctrl+C to stop.", flush=True)
+    if not args.no_publish:
+        print("After Update CSV it commits and pushes the CSV and .CDX1, then stops by itself (--no-publish to keep it running).", flush=True)
+
+    def stop_after_publishing() -> None:  # long enough for the page to show that it was published
+        stop.wait()
+        time.sleep(12)
+        server.shutdown()
+
+    threading.Thread(target=stop_after_publishing, daemon=True).start()
     try:
         server.serve_forever()
     except KeyboardInterrupt:
         print("Stopped.")
+        return 0
+    if helper.published:
+        print(f"Published (commit {helper.published['commit']}). The helper has stopped; start it again for the next update.")
     return 0
 
 
