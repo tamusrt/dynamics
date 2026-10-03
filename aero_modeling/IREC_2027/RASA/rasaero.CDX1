@@ -12,7 +12,7 @@
         </NoseCone>
         <BodyTube>
             <PartType>BodyTube</PartType>
-            <Length>11</Length>
+            <Length>12</Length>
             <Diameter>6</Diameter>
             <LaunchLugDiameter>0</LaunchLugDiameter>
             <LaunchLugLength>0</LaunchLugLength>
@@ -28,14 +28,14 @@
         </BodyTube>
         <BodyTube>
             <PartType>BodyTube</PartType>
-            <Length>21.748</Length>
+            <Length>27.258</Length>
             <Diameter>6</Diameter>
             <LaunchLugDiameter>0</LaunchLugDiameter>
             <LaunchLugLength>0</LaunchLugLength>
             <RailGuideDiameter>0</RailGuideDiameter>
             <RailGuideHeight>0</RailGuideHeight>
             <LaunchShoeArea>0</LaunchShoeArea>
-            <Location>40.9999</Location>
+            <Location>41.9999</Location>
             <Color>Blue</Color>
             <BoattailLength>0</BoattailLength>
             <BoattailRearDiameter>0</BoattailRearDiameter>
@@ -44,14 +44,14 @@
         </BodyTube>
         <BodyTube>
             <PartType>BodyTube</PartType>
-            <Length>112.9919</Length>
+            <Length>103</Length>
             <Diameter>6</Diameter>
             <LaunchLugDiameter>0</LaunchLugDiameter>
             <LaunchLugLength>0</LaunchLugLength>
             <RailGuideDiameter>0</RailGuideDiameter>
             <RailGuideHeight>0</RailGuideHeight>
             <LaunchShoeArea>0</LaunchShoeArea>
-            <Location>62.7479</Location>
+            <Location>69.2579</Location>
             <Color>Blue</Color>
             <BoattailLength>0</BoattailLength>
             <BoattailRearDiameter>0</BoattailRearDiameter>
@@ -60,12 +60,12 @@
             <Fin>
                 <Count>4</Count>
                 <Chord>12</Chord>
-                <Span>7</Span>
-                <SweepDistance>12.4707</SweepDistance>
-                <TipChord>3</TipChord>
+                <Span>7.75</Span>
+                <SweepDistance>12</SweepDistance>
+                <TipChord>3.5</TipChord>
                 <Thickness>0.3</Thickness>
                 <LERadius>0</LERadius>
-                <Location>14</Location>
+                <Location>15</Location>
                 <AirfoilSection>Subsonic NACA</AirfoilSection>
                 <FX1>0</FX1>
                 <FX3>0</FX3>
@@ -74,9 +74,9 @@
         <BoatTail>
             <PartType>BoatTail</PartType>
             <Length>3</Length>
-            <Diameter>4</Diameter>
+            <Diameter>6</Diameter>
             <RearDiameter>4</RearDiameter>
-            <Location>175.7398</Location>
+            <Location>172.2579</Location>
             <Color>Blue</Color>
         </BoatTail>
         <Surface>Camouflage Paint</Surface>
