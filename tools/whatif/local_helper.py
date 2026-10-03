@@ -153,6 +153,7 @@ class Helper:
         self.runner = runner or (lambda cmd, on_line, cancel: subprocess_runner(cmd, on_line, cancel, ctx.repo))
         probe = probe or (lambda module: import_probe(ctx.python, module))
         self.sweep_problem: str | None = None
+        self.reopen_cdx = False  # the .CDX1 was corrected and RASAero has not measured the corrected one yet
         self.update_problem: str | None = None
         if sys.platform != "win32" and runner is None:
             self.sweep_problem = "Step 3 only works on Windows, where RASAero runs."
@@ -282,7 +283,6 @@ class Helper:
 
     def _sweep(self) -> str | None:
         ctx = self.ctx
-        reopen: list = []
         # OpenRocket's RASAero export does not always copy the shape exactly: correct the .CDX1 from the .ork first.
         if ctx.cdx is not None and ctx.ork is not None and ctx.cdx.exists() and ctx.ork.exists():
             self._say(f"Checking {ctx.cdx.name} against {ctx.ork.name}")
@@ -291,11 +291,14 @@ class Helper:
             if code != 0:
                 return f"Could not check {ctx.cdx.name} against {ctx.ork.name}. See the lines above. Nothing was run in RASAero."
             if any("was corrected" in line for line in self.log[start:]):
-                reopen = ["--open", ctx.cdx]  # RASAero still has the old rocket: the sweep opens the corrected file itself
+                self.reopen_cdx = True
+        # RASAero still has the old rocket open (also after a failed try): the sweep opens the corrected file itself
+        reopen = ["--open", ctx.cdx] if self.reopen_cdx and ctx.cdx is not None else []
         code = self._step([ctx.python, "-u", HERE / "rasaero_sweep.py", "--out", ctx.alpha_dir, "--window", ctx.window, "--countdown", "5", *reopen])
         if code != 0:
             last = [line for line in self.log if line.strip()][-1:] or ["no output"]
             return f"Step 3 stopped: {last[0]}"
+        self.reopen_cdx = False
         if len(self.alpha_files()) < ALPHA_COUNT:
             return f"Step 3 ended, but only {len(self.alpha_files())} of {ALPHA_COUNT} files exist. Run it again."
         return None
