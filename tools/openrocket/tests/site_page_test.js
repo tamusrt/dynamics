@@ -21,7 +21,7 @@ assert(!js.includes('__DATA__'), 'template placeholder was not replaced');
 
 // ---------------------------------------------------------------- stub DOM
 function el(tag) {
-  return { tag, children: [], style: {}, dataset: {}, attrs: {}, classList: { toggle() {} }, hidden: false, disabled: false, checked: false,
+  return { tag, children: [], style: {}, dataset: {}, attrs: {}, classList: { set: new Set(), toggle(n, on) { if (on === undefined ? !this.set.has(n) : on) this.set.add(n); else this.set.delete(n); }, contains(n) { return this.set.has(n); } }, hidden: false, disabled: false, checked: false,
     value: '', textContent: '', className: '', title: '',
     get innerHTML() { return this._html || ''; }, set innerHTML(v) { this._html = v; this.children = []; },
     appendChild(c) { this.children.push(c); return c; }, append(...c) { this.children.push(...c); }, remove() {},
@@ -75,7 +75,7 @@ function run(params) {
   global.location = { hash: '#' + new URLSearchParams(params).toString() };
   requested.length = 0; calls.length = 0; simRows = [];
   for (const k of Object.keys(els)) delete els[k];
-  eval(js + ';globalThis.__P = { state, addY, flipY, removeY, exportCsv, csvText, update, stabSel, unitSel, simLabel, fvar, ALL };');
+  eval(js + ';globalThis.__P = { state, addY, flipY, removeY, exportCsv, csvText, update, stabSel, unitSel, simLabel, fvar, ALL, frames, FRAMES, syncPredictions, frameMissing };');
   P = globalThis.__P;
   for (const src of [...requested]) eval(fs.readFileSync(path.join(site, src), 'utf8'));   // what the browser's <script> tags do
   return calls[calls.length - 1];
@@ -276,6 +276,44 @@ test('entries render for the ticked design, newest first, with the diff escaped'
   assert(h.indexOf(entries[0].short) < h.indexOf(entries[entries.length - 1].short), 'newest first');
   assert(!h.includes('<script'), 'commit messages are escaped'); assert(h.includes('&lt;script'), 'the fixture message with a script tag is shown escaped');
   assert(!h.includes(files[1]), 'only the ticked design');
+});
+
+console.log('predictions and vision tabs');
+test('both tabs are always there, and each opens a frame inside this page', () => {
+  assert(!html.includes('hidden>Predictions'), 'the Predictions tab must not be hidden until a check passes');
+  assert(html.includes('id="tab-predictions"') && html.includes('id="tab-vision"'));
+  run({ tab: 'predictions', units: 'metric', stab: 'cal', sel: enc([A]) });
+  const f = els['view-predictions'].children[0];
+  assert.strictEqual(f.tag, 'iframe'); assert.strictEqual(f.src, 'predictions/index.html#embed=1&units=metric&stab=cal');
+  assert.strictEqual(els['view-predictions'].hidden, false); assert.strictEqual(els['view-history'].hidden, true);
+  assert(els.layout.classList.contains('wide') && els.main.classList.contains('frame'), 'the list on the left gives way to the frame');
+  assert(/tab=predictions/.test(hash) && !/metric=/.test(hash), hash);
+  run({ tab: 'vision', sel: enc([A]) });
+  const v = els['view-vision'].children[0];
+  assert.strictEqual(v.src, 'predictions/viewer/index.html'); assert.strictEqual(els['units-label'].hidden, true);
+  assert.strictEqual(els['view-predictions'].hidden, true);
+  run({ tab: 'history', metric: 'apogee', view: 'abs', sel: enc([A]) });
+  assert(!els.layout.classList.contains('wide') && !els.main.classList.contains('frame'), 'the history tab has its list back');
+  assert.strictEqual(els['units-label'].hidden, false); assert.strictEqual(Object.keys(P.frames).length, 0, 'nothing is loaded before its tab is opened');
+});
+test('units and stability chosen in this page reach the Predictions frame', () => {
+  run({ tab: 'predictions', units: 'imperial', stab: 'pct', sel: enc([A]) });
+  const f = P.frames.predictions, win = { location: { hash: '#embed=1&units=imperial&stab=pct&metric=speed' } };
+  f.contentWindow = win; f.onload();
+  P.state.units = 'metric'; P.state.stab = 'cal'; P.update();
+  const p = new URLSearchParams(win.location.hash.slice(1));
+  assert.strictEqual(p.get('units'), 'metric'); assert.strictEqual(p.get('stab'), 'cal'); assert.strictEqual(p.get('metric'), 'speed', 'the frame keeps its own other choices');
+  assert.strictEqual(els['view-predictions'].children[0], f, 'the frame is kept, not rebuilt');
+  f.contentWindow = { get location() { throw new Error('cross-origin'); } };
+  P.state.units = 'imperial'; P.update();   // must not throw
+});
+test('a page that was not built is explained instead of shown empty', () => {
+  run({ tab: 'predictions', sel: enc([A]) });
+  P.frameMissing('predictions');
+  const holder = els['view-predictions'];
+  assert.strictEqual(holder.children.length, 1); assert.strictEqual(holder.children[0].className, 'framemsg');
+  assert(holder.children[0].textContent.includes('not been built'), holder.children[0].textContent);
+  assert.strictEqual(P.frames.predictions, undefined);
 });
 
 // ---------------------------------------------------------------- real Plotly (optional)

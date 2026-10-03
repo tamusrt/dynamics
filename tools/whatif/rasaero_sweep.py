@@ -38,7 +38,7 @@ def foreground_title() -> str | None:
 def run_sweep(out_dir: Path, window: str, countdown: int) -> int:
     """Switch to RASAero and dump alpha0.txt to alpha30.txt into ``out_dir``; returns an exit code."""
     if sys.platform != "win32":
-        print("Step 1 only works on Windows, where RASAero runs.", flush=True)
+        print("Step 3 only works on Windows, where RASAero runs.", flush=True)
         return 2
     try:
         import pyautogui  # noqa: PLC0415  (only this script needs it)
@@ -59,7 +59,7 @@ def run_sweep(out_dir: Path, window: str, countdown: int) -> int:
     if title is None or window.lower() not in title.lower():
         print(
             f"Stopped. The window in front was {title!r}, not RASAero. "
-            "Click inside RASAero, then click back on the page and press Step 1 again.",
+            "Click inside RASAero, then click back on the page and press the Create button again.",
             flush=True,
         )
         return 3

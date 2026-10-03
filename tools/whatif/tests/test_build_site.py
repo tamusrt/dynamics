@@ -35,6 +35,26 @@ def test_default_rocket_goes_to_the_site_root_of_the_page():
         assert builds[0]["cmd"][builds[0]["cmd"].index("--sim") + 1] == "average"
 
 
+def test_the_history_site_is_used_when_it_is_already_built():
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        spec = {"ork": "IREC/OR/a.ork", "aero": "a.csv", "motor": "a.eng"}
+        path = _config(root, {"R": spec}, "R")
+        site = root / "site"
+        (root / "sim_config.json").write_text(json.dumps({"files": {"IREC/OR/a.ork": {"default_motor": "IREC/Thrust Curves/IGNIS.rse"}}}))
+        cmd = build_site.plan(path, site)[0]["cmd"]
+        assert "--history-site" not in cmd, "no History site yet"
+        site.mkdir()
+        (site / "data.json").write_text("{}")
+        cmd = build_site.plan(path, site)[0]["cmd"]
+        assert cmd[cmd.index("--history-site") + 1] == str(site)
+        assert cmd[cmd.index("--history-motor") + 1] == "IGNIS.rse"
+        (root / "sim_config.json").write_text("{}")  # no default motor named: nothing to compare
+        assert "--history-motor" not in build_site.plan(path, site)[0]["cmd"]
+        (root / "sim_config.json").unlink()
+        assert "--history-motor" not in build_site.plan(path, site)[0]["cmd"]
+
+
 def test_missing_file_is_named():
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
