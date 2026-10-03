@@ -325,25 +325,14 @@ def test_without_publishing_nothing_is_committed(rig):
 
 
 @with_rig(with_ork=True)
-def test_a_corrected_cdx_is_opened_in_rasaero_until_a_sweep_succeeds(rig):
-    rig.post("sweep")
-    st = rig.wait_idle()
-    assert st["error"] is None, st["error"]
-    sweeps = [c for c in rig.calls if any("rasaero_sweep.py" in p for p in c)]
-    assert "--open" in sweeps[-1] and sweeps[-1][-1].endswith("r.CDX1")
-    rig.corrects = False  # the next press: the file matches and RASAero measured it, so no reopening
-    rig.post("sweep")
-    rig.wait_idle()
-    sweeps = [c for c in rig.calls if any("rasaero_sweep.py" in p for p in c)]
-    assert "--open" not in sweeps[-1]
-
-
-@with_rig(with_ork=True, corrects=False)
-def test_a_cdx_that_matches_uses_the_rasaero_already_open(rig):
-    rig.post("sweep")
-    assert rig.wait_idle()["error"] is None
-    sweeps = [c for c in rig.calls if any("rasaero_sweep.py" in p for p in c)]
-    assert "--open" not in sweeps[-1]
+def test_the_cdx_is_checked_then_opened_in_rasaero_every_time(rig):
+    for corrects in (True, False):
+        rig.corrects = corrects
+        rig.post("sweep")
+        assert rig.wait_idle()["error"] is None
+        names = [" ".join(c) for c in rig.calls[-2:]]
+        assert "fix_cdx.py" in names[0] and "rasaero_sweep.py" in names[1]
+        assert rig.calls[-1][-2:] == ["--open", str(rig.repo / "aero_modeling" / "R" / "RASA" / "r.CDX1")]
 
 
 if __name__ == "__main__":

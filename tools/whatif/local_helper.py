@@ -148,18 +148,18 @@ class Helper:
 
     def __init__(
         self, ctx: Context, runner: Runner | None = None, probe: Callable[[str], bool] | None = None, opener: Opener | None = None,
-        auto_publish: bool = False, on_published: Callable[[], None] | None = None,
+        auto_publish: bool = False, on_published: Callable[[], None] | None = None, open_rasaero: bool = True,
     ) -> None:
         self.ctx = ctx
         # after a good update: commit and push the CSV and .CDX1, then on_published (main stops the helper)
         self.auto_publish = auto_publish
+        self.open_rasaero = open_rasaero  # False: switch to the RASAero already open (Alt+Tab) instead
         self.on_published = on_published
         self.published: dict | None = None
         self.opener = opener or open_in_file_manager
         self.runner = runner or (lambda cmd, on_line, cancel: subprocess_runner(cmd, on_line, cancel, ctx.repo))
         probe = probe or (lambda module: import_probe(ctx.python, module))
         self.sweep_problem: str | None = None
-        self.reopen_cdx = False  # the .CDX1 was corrected and RASAero has not measured the corrected one yet
         self.update_problem: str | None = None
         if sys.platform != "win32" and runner is None:
             self.sweep_problem = "Step 3 only works on Windows, where RASAero runs."
@@ -303,19 +303,15 @@ class Helper:
         # OpenRocket's RASAero export does not always copy the shape exactly: correct the .CDX1 from the .ork first.
         if ctx.cdx is not None and ctx.ork is not None and ctx.cdx.exists() and ctx.ork.exists():
             self._say(f"Checking {ctx.cdx.name} against {ctx.ork.name}")
-            said = []
-            code = self._collect([ctx.python, "-u", HERE / "fix_cdx.py", "--ork", ctx.ork, "--cdx", ctx.cdx], said)
+            code = self._step([ctx.python, "-u", HERE / "fix_cdx.py", "--ork", ctx.ork, "--cdx", ctx.cdx])
             if code != 0:
                 return f"Could not check {ctx.cdx.name} against {ctx.ork.name}. See the lines above. Nothing was run in RASAero."
-            if any("was corrected" in line for line in said):
-                self.reopen_cdx = True
-        # RASAero still has the old rocket open (also after a failed try): the sweep opens the corrected file itself
-        reopen = ["--open", ctx.cdx] if self.reopen_cdx and ctx.cdx is not None else []
+        # the sweep opens the .CDX1 in RASAero itself, so RASAero measures exactly the file on disk
+        reopen = ["--open", ctx.cdx] if self.open_rasaero and ctx.cdx is not None and ctx.cdx.exists() else []
         code = self._step([ctx.python, "-u", HERE / "rasaero_sweep.py", "--out", ctx.alpha_dir, "--window", ctx.window, "--countdown", "5", *reopen])
         if code != 0:
             last = [line for line in self.log if line.strip()][-1:] or ["no output"]
             return f"Step 3 stopped: {last[0]}"
-        self.reopen_cdx = False
         if len(self.alpha_files()) < ALPHA_COUNT:
             return f"Step 3 ended, but only {len(self.alpha_files())} of {ALPHA_COUNT} files exist. Run it again."
         return None
@@ -492,12 +488,13 @@ def main(argv: list | None = None) -> int:
     parser.add_argument("--port", type=int, help=f"default {DEFAULT_PORT}")
     parser.add_argument("--python", default=sys.executable, help="Python that has flight_sim (and pyautogui)")
     parser.add_argument("--no-build", action="store_true", help="do not build the site on start when it is missing")
+    parser.add_argument("--no-open", action="store_true", help="do not open the .CDX1 in RASAero: switch (Alt+Tab) to the RASAero you opened yourself")
     parser.add_argument("--no-publish", action="store_true", help="after Update CSV, do not commit, push and stop: show the commands instead")
     args = parser.parse_args(argv)
 
     ctx = load_context(args.config.resolve(), repo, args.python, args.rocket, args.port)
     stop = threading.Event()
-    helper = Helper(ctx, auto_publish=not args.no_publish, on_published=stop.set)
+    helper = Helper(ctx, auto_publish=not args.no_publish, on_published=stop.set, open_rasaero=not args.no_open)
     ctx.site.mkdir(parents=True, exist_ok=True)
     if not args.no_build and helper.update_problem is None and not (ctx.site / ctx.page_url.strip("/") / "index.html").exists():
         print("Building the page once, so there is something to show. This takes a few minutes.", flush=True)
