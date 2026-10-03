@@ -93,34 +93,45 @@ def motor_problem(data: dict) -> str | None:
 
 
 def note(data: dict, live_url: str, flightsim: str, picture: bool = False, stamp: str = "") -> dict:
-    """The message: a title, the VISION link, the text, and whether anything needs attention."""
+    """The message: a title, the VISION link, the text, and whether anything needs attention.
+
+    The commit comment starts with a short summary (the alerts on one line, the apogees on the next):
+    the Discord GitHub bot shows only the first few hundred characters of a comment, and no pictures.
+    """
     live = live_url.rstrip("/")
     six, ors = data["sixdof"], data.get("openrocket") or {}
     vision = f"{live}/#tab=vision"
-    body = [f"{data.get('name', 'rocket')}" + (f" · flight_sim `{flightsim}`" if flightsim else ""),
-            f"🚀 **[Open VISION: the whole flight in 3D]({vision})**", ""]
+    name = data.get("name", "rocket")
+    low = {sim: run["marginLo"] for sim, run in six.items() if run.get("marginLo") is not None and run["marginLo"] < MIN_MARGIN}
+    diffs, motor = rasaero_diffs(data), motor_problem(data)
+    short, warn = [], []
+    if low:
+        worst = min(low, key=low.get)
+        short.append(f"⚠️ **Stability {low[worst]:.2f} cal** ({worst})")
+        warn.append("⚠️ **Stability below 1.0 cal**: " + ", ".join(f"{sim} {m:.2f} cal" for sim, m in low.items()) + ".")
+    if diffs:
+        short.append("⚠️ **RASAero table out of date**")
+        warn.append("⚠️ **RASAero table is out of date** (" + "; ".join(diffs) + "). "
+                    "Rebuild it with Update CSV at the bottom of JARVIS predictions.")
+    if motor:
+        short.append("⚠️ **OpenRocket used a different motor**")
+        warn.append("⚠️ **Different motor in OpenRocket**: " + motor)
+    alerts = " · ".join(short) or "✅ All checks pass"
+    apogees = "Apogee: " + " · ".join(f"{sim} **{run['apogee'] / FT:,.0f}**" for sim, run in six.items()) + " ft"
+    head = [f"**JARVIS simulation** · {name} · **[▶ Open VISION]({vision})**", alerts, apogees]
+    details = [""]
     for sim, run in six.items():
         o = (ors.get(sim) or {}).get("m", {}).get("apogee")
         vs = f" · OpenRocket {o / FT:,.0f} ft ({(run['apogee'] / o - 1) * 100:+.1f}%)" if o else ""
-        body.append(f"- {sim}: apogee **{run['apogee'] / FT:,.0f} ft**, Mach {run['machMax']:.2f}{vs}")
-    body.append("")
-    warn = []
-    low = {sim: run["marginLo"] for sim, run in six.items() if run.get("marginLo") is not None and run["marginLo"] < MIN_MARGIN}
-    if low:
-        warn.append("⚠️ **Stability below 1.0 cal**: " + ", ".join(f"{sim} {m:.2f} cal" for sim, m in low.items()) + ".")
-    diffs = rasaero_diffs(data)
-    if diffs:
-        warn.append("⚠️ **RASAero table is out of date** (" + "; ".join(diffs) + "). "
-                    "Rebuild it with Update CSV at the bottom of JARVIS predictions.")
-    motor = motor_problem(data)
-    if motor:
-        warn.append("⚠️ **Different motor in OpenRocket**: " + motor)
-    body += warn or ["✅ Stability above 1.0 cal, RASAero table matches the rocket, same motor as OpenRocket."]
-    body.append(f"[JARVIS predictions]({live}/#tab=predictions) · [VISION]({vision})")
+        details.append(f"- {sim}: apogee {run['apogee'] / FT:,.0f} ft, Mach {run['machMax']:.2f}{vs}")
+    details += [""] + (warn or ["✅ Stability above 1.0 cal, RASAero table matches the rocket, same motor as OpenRocket."])
+    details.append(f"[JARVIS predictions]({live}/#tab=predictions) · [VISION]({vision})"
+                   + (f" · flight_sim `{flightsim}`" if flightsim else ""))
     image = f"{live}/predictions/vision.png" + (f"?v={stamp}" if stamp else "")
-    markdown = "\n".join(["**JARVIS simulation**", *body] + ([f"\n[![The whole flight in VISION]({image})]({vision})"] if picture else [])) + "\n"
-    return {"title": "JARVIS simulation", "url": vision, "description": "\n".join(body), "warnings": len(warn),
-            "markdown": markdown}
+    markdown = "\n".join(head + details + ([f"\n[![The whole flight in VISION]({image})]({vision})"] if picture else [])) + "\n"
+    # the Discord embed has its own title (linking to VISION), so it starts at the alerts
+    return {"title": f"JARVIS simulation · {name}", "url": vision, "description": "\n".join(head[1:] + details),
+            "warnings": len(warn), "markdown": markdown}
 
 
 def main() -> None:
