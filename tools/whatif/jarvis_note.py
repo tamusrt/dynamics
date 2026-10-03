@@ -67,7 +67,7 @@ def note(data: dict, live_url: str, flightsim: str) -> str:
     live = live_url.rstrip("/")
     six, ors, viewers = data["sixdof"], data.get("openrocket") or {}, data.get("viewers") or {}
     default = data.get("defaultSim")
-    lines = [f"**Jarvis · {data.get('name', 'rocket')}**" + (f" (flight_sim `{flightsim}`)" if flightsim else "")]
+    lines = ["**JARVIS simulation**", f"{data.get('name', 'rocket')}" + (f" · flight_sim `{flightsim}`" if flightsim else "")]
     for sim, run in six.items():
         o = (ors.get(sim) or {}).get("m", {}).get("apogee")
         vs = f" · OpenRocket {o / FT:,.0f} ft ({(run['apogee'] / o - 1) * 100:+.1f}%)" if o else ""
