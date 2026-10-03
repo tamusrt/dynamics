@@ -3,6 +3,8 @@
 *.exe
 for*.dat
 *.csv
+# the RASAero tables the What-if page is built from (tools/whatif/README.md)
+!aero_modeling/**/*_aero.csv
 
 __pycache__
 

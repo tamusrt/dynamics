@@ -1,0 +1,31 @@
+{
+  "_readme": [
+    "Rockets for the predictions page and 3D flight (tools/whatif/build_site.py, built by openrocket-sim.yml on main).",
+    "Paths are relative to this file. 'default' is the rocket at <site>/predictions/; any other is at <site>/predictions/<key lowercased>/.",
+    "ork: the OpenRocket design (geometry, masses and launch conditions from the simulations saved in it).",
+    "aero: the RASAero CSV for that design; the page's Update CSV section remakes it (tools/whatif/local_helper.py).",
+    "rasaero: the RASAero .CDX1 the CSV was made from; the page corrects for any difference from the .ork.",
+    "alpha_dir: where RASAero's alpha0.txt ... alpha30.txt go before they become the CSV (not committed).",
+    "motor_dir: folder of the propulsion model's thrust curves; the newest .eng/.rse in it (by last commit) is used, with its propellant and total mass. 'motor' names one file instead.",
+    "sim: the saved OpenRocket simulation whose launch conditions are the page's default.",
+    "helper: settings of the local helper. rasaero_window is text the RASAero window title contains.",
+    "Full notes: tools/whatif/README.md"
+  ],
+  "default": "SRT14",
+  "helper": {
+    "port": 8765,
+    "pages_origin": "https://tamusrt.github.io",
+    "rasaero_window": "RASAero"
+  },
+  "rockets": {
+    "SRT14": {
+      "name": "SRT14 (IREC 2027)",
+      "ork": "IREC_2027/OR/2027_OR.ork",
+      "aero": "IREC_2027/RASA/ignis_2027_aero.csv",
+      "rasaero": "IREC_2027/RASA/rasaero.CDX1",
+      "motor_dir": "IREC_2027/Thrust Curves",
+      "sim": "average",
+      "alpha_dir": "IREC_2027/RASA/alpha"
+    }
+  }
+}

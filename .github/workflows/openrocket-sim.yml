@@ -11,6 +11,10 @@ on:
       - "aero_modeling/**/*.ork"
       - "aero_modeling/**/*.rse"
       - "aero_modeling/**/*.eng"
+      - "aero_modeling/**/*.csv"
+      - "aero_modeling/**/*.CDX1"
+      - "aero_modeling/whatif_config.json"
+      - "tools/whatif/**"
       - "aero_modeling/sim_config.json"
       - "tools/openrocket/or_ci.py"
       - "tools/openrocket/tests/**"
@@ -162,6 +166,28 @@ jobs:
             --repo-url "${{ github.server_url }}/${{ github.repository }}" \
             --quiet
 
+      # ---- Predictions page: the committed design flown on the committed RASAero table (tools/whatif/README.md) ----
+      # Needs the flight_sim package (it holds the .ork reader, the page template and the 6-DOF sim).
+      # FLIGHT_SIM_REPO / FLIGHT_SIM_REF are optional repository variables; FLIGHT_SIM_TOKEN is only
+      # needed while that repo is private. If the checkout fails the rest of the site still deploys.
+      - name: Check out flight_sim (for the predictions page)
+        id: flightsim
+        if: always() && github.ref == 'refs/heads/main'
+        continue-on-error: true
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ vars.FLIGHT_SIM_REPO || 'tamusrt/flight_sim' }}
+          ref: ${{ vars.FLIGHT_SIM_REF || 'main' }}
+          token: ${{ secrets.FLIGHT_SIM_TOKEN || github.token }}
+          path: flight_sim_src
+
+      - name: Build the predictions page (main only)
+        if: always() && github.ref == 'refs/heads/main' && steps.flightsim.outcome == 'success'
+        continue-on-error: true          # a predictions-page problem must never block the history site
+        run: |
+          pip install ./flight_sim_src
+          python tools/whatif/build_site.py --config aero_modeling/whatif_config.json --site site
+
       - name: Upload the site for GitHub Pages
         if: always() && github.ref == 'refs/heads/main' && hashFiles('site/index.html') != ''
         uses: actions/upload-pages-artifact@v5
@@ -206,6 +232,10 @@ jobs:
         run: npm install --prefix tools/openrocket --no-package-lock --no-audit --no-fund
       - name: Test the site page
         run: python tools/openrocket/tests/test_site.py
+      - name: Test the predictions build script and the Update CSV helper
+        run: |
+          python tools/whatif/tests/test_build_site.py
+          python tools/whatif/tests/test_local_helper.py
 
   # Publishes the site built above. Runs only for pushes to main; the URL is shown on the run
   # and under Settings -> Pages. Pages must be set to "GitHub Actions" as the source (once).
