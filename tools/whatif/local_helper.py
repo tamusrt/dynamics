@@ -292,8 +292,7 @@ class Helper:
             if any("was corrected" in line for line in self.log[start:]):
                 return (f"{ctx.cdx.name} did not match the OpenRocket file, so it was corrected (the lines above say what changed; "
                         f"the old one is kept as {ctx.cdx.name}.before-fix). RASAero still has the old rocket open: in RASAero use "
-                        f"File, Open and open {ctx.cdx.name} again (do not save the old one over it), check the fins sit where they "
-                        "should in RASAero's drawing, then press Create again.")
+                        f"File, Open and open {ctx.cdx.name} again (do not save the old one over it), then press Create again.")
         code = self._step([ctx.python, "-u", HERE / "rasaero_sweep.py", "--out", ctx.alpha_dir, "--window", ctx.window, "--countdown", "5"])
         if code != 0:
             last = [line for line in self.log if line.strip()][-1:] or ["no output"]
