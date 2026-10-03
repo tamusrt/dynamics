@@ -59,6 +59,7 @@ class Context:
     alpha_dir: Path
     csv: Path
     cdx: Path | None
+    ork: Path | None
     site: Path
     page_url: str
     python: str
@@ -88,6 +89,7 @@ def load_context(config_path: Path, repo: Path, python: str, key: str | None = N
         alpha_dir=base / spec["alpha_dir"],
         csv=base / spec["aero"],
         cdx=base / spec["rasaero"] if "rasaero" in spec else None,
+        ork=base / spec["ork"] if "ork" in spec else None,
         site=repo / "site",
         page_url="/predictions/" if default else f"/predictions/{key.lower()}/",
         python=python,
@@ -280,6 +282,18 @@ class Helper:
 
     def _sweep(self) -> str | None:
         ctx = self.ctx
+        # OpenRocket's RASAero export does not always copy the shape exactly: correct the .CDX1 from the .ork first.
+        if ctx.cdx is not None and ctx.ork is not None and ctx.cdx.exists() and ctx.ork.exists():
+            self._say(f"Checking {ctx.cdx.name} against {ctx.ork.name}")
+            start = len(self.log)
+            code = self._step([ctx.python, "-u", HERE / "fix_cdx.py", "--ork", ctx.ork, "--cdx", ctx.cdx])
+            if code != 0:
+                return f"Could not check {ctx.cdx.name} against {ctx.ork.name}. See the lines above. Nothing was run in RASAero."
+            if any("was corrected" in line for line in self.log[start:]):
+                return (f"{ctx.cdx.name} did not match the OpenRocket file, so it was corrected (the lines above say what changed; "
+                        f"the old one is kept as {ctx.cdx.name}.before-fix). RASAero still has the old rocket open: in RASAero use "
+                        f"File, Open and open {ctx.cdx.name} again (do not save the old one over it), check the fins sit where they "
+                        "should in RASAero's drawing, then press Create again.")
         code = self._step([ctx.python, "-u", HERE / "rasaero_sweep.py", "--out", ctx.alpha_dir, "--window", ctx.window, "--countdown", "5"])
         if code != 0:
             last = [line for line in self.log if line.strip()][-1:] or ["no output"]
