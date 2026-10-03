@@ -20,6 +20,7 @@ The old file is kept next to it as <name>.before-fix. Prints one line per value 
 from __future__ import annotations
 
 import argparse
+import re
 import shutil
 import sys
 import xml.etree.ElementTree as ET
@@ -154,7 +155,8 @@ def fix(ork: Path, cdx: Path, dry_run: bool = False) -> list[str]:
             station += _num(part, "Length")
     if changes and not dry_run:
         shutil.copyfile(cdx, cdx.with_name(cdx.name + ".before-fix"))
-        text = ET.tostring(root, encoding="unicode")
+        # RASAero writes empty elements as <Tag></Tag>; keep that form rather than XML's <Tag />
+        text = re.sub(r"<([A-Za-z0-9_]+) />", r"<\1></\1>", ET.tostring(root, encoding="unicode"))
         cdx.write_bytes((b"\xef\xbb\xbf" if bom else b"") + text.encode("utf-8"))
     return changes
 
