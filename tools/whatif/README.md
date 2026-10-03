@@ -34,10 +34,34 @@ On `main` it:
 
 1. builds the History site into `site/`,
 2. checks out the `flight_sim` repo and installs it,
-3. runs `python tools/whatif/build_site.py --config aero_modeling/whatif_config.json --site site`,
-4. uploads `site/` and deploys it.
+3. runs `python tools/whatif/build_site.py --config aero_modeling/whatif_config.json --site site`
+   (the Predictions page, Vision, and the dashed Jarvis lines for the History tab, see below),
+4. opens the built site in a real browser and clicks through it (see "Checks on every push"),
+5. if Predictions or Vision is broken, puts the last good ones back and adds the Error bar (see "When a push breaks
+   something"),
+6. uploads `site/` and deploys it.
 
 If the Predictions build fails, the History site still deploys. Look for "Build the predictions page" in the run log.
+
+A change to `flight_sim` (the model itself) does not start this by itself. After pushing it, run the workflow by hand:
+Actions, "OpenRocket simulation check", Run workflow, branch `main`.
+
+## Jarvis on the History tab (by commit)
+
+The History tab draws OpenRocket's numbers for every committed version of a design. The Action also flies each of those
+versions with Jarvis and draws it as a **dashed line** in the same colour, next to the solid OpenRocket line. Hover a
+dashed point to see both numbers and the gap. The **Jarvis** button above the chart turns the dashed lines off and on
+(`jarvis=0` in the address). They show in the Absolute and Δ line views, not in the bars.
+
+Each point flies that version's own `.ork`, read back from git, with the RASAero table and `.CDX1` as they were at that
+commit (the nearest ones when there were none yet) and today's motor. So the line shows the design changing and nothing
+else. The numbers go to `site/jarvis_by_commit.json`, which the History page loads when it opens. A version that cannot
+be read is left out (the note under the chart says how many). If Jarvis fails here, History is not affected: it just has no
+dashed lines. The code is `flight_sim.whatif.commits`, also usable on its own:
+`python -m flight_sim.whatif.commits --ork ... --aero ... --motor ... --history-site site --out by_commit.json`.
+
+The dashed lines only appear on a site that was built on `main`, because they need the full git history and the History
+site.
 
 ## Where the numbers come from
 
@@ -46,15 +70,16 @@ If the Predictions build fails, the History site still deploys. Look for "Build 
 | OpenRocket design | `IREC_2027/OR/2027_OR.ork` | size, mass, launch conditions |
 | RASAero table | `IREC_2027/RASA/ignis_2027_aero.csv` | drag, lift and centre of pressure |
 | RASAero rocket | `IREC_2027/RASA/rasaero.CDX1` | the rocket the CSV was made for |
-| Motor | newest `.eng` or `.rse` in `IREC_2027/Thrust Curves/` | thrust, propellant mass, total mass |
+| Motor | the file History flies (`default_motor` in `sim_config.json`), else the newest `.eng` or `.rse` in `IREC_2027/Thrust Curves/` | thrust, propellant mass, total mass |
 
 **OpenRocket's lines** are the History tab's numbers: the newest good flight of each simulation, read from the History
 site that was just built. So Predictions and History never disagree. On a laptop with no History site, the results saved
 inside the `.ork` are used, and the page says which it used.
 
-**Same motor.** History flies the motor named as `default_motor` for the design in `sim_config.json`. Jarvis flies the newest
-motor file. If they are different files, the page warns you. To compare like with like, set `default_motor` to the file
-Jarvis flies. To use one fixed file for Jarvis, put `"motor": "<file>"` in the config instead of `motor_dir`.
+**Same motor.** Jarvis flies the motor the History tab flies: the `default_motor` for the design in `sim_config.json`.
+The page says so ("same as the History tab"). If that file is not set or is missing, Jarvis uses the newest file in
+`motor_dir`, and the page warns you when the two are different files. To make Jarvis fly one fixed file instead, put
+`"motor": "<file>"` in the rocket's entry in `whatif_config.json`. That choice wins over everything else.
 
 **Stability** is counted the way History counts it: from the moment the rocket leaves the rail until apogee, only while it
 is faster than 30 m/s.
@@ -113,6 +138,47 @@ Add an entry under `rockets` in `aero_modeling/whatif_config.json`. It needs `or
 `openrocket_config` names the History config to read the motor from (default `sim_config.json`).
 The `default` rocket is at `/predictions/`. The others are at `/predictions/<key in lowercase>/`.
 
+## Checks on every push
+
+Every push to any branch that touches `tools/whatif/`, `tools/openrocket/`, `aero_modeling/` or the workflow runs
+three kinds of check. A failed one is red on the commit.
+
+- **Page tests** (`tools/openrocket/tests/test_site.py`) run the History page's code against made-up data.
+- **Build tests** (`tools/whatif/tests/test_build_site.py`, `test_local_helper.py`) check the Predictions build and the
+  Update CSV helper.
+- **Browser test** (`tools/whatif/tests/browser_test.py`) opens the site in a real Chromium and clicks through it:
+  the History chart and its five tabs; the dashed Jarvis lines and the Jarvis button; the Predictions tab (its table,
+  chart and weather table, and that Jarvis's apogee is not wildly far from OpenRocket's); units chosen in the page
+  reaching Predictions; the Vision 3D scene being drawn and not blank; the Error bar showing when something broke; and
+  no script errors or missing files anywhere.
+  On every push it runs on a made-up History site. On `main` it runs on the real site before it is published, and
+  if the Predictions build worked, the Predictions page and Vision must be there. The pictures it takes of each tab are
+  kept in the run's artifacts (`browser-test-pictures-...`), so you can see what it saw.
+
+## When a push breaks something
+
+The site never shows a broken Predictions page or a broken Vision. If a push breaks either one, for any reason (the
+build fails, `flight_sim` cannot be checked out, a page is missing or gives a 404, a script stops, the 3D scene is
+blank), the workflow:
+
+1. downloads the Predictions page and Vision that are live now and puts them in the new site in place of the broken ones,
+   so people still see the last good overview and 3D model;
+2. shows a large red **Error** bar at the top of every tab of the History page, saying what broke, which push it was, and
+   that it is the last good version being shown (with the date), with a link to the run;
+3. adds the same bar to the top of the old page when it is opened on its own (inside the History page it hides itself,
+   so there is only one bar);
+4. writes the problem in red on the run's summary, as an error on the run, and on the commit's comment;
+5. still publishes the site, so History keeps updating.
+
+The bar goes away by itself on the first push that builds cleanly. If there is no earlier page to put back (the very
+first publish), the new page is kept as it is, or the tab says it is missing, and the bar says so.
+
+Two things are not covered, on purpose. A problem in the History tab itself fails the run and nothing is published, so
+the site that is live now stays exactly as it is. The dashed Jarvis lines going missing only puts a line in the Error bar.
+
+The work is done by `tools/whatif/site_status.py` (tested by `tests/test_site_status.py`). The site that is live is found
+at `https://<owner>.github.io/<repo>`. If yours is somewhere else, set the repository variable `LIVE_SITE_URL`.
+
 ## Build and test on your computer
 
 ```
@@ -120,6 +186,11 @@ pip install -e <path to flight_sim>
 python tools/whatif/build_site.py --config aero_modeling/whatif_config.json --site site
 python tools/whatif/tests/test_build_site.py
 python tools/whatif/tests/test_local_helper.py
+python tools/whatif/tests/test_site_status.py
+pip install playwright
+python -m playwright install chromium
+python tools/whatif/tests/browser_test.py --synthetic
+python tools/whatif/tests/browser_test.py --site site --require-predictions --shots pictures
 ```
 
 Open `site/predictions/index.html`. It loads Plotly from cdn.plot.ly. `--dry-run` prints the commands and the motor chosen.

@@ -165,6 +165,86 @@ def test_config_with_motor_dir_passes_the_newest_motor_and_the_note():
         assert cmd[cmd.index("--motor-note") + 1] == "newest of 1 in motors"
 
 
+def _motor_config(root: Path, spec_extra: dict | None = None, history: dict | None = None) -> Path:
+    for name in ("a.ork", "a.csv"):
+        (root / name).write_text("x")
+    folder = root / "motors"
+    folder.mkdir()
+    (folder / "m.rse").write_text("x")  # the one the propulsion model wrote last
+    (folder / "h.rse").write_text("x")  # the one the History tab flies
+    spec = {"ork": "a.ork", "aero": "a.csv", "motor_dir": "motors", **(spec_extra or {})}
+    (root / "sim_config.json").write_text(json.dumps({"files": {"a.ork": history or {"default_motor": "motors/h.rse"}}}))
+    path = root / "whatif_config.json"
+    path.write_text(json.dumps({"rockets": {"R": spec}}))
+    return path
+
+
+def _flown(cmd: list[str]) -> str:
+    return Path(cmd[cmd.index("--motor") + 1]).name
+
+
+def test_jarvis_flies_the_motor_the_history_tab_flies():
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        build = build_site.plan(_motor_config(root), root / "site")[0]
+        assert _flown(build["cmd"]) == "h.rse" and build["note"] == "same as the History tab"
+        assert build["cmd"][build["cmd"].index("--motor-note") + 1] == "same as the History tab"
+
+
+def test_without_a_usable_history_motor_the_newest_is_flown():
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        path = _motor_config(root, history={"default_motor": "motors/gone.rse"})  # file is not there
+        assert _flown(build_site.plan(path, root / "site")[0]["cmd"]) in ("m.rse", "h.rse")
+        assert build_site.plan(path, root / "site")[0]["note"].startswith("newest of 2")
+        (root / "sim_config.json").write_text(json.dumps({"files": {"a.ork": {"default_motor": "motors/notes.txt"}}}))
+        (root / "motors" / "notes.txt").write_text("not a motor")
+        assert build_site.plan(path, root / "site")[0]["note"].startswith("newest of 2")
+        (root / "sim_config.json").write_text("{}")  # History names no motor
+        assert build_site.plan(path, root / "site")[0]["note"].startswith("newest of 2")
+
+
+def test_a_motor_named_in_the_config_beats_the_history_motor():
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        path = _motor_config(root, {"motor": "motors/m.rse"})
+        assert _flown(build_site.plan(path, root / "site")[0]["cmd"]) == "m.rse"
+
+
+def test_jarvis_by_commit_is_planned_only_when_the_history_site_is_built():
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        spec = {"ork": "IREC/OR/a.ork", "aero": "a.csv", "motor": "a.eng", "rasaero": "a.CDX1"}
+        path = _config(root, {"R": spec}, "R")
+        site = root / "site"
+        assert build_site.plan(path, site)[0]["by_commit"] is None
+        site.mkdir()
+        (site / "data.json").write_text("{}")
+        cmd = build_site.plan(path, site)[0]["by_commit"]
+        assert cmd[1:3] == ["-m", "flight_sim.whatif.commits"]
+        assert cmd[cmd.index("--history-site") + 1] == str(site)
+        assert cmd[cmd.index("--out") + 1] == str(site / "predictions" / "by_commit.json")
+        assert "--rasaero" in cmd
+
+
+def test_the_by_commit_files_of_all_rockets_are_joined_for_the_history_page():
+    with tempfile.TemporaryDirectory() as tmp:
+        site = Path(tmp)
+        builds = []
+        for key, design in (("A", "x/a.ork"), ("B", "x/b.ork"), ("C", "x/c.ork")):
+            out = site / "predictions" / key.lower()
+            out.mkdir(parents=True)
+            builds.append({"out": out})
+            body = {"design": design, "motor": "m.rse", "note": "n", "skipped": 0, "sims": {"s": {"abc": {"apogee": 1.0}}}}
+            (out / "by_commit.json").write_text(json.dumps(body) if key != "C" else "{not json")
+        target = build_site.merge_by_commit(builds, site)
+        merged = json.loads(target.read_text())
+        assert set(merged["designs"]) == {"x/a.ork", "x/b.ork"}
+        assert merged["designs"]["x/a.ork"]["sims"]["s"]["abc"]["apogee"] == 1.0
+        assert not any((b["out"] / "by_commit.json").exists() for b in builds), "the single files are removed"
+        assert build_site.merge_by_commit(builds, site) is None, "nothing left to join"
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):
