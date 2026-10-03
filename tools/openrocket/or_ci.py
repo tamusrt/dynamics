@@ -1469,6 +1469,8 @@ SITE_HTML = r"""<!doctype html>
   .chip .up { color:var(--up); } .chip .down { color:var(--down); }
   .tabs { display:flex; gap:4px; }
   .tabs button { font-size:13px; padding:4px 12px; }
+  .tabs a { font-size:13px; padding:4px 12px; border-radius:6px; border:1px solid var(--line); background:var(--bg); color:var(--fg); text-decoration:none; }
+  .tabs a:hover { border-color:var(--accent); }
   .row select { max-width:260px; }
   .row .lbl { color:var(--muted); font-size:12px; margin-left:6px; }
   .chartbox.tall { min-height:380px; }
@@ -1511,7 +1513,7 @@ SITE_HTML = r"""<!doctype html>
 <body>
 <header>
   <h1>OpenRocket performance</h1>
-  <div class="tabs"><button id="tab-history">History</button><button id="tab-flight">Flight plots</button><button id="tab-changelog">Changelog</button></div>
+  <div class="tabs"><button id="tab-history">History</button><button id="tab-flight">Flight plots</button><button id="tab-changelog">Changelog</button><a id="tab-whatif" href="predictions/" hidden>Predictions</a></div>
   <span class="sub" id="sub"></span>
   <label class="sub" style="margin-left:auto">units <select id="units"><option value="metric">metric (m, m/s, kPa)</option><option value="imperial">imperial (ft, ft/s, psi)</option></select></label>
   <label class="sub">stability <select id="stab"><option value="cal">calibers</option><option value="pct">% of body length</option></select></label>
@@ -2043,6 +2045,8 @@ function drawChangelog() {
 }
 
 const TABS = { history: 'tab-history', flight: 'tab-flight', changelog: 'tab-changelog' };
+// The predictions page is built by tools/whatif/build_site.py; show its link only when it was deployed.
+if (typeof fetch === 'function') fetch('predictions/index.html', { method: 'HEAD' }).then(r => { if (r.ok) document.getElementById('tab-whatif').hidden = false; }).catch(() => {});
 for (const [name, id] of Object.entries(TABS)) document.getElementById(id).onclick = () => { state.tab = name; update(); };
 function update() {
   unitSel.value = state.units; stabSel.value = state.stab; assignColors(); writeHash(); refreshNav();
