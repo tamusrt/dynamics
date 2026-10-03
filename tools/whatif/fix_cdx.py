@@ -12,7 +12,7 @@ the tube lengths have come out wrong). This rewrites, from the .ork:
               (RASAero's "Distance from the base of the tube": from the aft end of the fins' tube
               to the fins' leading edge; 0 puts the whole fin behind the tube, the root chord
               puts its trailing edge at the tube's end)
-  boat tail   length, front and rear diameter
+  boat tail   length and rear diameter (RASAero takes the front diameter from the body tube)
 Everything else in the file (surface, launch site, simulations) is kept as it is.
 The old file is kept next to it as <name>.before-fix. Prints one line per value it changed.
 """
@@ -66,8 +66,9 @@ def read_ork_shape(path: Path) -> dict:
                 radius = _num(part, "radius", radius)
                 shape["tubes"].append(length)
             else:
-                shape["tail"] = {"Length": length, "Diameter": 2 * _num(part, "foreradius", radius) / IN,
-                                 "RearDiameter": 2 * _num(part, "aftradius") / IN}
+                # not the front diameter: RASAero takes it from the body tube (its box is greyed out), and
+                # OpenRocket's export writes the rear diameter there, which RASAero ignores
+                shape["tail"] = {"Length": length, "RearDiameter": 2 * _num(part, "aftradius") / IN}
             for child in _kids(part):
                 if child.tag == "trapezoidfinset":
                     lead = _fin_leading_edge(child, start, length_m)
