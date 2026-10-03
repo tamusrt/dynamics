@@ -2,9 +2,10 @@
 
     python tools/whatif/build_site.py --config aero_modeling/whatif_config.json --site site
 
-The page and flight come from the flight_sim package (``pip install`` it from the
-flight_sim repo): it reads the OpenRocket design, takes the aerodynamics from the
-RASAero CSV and flies the 6-DOF sim. See tools/whatif/README.md.
+The page and flight (Jarvis and Vision) come from the flight_sim package (``pip install``
+it from the flight_sim repo): it reads the OpenRocket design, takes the aerodynamics from the
+RASAero CSV and flies the rocket. When the History site is already in ``--site``, the page
+puts OpenRocket's numbers from it next to Jarvis's. See tools/whatif/README.md.
 """
 
 from __future__ import annotations
@@ -54,6 +55,21 @@ def newest_thrust_curve(folder: Path) -> tuple[Path, str]:
     return chosen, f"newest of {len(stems)} in {folder.name}"
 
 
+def history_motor(config_dir: Path, spec: dict) -> str:
+    """Name of the motor file the History tab's OpenRocket runs use for this design, or '' if unknown.
+
+    Read from sim_config.json (next to the whatif config, or the file named by the rocket's
+    ``openrocket_config`` setting): the design's ``default_motor``.
+    """
+    path = config_dir / spec.get("openrocket_config", "sim_config.json")
+    try:
+        files = json.loads(path.read_text(encoding="utf-8")).get("files", {})
+    except (OSError, ValueError):
+        return ""
+    motor = (files.get(Path(spec["ork"]).as_posix()) or {}).get("default_motor")
+    return Path(motor).name if isinstance(motor, str) else ""
+
+
 def plan(config_path: Path, site: Path) -> list[dict]:
     """The builds the config asks for: where each goes and the command that makes it."""
     config = json.loads(config_path.read_text(encoding="utf-8"))
@@ -92,6 +108,11 @@ def plan(config_path: Path, site: Path) -> list[dict]:
             cmd += ["--rasaero", str(paths["rasaero"])]
         if "sim" in spec:
             cmd += ["--sim", spec["sim"]]
+        if (site / "data.json").is_file():  # the History site was built first
+            cmd += ["--history-site", str(site)]
+            motor = history_motor(base, spec)
+            if motor:
+                cmd += ["--history-motor", motor]
         builds.append({"key": key, "out": out, "cmd": cmd, "motor": paths["motor"], "note": note})
     return builds
 
