@@ -310,6 +310,25 @@ def test_main_runs_edith_after_the_page_and_a_failure_does_not_change_the_exit_c
         assert calls == ["flight_sim.whatif.build"], "without --edith it is not run"
 
 
+def test_rasaero_results_are_passed_on_when_named():
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        spec = {"ork": "a.ork", "aero": "a.csv", "motor": "a.eng", "rasaero_results": "RASA/results.json"}
+        (root / "RASA").mkdir()
+        (root / "RASA" / "results.json").write_text("{}")
+        cmd = build_site.plan(_config(root, {"R": spec}, "R"), root / "site")[0]["cmd"]
+        assert cmd[cmd.index("--rasaero-results") + 1] == str(root / "RASA" / "results.json")
+        plain = build_site.plan(_config(root, {"R": {"ork": "a.ork", "aero": "a.csv", "motor": "a.eng"}}, "R"), root / "site")[0]["cmd"]
+        assert "--rasaero-results" not in plain
+        (root / "RASA" / "results.json").unlink()
+        try:
+            build_site.plan(_config(root, {"R": spec}, "R"), root / "site")
+        except SystemExit as stop:
+            assert "results.json" in str(stop), "a missing results file is named"
+        else:
+            raise AssertionError("a missing results file must stop the build")
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):
