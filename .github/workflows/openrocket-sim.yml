@@ -11,10 +11,17 @@ on:
       - "aero_modeling/**/*.ork"
       - "aero_modeling/**/*.rse"
       - "aero_modeling/**/*.eng"
-      - "aero_modeling/sim_config.json"
+      - "aero_modeling/**/*.csv"
+      - "aero_modeling/**/*.CDX1"
+      - "aero_modeling/**/*.json"     # whatif_config.json, sim_config.json and any EDITH site settings file
+      - "tools/whatif/**"
       - "tools/openrocket/or_ci.py"
       - "tools/openrocket/tests/**"
       - ".github/workflows/openrocket-sim.yml"
+  # flight_sim tells this repository when the branch the site is built from changes (its notify-dynamics.yml),
+  # so the JARVIS, VISION and EDITH pages are rebuilt with the new code. It runs on main, like a push to main.
+  repository_dispatch:
+    types: [flight-sim-updated]
   workflow_dispatch:
     inputs:
       base:
@@ -38,7 +45,7 @@ concurrency:
 jobs:
   simulate:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 50   # the history site and the predictions take about 10; EDITH, when it is on, is allowed up to ~17 more
     steps:
       - name: Check out (full history, so the base commit is available)
         uses: actions/checkout@v7
@@ -162,8 +169,117 @@ jobs:
             --repo-url "${{ github.server_url }}/${{ github.repository }}" \
             --quiet
 
-      - name: Upload the site for GitHub Pages
+      # ---- Predictions page: the committed design flown on the committed RASAero table (tools/whatif/README.md) ----
+      # Needs the flight_sim package (it holds the .ork reader, the page template and the 6-DOF sim).
+      # FLIGHT_SIM_REPO / FLIGHT_SIM_REF are optional repository variables; FLIGHT_SIM_TOKEN is only
+      # needed while that repo is private. If the checkout fails the rest of the site still deploys.
+      - name: Check out flight_sim (for the predictions page)
+        id: flightsim
+        if: always() && github.ref == 'refs/heads/main'
+        continue-on-error: true
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ vars.FLIGHT_SIM_REPO || 'tamusrt/flight_sim' }}
+          ref: ${{ vars.FLIGHT_SIM_REF || 'main' }}
+          token: ${{ secrets.FLIGHT_SIM_TOKEN || github.token }}
+          path: flight_sim_src
+
+      # ---- EDITH: the Monte Carlo simulation, which adds its own page, a summary on the Predictions page and the
+      # cloud of flights in Vision. It runs only while the repository variable FLIGHT_SIM_REF is EDITH (the flight_sim
+      # branch that has it), so a site built from any other flight_sim branch is unchanged. Its result is kept
+      # between runs (.edith_cache) and reused until the design, the aero table, the motor, the site settings or the
+      # simulator code change, so most pushes do not wait for it. If EDITH fails or runs out of time the pages built
+      # before it are left as they were and the step after the browser check says so.
+      - name: Is EDITH on?
+        id: edith
+        if: always() && github.ref == 'refs/heads/main'
+        env:
+          REF: ${{ vars.FLIGHT_SIM_REF }}
+        run: echo "enabled=$([ "$REF" = "EDITH" ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+
+      - name: Keep EDITH's result between runs (main only)
+        if: always() && github.ref == 'refs/heads/main' && steps.edith.outputs.enabled == 'true'
+        uses: actions/cache@v6
+        with:
+          path: .edith_cache
+          key: edith-${{ github.sha }}
+          restore-keys: |
+            edith-
+
+      - name: Build the predictions page (main only)
+        id: predictions
+        if: always() && github.ref == 'refs/heads/main' && steps.flightsim.outcome == 'success'
+        continue-on-error: true          # a predictions-page problem must never block the history site
+        env:
+          EDITH: ${{ steps.edith.outputs.enabled == 'true' && '--edith --edith-cache .edith_cache' || '' }}
+        run: |
+          pip install ./flight_sim_src
+          python tools/whatif/build_site.py --config aero_modeling/whatif_config.json --site site $EDITH
+
+      # ---- Real-browser check of the built site, before it goes live ----
+      # Opens the site in Chromium and clicks through History, Predictions, Vision and, when EDITH is on, EDITH (tools/whatif/tests/browser_test.py).
+      # If the predictions build above worked, the Predictions page and Vision must be there and working; if it
+      # did not (for example flight_sim could not be checked out), only the History tab is checked here.
+      # This step may fail without stopping the run: the step after it decides what to do about it.
+      - name: Install the browser for the check (main only)
         if: always() && github.ref == 'refs/heads/main' && hashFiles('site/index.html') != ''
+        run: |
+          pip install playwright
+          python -m playwright install --with-deps chromium
+
+      - name: Click through the built site in a real browser (main only)
+        id: browser
+        if: always() && github.ref == 'refs/heads/main' && hashFiles('site/index.html') != ''
+        continue-on-error: true
+        env:
+          REQUIRE: ${{ steps.predictions.outcome == 'success' && '--require-predictions' || '' }}
+          EDITH: ${{ steps.predictions.outcome == 'success' && steps.edith.outputs.enabled == 'true' && '--require-edith' || '' }}
+        run: python tools/whatif/tests/browser_test.py --site site --shots browser_test_pictures --report browser_report.json $REQUIRE $EDITH
+
+      # ---- If this push broke Predictions or Vision, the site keeps showing the last good ones ----
+      # Takes the Predictions page and Vision that are live now and puts them in the site in place of the broken
+      # new ones, and writes build_status.json, which makes the History page show a large red Error bar at the top
+      # saying what broke (tools/whatif/site_status.py). The site is still published. A problem in the History
+      # tab itself fails this step: nothing is published, and the site that is live now stays as it is.
+      # LIVE_SITE_URL is an optional repository variable, for a site that is not at <owner>.github.io/<repo>.
+      - name: Keep the last good Predictions, Vision and EDITH if this push broke them (main only)
+        id: status
+        if: always() && github.ref == 'refs/heads/main' && hashFiles('site/index.html') != ''
+        env:
+          EDITH: ${{ steps.edith.outputs.enabled == 'true' && '--edith' || '' }}
+          LIVE_URL: ${{ vars.LIVE_SITE_URL || format('https://{0}.github.io/{1}', github.repository_owner, github.event.repository.name) }}
+        run: |
+          python tools/whatif/site_status.py --site site --config aero_modeling/whatif_config.json \
+            --live-url "$LIVE_URL" \
+            --flightsim "${{ steps.flightsim.outcome }}" --predictions "${{ steps.predictions.outcome }}" \
+            --browser "${{ steps.browser.outcome }}" --report browser_report.json $EDITH \
+            --commit "${{ github.sha }}" \
+            --run-url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+
+      # ---- The JARVIS message: a picture of the whole flight in VISION, the apogees and any warnings ----
+      # (tools/whatif/vision_shot.py and jarvis_note.py). The picture is published with the site as
+      # predictions/vision.png. A problem here never stops the site from going live.
+      - name: Take the VISION picture and write the JARVIS message (main only)
+        if: always() && github.ref == 'refs/heads/main' && steps.predictions.outcome == 'success' && hashFiles('site/index.html') != ''
+        continue-on-error: true
+        env:
+          LIVE_URL: ${{ vars.LIVE_SITE_URL || format('https://{0}.github.io/{1}', github.repository_owner, github.event.repository.name) }}
+        run: |
+          python tools/whatif/vision_shot.py --site site --out site/predictions/vision.png || echo "::warning title=No VISION picture::the JARVIS message goes out without it"
+          pic=""
+          if [ -f site/predictions/vision.png ]; then pic="--picture"; fi
+          fs="${{ vars.FLIGHT_SIM_REF || 'main' }}@$(git -C flight_sim_src rev-parse --short HEAD)"
+          python tools/whatif/jarvis_note.py --site site --live-url "$LIVE_URL" --flightsim "$fs" --out jarvis_note.md $pic --stamp "${GITHUB_SHA::7}"
+
+      - name: Keep the pictures the browser test took
+        if: always() && hashFiles('browser_test_pictures/*.png') != ''
+        uses: actions/upload-artifact@v7
+        with:
+          name: browser-test-pictures-${{ github.sha }}
+          path: browser_test_pictures/
+
+      - name: Upload the site for GitHub Pages
+        if: always() && github.ref == 'refs/heads/main' && hashFiles('site/index.html') != '' && steps.status.outcome != 'failure'
         uses: actions/upload-pages-artifact@v5
         with:
           path: site
@@ -182,12 +298,39 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           {
+            python - <<'PY'
+          import json, pathlib
+          status = pathlib.Path("site/build_status.json")
+          if status.is_file():
+              for problem in json.loads(status.read_text(encoding="utf-8")).get("problems", []):
+                  print(f"**ERROR ({problem['area']}):** {problem['message']}\n")
+          PY
             cat or_ci_results/report.md
             echo
             if [ -f or_ci_results/history/history.md ]; then cat or_ci_results/history/history.md; echo; fi
             echo "_[Workflow run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) · results CSV/JSON and full history CSV in the run's artifacts._"
           } > comment.md
           gh api "repos/${{ github.repository }}/commits/${{ github.sha }}/comments" -F body=@comment.md >/dev/null
+
+      # Its own message, separate from the OpenRocket one. With a Discord webhook (repository secret
+      # DISCORD_WEBHOOK_URL, tools/whatif/README.md) it goes straight to the channel with the VISION picture;
+      # without one it is a commit comment, which the Discord GitHub bot shows as text.
+      - name: Send the JARVIS message
+        if: always() && hashFiles('jarvis_note.md') != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+        run: |
+          if [ -n "$DISCORD_WEBHOOK_URL" ]; then
+            if python tools/whatif/discord_post.py --note jarvis_note.json --picture site/predictions/vision.png; then exit 0; fi
+            echo "::warning title=Discord post failed::sending the JARVIS message as a commit comment instead"
+          fi
+          {
+            cat jarvis_note.md
+            echo
+            echo "_[Workflow run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})_"
+          } > note_comment.md
+          gh api "repos/${{ github.repository }}/commits/${{ github.sha }}/comments" -F body=@note_comment.md >/dev/null
 
   # Regression test of the site page: builds a site from synthetic data (no OpenRocket) and runs the
   # page's JavaScript with assertions, then renders it through the real Plotly. A broken page blocks
@@ -206,6 +349,25 @@ jobs:
         run: npm install --prefix tools/openrocket --no-package-lock --no-audit --no-fund
       - name: Test the site page
         run: python tools/openrocket/tests/test_site.py
+      - name: Test the predictions build script and the Update CSV helper
+        run: |
+          python tools/whatif/tests/test_build_site.py
+          python tools/whatif/tests/test_local_helper.py
+          python tools/whatif/tests/test_site_status.py
+      # The same click-through as above, on a made-up History site (no OpenRocket needed), so every
+      # push to any branch checks the History page, its tabs and the Jarvis lines in a real browser.
+      - name: Install the browser for the click-through
+        run: |
+          pip install playwright
+          python -m playwright install --with-deps chromium
+      - name: Click through a made-up site in a real browser
+        run: python tools/whatif/tests/browser_test.py --synthetic --shots browser_test_pictures
+      - name: Keep the pictures the browser test took
+        if: always() && hashFiles('browser_test_pictures/*.png') != ''
+        uses: actions/upload-artifact@v7
+        with:
+          name: browser-test-pictures-synthetic-${{ github.sha }}
+          path: browser_test_pictures/
 
   # Publishes the site built above. Runs only for pushes to main; the URL is shown on the run
   # and under Settings -> Pages. Pages must be set to "GitHub Actions" as the source (once).

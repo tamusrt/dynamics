@@ -22,6 +22,7 @@ import hybrid_engine_cg as heng
 import solid_engine_cg as seng
 import rocket_geometry as geo
 
+
 # specifications for each rocket motor
 # offset is measure from the nose tip 
 sol_ignis = {
@@ -207,8 +208,6 @@ def build_hybrid(cfg, t, ox_pressure_psi, thrust_lbf, ox_mdot_measured=None):
         ox_mdot = np.where(in_burn, fc["ox_mdot"], 0.0)
     elif fc["ox_method"] == "column":                    # pass an already-trimmed array
         ox_mdot = np.where(in_burn, np.asarray(ox_mdot_measured, dtype=float), 0.0)
-    else:                                                # "blowdown"
-        ox_mdot = heng.mdot_on_sensor_time(t, fc["bd_times"], fc["bd_mdot"], t_ign)
 
     geom = dict(port_radius0_in=gc["initial_port_radius_in"], length_in=gc["length_in"],
                 fuel_density_lbm_in3=gc["fuel_density_lbm_in3"], outer_radius_in=gc["outer_radius_in"])
@@ -225,6 +224,52 @@ def build_hybrid(cfg, t, ox_pressure_psi, thrust_lbf, ox_mdot_measured=None):
         fuel_mdot = np.where(in_burn, fc["fuel_mdot"], 0.0)
 
     tc = cfg["tank"]
+    tank_casing = heng.EngineComponent(
+        name="ox_tank_casing",
+        dry_mass=tc["dry_mass"], 
+        offset=tc["offset"],
+        length=tc["length"], 
+        radius=tc["radius"],
+    )
+    tank = heng.OxidizerTank(
+        casing=tank_casing,
+        volume_in3=tc["volume_in3"],
+        initial_ox_mass_lbm=tc["initial_ox_mass_lbm"],
+        liquid_temp_F=tc["liquid_temp_F"],
+        times_s=t, pressure_psi=ox_pressure_psi, mdot_lbm_s=ox_mdot,
+    )
+
+    gc = cfg["grain"]
+    grain_casing = heng.EngineComponent(
+        name="grain_casing",
+        dry_mass=gc["dry_mass"], 
+        offset=gc["offset"],
+        length=gc["length"], radius=gc["radius"],
+    )
+    grain = heng.FuelGrain(
+        casing=grain_casing,
+        outer_radius_in=gc["outer_radius_in"],
+        initial_port_radius_in=gc["initial_port_radius_in"],
+        length_in=gc["length_in"],
+        fuel_density_lbm_in3=gc["fuel_density_lbm_in3"],
+        times_s=t, mdot_lbm_s=fuel_mdot,
+    )
+
+    pc = cfg["plumbing"]
+    plumbing = heng.EngineComponent(
+        name="plumbing", 
+        dry_mass=pc["dry_mass"],
+        offset=pc["offset"], 
+        length=pc["length"],
+    )
+
+    ec = cfg["engine"]
+    return heng.Engine(
+        tank=tank, plumbing=plumbing, 
+        grain=grain,
+        length_in=ec["length_in"], 
+        offset_in=ec["offset_in"],
+    )
 
 def build_solid(values: dict, t: np.array, df):
     gcv = values["grain_casing"]
@@ -345,8 +390,10 @@ def calculate(data_dict, cutoff_dict, rocket):
     #print(rocket.mass_at(0), rocket.mass_at(rocket.engine.grain.times_s[-1] if rocket.engine else None))
 
     calc["cgs"] = geo.total_cg(rocket, calc["time"])
+    print("****")
     print(calc["cgs"])
-    print('time shape:', calc["time"].shape, 'cgs shape:', calc["cgs"].shape)
+    print("***")
+    #print('time shape:', calc["time"].shape, 'cgs shape:', calc["cgs"].shape)
     calc["iyy"] = geo.total_iyy(rocket, calc["time"], calc["cgs"])
     calc["sm"] = faa.stability(time, calc["iyy"], gyro_y, calc["fn"])
 
@@ -764,9 +811,6 @@ def main():
             raise KeyError(f"No dataset found containing '{substr}' in its key")
         return matches[0]
 
-    print(find_bundle(data, "accel"))
-    print(find_bundle(data, "accel")['time'])
-    print(find_bundle(data, "accel").pre_launch['time'])
     flight_dir = Path(BASE_DIR) / rocket_name / flight
     candidates = [f for f in flight_dir.iterdir() if f.name.lower().endswith('.xml')]
 
@@ -783,10 +827,6 @@ def main():
                 print(f"{key}.{col}: non-numeric, sample = {raw[0]!r}")
 
     interpolated_data, cutoff_dict = ld.interpolate(data)
-    print("***")
-    print(find_bundle(interpolated_data, "accel").pre_launch['time'])
-    print([k for k in interpolated_data.keys() if "accel" in k])
-    print(find_bundle(interpolated_data, "accel").pre_launch['time'])
 
     for entry in interpolated_data:
         bundle = interpolated_data[entry]
@@ -808,8 +848,6 @@ def main():
         _, t_end = heng.burn_window_from_thrust(time, thrust)
         keep = time <= t_end
         engine_used = build_hybrid(cfg, time[keep], pressure[keep], thrust[keep])
-        print(engine_used)
-        print(engine_used.cg_at(time[keep]))
     elif ROCKET_ENGINES[engine_key][1] == "solid":
         thrust_bundle = find_bundle(interpolated_data, "thrust")
         spec_thrust = thrust_bundle['spec_thrust']

@@ -21,7 +21,7 @@ assert(!js.includes('__DATA__'), 'template placeholder was not replaced');
 
 // ---------------------------------------------------------------- stub DOM
 function el(tag) {
-  return { tag, children: [], style: {}, dataset: {}, attrs: {}, classList: { toggle() {} }, hidden: false, disabled: false, checked: false,
+  return { tag, children: [], style: {}, dataset: {}, attrs: {}, classList: { set: new Set(), toggle(n, on) { if (on === undefined ? !this.set.has(n) : on) this.set.add(n); else this.set.delete(n); }, contains(n) { return this.set.has(n); } }, hidden: false, disabled: false, checked: false,
     value: '', textContent: '', className: '', title: '',
     get innerHTML() { return this._html || ''; }, set innerHTML(v) { this._html = v; this.children = []; },
     appendChild(c) { this.children.push(c); return c; }, append(...c) { this.children.push(...c); }, remove() {},
@@ -75,7 +75,7 @@ function run(params) {
   global.location = { hash: '#' + new URLSearchParams(params).toString() };
   requested.length = 0; calls.length = 0; simRows = [];
   for (const k of Object.keys(els)) delete els[k];
-  eval(js + ';globalThis.__P = { state, addY, flipY, removeY, exportCsv, csvText, update, stabSel, unitSel, simLabel, fvar, ALL };');
+  eval(js + ';globalThis.__P = { state, addY, flipY, removeY, exportCsv, csvText, update, stabSel, unitSel, simLabel, fvar, ALL, frames, FRAMES, syncFrame, frameMissing, setJarvis, setBuildStatus };');
   P = globalThis.__P;
   for (const src of [...requested]) eval(fs.readFileSync(path.join(site, src), 'utf8'));   // what the browser's <script> tags do
   return calls[calls.length - 1];
@@ -276,6 +276,176 @@ test('entries render for the ticked design, newest first, with the diff escaped'
   assert(h.indexOf(entries[0].short) < h.indexOf(entries[entries.length - 1].short), 'newest first');
   assert(!h.includes('<script'), 'commit messages are escaped'); assert(h.includes('&lt;script'), 'the fixture message with a script tag is shown escaped');
   assert(!h.includes(files[1]), 'only the ticked design');
+});
+
+console.log('predictions and vision tabs');
+console.log('jarvis by commit');
+// what build_site.py writes: Jarvis's numbers per design, simulation and commit (the History metrics, in SI)
+const jarvisFor = (id, scale, only) => {
+  const [f, s] = id.split('|'), sims = {};
+  sims[s] = {};
+  for (const r of rowsOf(id)) if (r.sha && (!only || only.includes(r.sha))) sims[s][r.sha] = { apogee: r.m.apogee == null ? null : r.m.apogee * scale, max_mach: 0.5 };
+  return { designs: { [f]: { motor: 'IGNIS_2027.rse', note: 'Each point flies that version\'s design file with today\'s motor (IGNIS_2027.rse)', skipped: 2, sims } } };
+};
+const jarvisRows = (id, scale) => rowsOf(id).filter(r => r.sha && r.m.apogee != null);
+test('Jarvis is a dashed line next to OpenRocket, in display units, with OpenRocket in the hover', () => {
+  run({ tab: 'history', metric: 'apogee', view: 'abs', units: 'imperial', sel: enc([A]) });
+  P.setJarvis(jarvisFor(A, 1.1));
+  const c = last(), f = specOf('apogee').units.imperial.factor, rows = jarvisRows(A);
+  assert.strictEqual(c.traces.length, 2, 'OpenRocket line and Jarvis line');
+  const [orT, jT] = c.traces;
+  assert(!orT.line.dash && jT.line.dash === 'dash'); assert(jT.name.endsWith('(Jarvis)'), jT.name); assert.strictEqual(jT.line.color, orT.line.color, 'same colour as its simulation');
+  assert.strictEqual(jT.y.length, rows.length);
+  rows.forEach((r, i) => assert(close(jT.y[i], r.m.apogee * 1.1 * f, 1e-9)));
+  assert(jT.hovertemplate[0].includes('OpenRocket:') && jT.hovertemplate[0].includes('Jarvis'), jT.hovertemplate[0]);
+  assert(jT.customdata.every(d => d.sha), 'a Jarvis point opens its commit too');
+});
+test('Jarvis follows the metric and the delta view', () => {
+  run({ tab: 'history', metric: 'apogee', view: 'dline', units: 'metric', sel: enc([A]) });
+  P.setJarvis(jarvisFor(A, 0.9));
+  const jT = last().traces[1], rows = jarvisRows(A);
+  assert.strictEqual(jT.y[0], 0); rows.slice(1).forEach((r, i) => assert(close(jT.y[i + 1], (r.m.apogee - rows[i].m.apogee) * 0.9, 1e-9)));
+  P.state.metric = 'max_mach'; P.update();   // a flat Jarvis number is a flat line of zeros in the delta view
+  assert.strictEqual(last().traces.length, 2); assert(last().traces[1].y.every(v => v === 0));
+  P.state.view = 'abs'; P.update();
+  assert(last().traces[1].y.every(v => close(v, specOf('max_mach').units.metric.factor * 0.5, 1e-9)));
+});
+test('the toggle hides the dashed lines and the choice travels in the URL', () => {
+  run({ tab: 'history', metric: 'apogee', view: 'abs', sel: enc([A]) });
+  P.setJarvis(jarvisFor(A, 1.1));
+  const btn = () => els.metrics.children.find(b => b.id === 'jarvis-toggle');
+  assert(btn() && btn().className === 'on'); assert.strictEqual(els.jarvisnote.hidden, false);
+  assert(els.jarvisnote.textContent.includes('Dashed lines are Jarvis') && els.jarvisnote.textContent.includes('IGNIS_2027.rse') && els.jarvisnote.textContent.includes('2 older versions'), els.jarvisnote.textContent);
+  assert(!/jarvis=/.test(hash), hash);
+  btn().onclick();
+  assert.strictEqual(last().traces.length, 1); assert(/jarvis=0/.test(hash), hash); assert.strictEqual(btn().className, ''); assert.strictEqual(els.jarvisnote.hidden, true);
+  run({ tab: 'history', metric: 'apogee', view: 'abs', jarvis: '0', sel: enc([A]) });
+  P.setJarvis(jarvisFor(A, 1.1));
+  assert.strictEqual(P.state.jarvis, false); assert.strictEqual(last().traces.length, 1);
+});
+test('Jarvis is left out of the bars, and for designs it has no numbers for', () => {
+  run({ tab: 'history', metric: 'apogee', view: 'dbar', sel: enc([A]) });
+  P.setJarvis(jarvisFor(A, 1.1));
+  assert(last().traces.every(t => t.type === 'bar')); assert.strictEqual(last().traces.length, 1);
+  assert(!els.metrics.children.some(b => b.id === 'jarvis-toggle') && els.jarvisnote.hidden === true);
+  run({ tab: 'history', metric: 'apogee', view: 'abs', sel: enc([A, B]) });
+  P.setJarvis(jarvisFor(A, 1.1));
+  assert.strictEqual(last().traces.length, 3, 'A: OpenRocket and Jarvis, B: OpenRocket only');
+  assert.deepStrictEqual(last().traces.filter(t => t.name.includes('Jarvis')).length, 1);
+});
+test('a Jarvis file that is missing, empty or odd changes nothing', () => {
+  run({ tab: 'history', metric: 'apogee', view: 'abs', sel: enc([A]) });
+  for (const bad of [null, {}, { designs: {} }, { designs: { [A.split('|')[0]]: {} } }, { designs: { [A.split('|')[0]]: { sims: { nothing: {} } } } }]) {
+    P.setJarvis(bad); assert.strictEqual(last().traces.length, 1);
+    assert(!els.metrics.children.some(b => b.id === 'jarvis-toggle'), 'no toggle without Jarvis numbers');
+  }
+});
+test('Jarvis points exist only for the commits it flew', () => {
+  const shas = rowsOf(A).filter(r => r.sha && r.m.apogee != null).map(r => r.sha);
+  run({ tab: 'history', metric: 'apogee', view: 'abs', sel: enc([A]) });
+  P.setJarvis(jarvisFor(A, 1.1, shas.slice(0, 1)));
+  const jT = last().traces[1]; assert.strictEqual(jT.y.length, 1); assert.strictEqual(jT.customdata[0].sha, shas[0]);
+});
+
+console.log('the Error bar');
+const problem = (area, extra) => Object.assign({ area, message: 'a script stopped (boom)', shown: 'last_good', since: '2026-10-01' }, extra);
+const barText = () => els['be-list'].children.map(li => li.textContent);
+test('a failed build puts a large Error bar at the top, saying what broke and what is shown instead', () => {
+  run({ tab: 'history', metric: 'apogee', view: 'abs', sel: enc([A]) });
+  assert(html.includes('id="bigerror" role="alert" hidden'), 'the bar starts hidden: no bar when nothing is wrong');
+  P.setBuildStatus({ commit: 'abcdef0123456789', run_url: 'https://example.test/run/1', problems: [problem('predictions'), problem('vision', { shown: 'none' })] });
+  assert.strictEqual(els.bigerror.hidden, false);
+  const t = barText(); assert.strictEqual(t.length, 2);
+  assert(t[0].startsWith('Predictions: a script stopped (boom).') && t[0].includes('last good version from 2026-10-01'), t[0]);
+  assert(t[1].startsWith('Vision:') && t[1].includes('no earlier version'), t[1]);
+  assert(els['be-sub'].textContent.includes('abcdef0'), els['be-sub'].textContent);
+  assert.strictEqual(els['be-link'].hidden, false); assert.strictEqual(els['be-link'].href, 'https://example.test/run/1');
+});
+test('the bar goes away for a clean status, a missing one or rubbish', () => {
+  run({ tab: 'history', sel: enc([A]) });
+  for (const clean of [null, {}, { problems: [] }, { problems: 'x' }, { ok: true }]) {
+    P.setBuildStatus({ problems: [problem('vision')] }); assert.strictEqual(els.bigerror.hidden, false);
+    P.setBuildStatus(clean); assert.strictEqual(els.bigerror.hidden, true); assert.strictEqual(barText().length, 0);
+  }
+});
+test('a tab whose page is missing (404) raises the bar too, once', () => {
+  run({ tab: 'predictions', sel: enc([A]) });
+  P.frameMissing('predictions');
+  assert.strictEqual(els.bigerror.hidden, false); assert(barText()[0].startsWith('Predictions: the page is missing (404)'), barText()[0]);
+  P.setBuildStatus({ problems: [problem('predictions', { shown: 'none', message: 'it could not be built' })] });
+  assert.strictEqual(barText().length, 1, 'the build status already says it; the same tab is not listed twice');
+  assert(barText()[0].includes('could not be built'));
+});
+test('a failed build, and a page kept as built, are worded for what was shown', () => {
+  run({ tab: 'history', sel: enc([A]) });
+  P.setBuildStatus({ problems: [problem('build', { message: 'the build failed.' })] });
+  assert(barText()[0].startsWith('Predictions and Vision: the build failed. Showing the last good version from 2026-10-01 instead.'), barText()[0]);
+  P.frameMissing('predictions'); assert.strictEqual(barText().length, 1, 'the build problem already covers both tabs');
+  P.setBuildStatus({ problems: [problem('vision', { shown: 'as_built' })] });
+  assert(barText().some(t => t.includes('this is the new one as built')), barText().join('|'));
+  P.setBuildStatus({ problems: [problem('jarvis', { shown: undefined, message: 'the dashed lines did not draw.' })] });
+  assert(barText().includes('Jarvis lines: the dashed lines did not draw.'), barText().join('|'));
+});
+test('the text of an error is shown as text, never as markup', () => {
+  run({ tab: 'history', sel: enc([A]) });
+  P.setBuildStatus({ problems: [problem('predictions', { message: '<img src=x onerror=alert(1)>' })] });
+  assert(barText()[0].includes('<img src=x'), barText()[0]); assert.strictEqual(els['be-list'].innerHTML, '', 'built from elements with textContent, not innerHTML');
+});
+
+test('both tabs are always there, and each opens a frame inside this page', () => {
+  assert(!html.includes('hidden>Predictions'), 'the Predictions tab must not be hidden until a check passes');
+  assert(html.includes('id="tab-predictions"') && html.includes('id="tab-vision"'));
+  run({ tab: 'predictions', units: 'metric', stab: 'cal', sel: enc([A]) });
+  const f = els['view-predictions'].children[0];
+  assert.strictEqual(f.tag, 'iframe'); assert.strictEqual(f.src, 'predictions/index.html#embed=1&units=metric&stab=cal');
+  assert.strictEqual(els['view-predictions'].hidden, false); assert.strictEqual(els['view-history'].hidden, true);
+  assert(els.layout.classList.contains('wide') && els.main.classList.contains('frame'), 'the list on the left gives way to the frame');
+  assert(/tab=predictions/.test(hash) && !/metric=/.test(hash), hash);
+  run({ tab: 'vision', sel: enc([A]) });
+  const v = els['view-vision'].children[0];
+  assert.strictEqual(v.src, 'predictions/viewer/index.html'); assert.strictEqual(els['units-label'].hidden, true);
+  assert.strictEqual(els['view-predictions'].hidden, true);
+  run({ tab: 'history', metric: 'apogee', view: 'abs', sel: enc([A]) });
+  assert(!els.layout.classList.contains('wide') && !els.main.classList.contains('frame'), 'the history tab has its list back');
+  assert.strictEqual(els['units-label'].hidden, false); assert.strictEqual(Object.keys(P.frames).length, 0, 'nothing is loaded before its tab is opened');
+});
+test('units and stability chosen in this page reach the Predictions frame', () => {
+  run({ tab: 'predictions', units: 'imperial', stab: 'pct', sel: enc([A]) });
+  const f = P.frames.predictions, win = { location: { hash: '#embed=1&units=imperial&stab=pct&metric=speed' } };
+  f.contentWindow = win; f.onload();
+  P.state.units = 'metric'; P.state.stab = 'cal'; P.update();
+  const p = new URLSearchParams(win.location.hash.slice(1));
+  assert.strictEqual(p.get('units'), 'metric'); assert.strictEqual(p.get('stab'), 'cal'); assert.strictEqual(p.get('metric'), 'speed', 'the frame keeps its own other choices');
+  assert.strictEqual(els['view-predictions'].children[0], f, 'the frame is kept, not rebuilt');
+  f.contentWindow = { get location() { throw new Error('cross-origin'); } };
+  P.state.units = 'imperial'; P.update();   // must not throw
+});
+test('the EDITH tab stays hidden until its page exists, and its frame follows the units', () => {
+  assert(html.includes('id="tab-edith" hidden'), 'EDITH is only built on the EDITH branch, so its tab starts hidden');
+  assert(!html.includes('id="tab-edith" hidden>EDITH</button><button'), 'the EDITH tab is the last one');
+  run({ tab: 'edith', units: 'metric', stab: 'cal', sel: enc([A]) });
+  assert.strictEqual(els['tab-edith'].hidden, false, 'a link to the tab shows it');
+  const f = els['view-edith'].children[0];
+  assert.strictEqual(f.tag, 'iframe'); assert.strictEqual(f.src, 'predictions/edith/index.html#embed=1&units=metric&stab=cal');
+  assert.strictEqual(els['view-edith'].hidden, false); assert.strictEqual(els['view-history'].hidden, true);
+  assert.strictEqual(els['stab-label'].hidden, false, 'EDITH\'s stability chart follows the choice'); assert.strictEqual(els['units-label'].hidden, false);
+  const win = { location: { hash: '#embed=1&units=metric&stab=cal' } };
+  f.contentWindow = win; f.onload();
+  P.state.units = 'imperial'; P.update();
+  assert.strictEqual(new URLSearchParams(win.location.hash.slice(1)).get('units'), 'imperial');
+  assert.strictEqual(els['view-edith'].children[0], f, 'the frame is kept, not rebuilt');
+  run({ tab: 'history', sel: enc([A]) });
+  assert.strictEqual(els['view-edith'].hidden, true); assert.strictEqual(els['stab-label'].hidden, false);
+  P.frameMissing('edith');
+  assert(/FLIGHT_SIM_REF is EDITH/.test(els['view-edith'].children[0].textContent), 'a missing page says when it is built');
+});
+test('a page that was not built is explained instead of shown empty', () => {
+  run({ tab: 'predictions', sel: enc([A]) });
+  P.frameMissing('predictions');
+  const holder = els['view-predictions'];
+  assert.strictEqual(holder.children.length, 1); assert.strictEqual(holder.children[0].className, 'framemsg');
+  assert(holder.children[0].textContent.includes('not been built'), holder.children[0].textContent);
+  assert.strictEqual(P.frames.predictions, undefined);
 });
 
 // ---------------------------------------------------------------- real Plotly (optional)
