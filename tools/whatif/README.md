@@ -100,12 +100,14 @@ hundreds of times, each with a different wind, temperature, motor strength, rail
 counts the flights that break an IREC rule, miss the wanted apogee (30,000 ft, within plus or minus 5%) or get a
 warning. When it is on, each rocket gets:
 
-- **the EDITH tab** (`/predictions/edith/`): the chances with a range for each ("likely range", 90%), a red / amber /
-  green alert for each, charts of altitude, Mach number and stability over time (the average flight with bands for one
-  and two standard deviations, and the highest and lowest flight; buttons switch between them), a fixed 3D picture of
-  every flight's path and where it landed, and an explanation of what EDITH
-  does not cover;
-- **a summary card** on the JARVIS predictions tab, with a link to the EDITH tab;
+- **the EDITH tab** (`/predictions/edith/`): at the top one verdict line (IREC, apogee, chance of the target) and one
+  line for each red alert (amber is never an alert: it shows next to its check); then charts of altitude, Mach number
+  and stability over time (the average flight with bands for one and two standard deviations, and the highest and
+  lowest flight), the apogee chances, a fixed 3D picture of every flight's path and where it landed, and dropdowns for
+  the IREC rules, the rest of the flight, the assumptions, the inputs and how much to trust it. EDITH's results are only
+  on this page, not on the JARVIS predictions tab. IREC recommendations the team has accepted can be listed by check id
+  under `edith_accepted` in the rocket's entry of `aero_modeling/whatif_config.json`: they show greyed, marked accepted
+  (changing the list does not rerun EDITH);
 - **in VISION**, a switch to draw the simulated flights around the replay as small dots (where they peaked, or where they
   came down), and, with the landing spread chosen, **EDITH landing circles** (off to start with): circles on the ground,
   centred on the average landing point, holding 25%, 50%, 75% and 90% of the landings.
@@ -119,12 +121,13 @@ main branch, change the gate in `.github/workflows/openrocket-sim.yml`, step "Is
 **Time.** A full run takes about 5 minutes on the workflow's two cores. It stops starting new rounds of flights after
 10 minutes (`edith_minutes` in the rocket's config entry) and then reports the chances it has, with wider ranges and a
 note saying so. The result is kept in the workflow cache (`.edith_cache`) and reused until the design, the RASAero table,
-the motor, the site settings or the `flight_sim` code change, so most pushes do not wait for it. A result cut short by
+the motor, the site settings or the `flight_sim` code EDITH's flights run change, so most pushes do not wait for it (a
+change to the pages or to VISION alone keeps it). A result cut short by
 the time limit is not kept.
 
 **It cannot break the site.** If EDITH fails or runs out of time, the JARVIS and VISION pages stay as they were built
 and `site_status.py` puts the last good EDITH page back with a red Error bar (see below). `browser_test.py` checks the
-EDITH tab, page (with its charts and picture), card, and VISION's spread switch and landing circles when EDITH is on
+EDITH tab and page (with its charts and picture), that the Predictions page has nothing of EDITH's, and VISION's spread switch and landing circles when EDITH is on
 (`--require-edith`).
 
 **Placeholders.** The wind, weather, parachute strength and the spread of every input are assumed, not measured. The

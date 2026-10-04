@@ -263,6 +263,10 @@ def test_edith_is_planned_only_when_asked_and_uses_the_rockets_settings():
         plain = build_site.plan(_config(root, {"R": {"ork": "a.ork", "aero": "a.csv", "motor": "a.eng"}}, "R"), root / "site", True)[0]["edith"]
         assert "--site" not in plain and "--cache" not in plain and "--sim" not in plain
         assert plain[plain.index("--minutes") + 1] == "10"
+        assert "--accepted" not in plain and "--accepted" not in cmd, "no accepted list, no flag"
+        spec["edith_accepted"] = ["stability_static_max", " main_altitude ", ""]
+        cmd = build_site.plan(_config(root, {"R": spec}, "R"), root / "site", True)[0]["edith"]
+        assert cmd[cmd.index("--accepted") + 1] == "stability_static_max,main_altitude"
 
 
 def test_a_missing_edith_settings_file_is_named():

@@ -63,7 +63,11 @@ jobs:
         with:
           python-version: "3.11"
           cache: pip
-          cache-dependency-path: tools/openrocket/requirements.txt
+          # the workflow file is in the key too, so the cache is saved again when it changes: it then holds every
+          # package this job downloads (flight_sim's and the browser check's as well), not only orlab's
+          cache-dependency-path: |
+            tools/openrocket/requirements.txt
+            .github/workflows/openrocket-sim.yml
 
       - name: Install orlab
         run: pip install -r tools/openrocket/requirements.txt
@@ -86,8 +90,11 @@ jobs:
           restore-keys: |
             openrocket-history-
 
+      # A rebuild asked for by flight_sim (repository_dispatch) changes no design here, so there is nothing to
+      # compare before and after: it skips straight to the site (the report and its steps below skip with it).
       - name: Simulate before/after and diff the designs
         id: sim
+        if: github.event_name != 'repository_dispatch'
         env:
           BASE: ${{ github.event.before || inputs.base }}
           ALL: ${{ inputs.all == true && '--all' || '' }}
@@ -184,7 +191,7 @@ jobs:
           token: ${{ secrets.FLIGHT_SIM_TOKEN || github.token }}
           path: flight_sim_src
 
-      # ---- EDITH: the Monte Carlo simulation, which adds its own page, a summary on the Predictions page and the
+      # ---- EDITH: the Monte Carlo simulation, which adds its own page and the
       # cloud of flights in Vision. It runs only while the repository variable FLIGHT_SIM_REF is EDITH (the flight_sim
       # branch that has it), so a site built from any other flight_sim branch is unchanged. Its result is kept
       # between runs (.edith_cache) and reused until the design, the aero table, the motor, the site settings or the
@@ -221,6 +228,13 @@ jobs:
       # If the predictions build above worked, the Predictions page and Vision must be there and working; if it
       # did not (for example flight_sim could not be checked out), only the History tab is checked here.
       # This step may fail without stopping the run: the step after it decides what to do about it.
+      - name: Keep the browser for the check between runs (main only)
+        if: always() && github.ref == 'refs/heads/main' && hashFiles('site/index.html') != ''
+        uses: actions/cache@v6
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-chromium-${{ runner.os }}-v1
+
       - name: Install the browser for the check (main only)
         if: always() && github.ref == 'refs/heads/main' && hashFiles('site/index.html') != ''
         run: |
