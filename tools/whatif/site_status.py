@@ -1,8 +1,8 @@
-"""After the site is built and clicked through: keep the last good Predictions and Vision when a push breaks them.
+"""After the site is built and clicked through: keep the last good Predictions, Vision and EDITH when a push breaks them.
 
     python tools/whatif/site_status.py --site site --config aero_modeling/whatif_config.json \\
         --live-url https://tamusrt.github.io/dynamics --flightsim success --predictions failure \\
-        --report browser_report.json --commit <sha> --run-url <url>
+        --report browser_report.json --commit <sha> --run-url <url> [--edith]
 
 It looks at how the build went (the outcome of the flight_sim checkout and of the Predictions build) and at
 the report of ``tools/whatif/tests/browser_test.py``, and decides what is wrong. For each problem with
@@ -13,6 +13,10 @@ Predictions or Vision it then:
   page, which shows its own bar); if there is no earlier page, the new one is kept as built;
 * writes ``build_status.json`` into the site. The History page reads it and shows the big Error bar at the top
   of every tab, saying what broke and what is shown instead.
+
+EDITH (the Monte Carlo simulation, its own page under ``predictions/edith/``) is handled the same way, but only
+when ``--edith`` says this build was meant to make it. Without the flag nothing about EDITH is checked or put back,
+so a site that does not run EDITH never shows an old EDITH page.
 
 A problem with the History tab itself or with the build is not covered: there the exit code is 1, so the
 workflow does not publish, and the site that is live now stays as it is. Problems with the dashed Jarvis lines
@@ -34,6 +38,7 @@ from email.utils import parsedate_to_datetime
 from pathlib import Path
 
 PAGES = ("predictions", "vision")  # what can be put back from the last good version
+EDITH = "edith"  # also put back, but only when the build was meant to make it (--edith)
 BLOCKING = ("history",)  # a problem here keeps the site from being published
 MARK = re.compile(r"<!--srt-error-start-->.*?<!--srt-error-end-->", re.DOTALL)
 SINCE = re.compile(r"<!--srt-good-since:([^>]*?)-->")
@@ -42,6 +47,11 @@ BUILD_FAILED = {
     "(see the step \"Build the predictions page\" in the run).",
     "skipped": "The Predictions build did not run, so the new Predictions page and Vision could not be made.",
 }
+EDITH_MISSING = (
+    "EDITH (the Monte Carlo simulation) did not finish, so its page is missing or out of date, and the summary "
+    "on the Predictions page and the flights in Vision may be missing too "
+    "(see the step \"Build the predictions page\" in the run)."
+)
 FLIGHTSIM_FAILED = (
     "The flight_sim code could not be checked out, so the new Predictions page and Vision could not be made "
     "(check FLIGHT_SIM_REF and FLIGHT_SIM_TOKEN in the repository settings)."
@@ -54,12 +64,18 @@ def page_files(config: dict, area: str) -> list[str]:
     files = []
     for key in config["rockets"]:
         folder = "predictions" if key == default else f"predictions/{key.lower()}"
-        files.append(f"{folder}/index.html" if area == "predictions" else f"{folder}/viewer/index.html")
+        leaf = {"predictions": "index.html", "vision": "viewer/index.html", EDITH: "edith/index.html"}[area]
+        files.append(f"{folder}/{leaf}")
     return files
 
 
-def problems_found(flightsim: str, predictions: str, report: dict | None, browser: str = "success") -> list[dict]:
-    """What is wrong, as [{area, message}], from the build's outcomes and the browser test's report."""
+def problems_found(
+    flightsim: str, predictions: str, report: dict | None, browser: str = "success", edith_missing: bool = False
+) -> list[dict]:
+    """What is wrong, as [{area, message}], from the build's outcomes and the browser test's report.
+
+    ``edith_missing``: EDITH was meant to be built and its page is not in the site.
+    """
     found: list[dict] = []
     if browser == "failure" and report is None:  # it did not get as far as reporting: the site is unchecked
         found.append({"area": "history", "message": "The browser check could not run, so the site could not be checked."})
@@ -69,9 +85,11 @@ def problems_found(flightsim: str, predictions: str, report: dict | None, browse
         found.append({"area": "build", "message": BUILD_FAILED[predictions]})
     for failure in (report or {}).get("failed", []):
         area = failure.get("area", "history")
-        if area in PAGES and any(p["area"] == "build" for p in found):
+        if area in (*PAGES, EDITH) and any(p["area"] == "build" for p in found):
             continue  # the build failing already says it
         found.append({"area": area, "message": failure.get("message", "").strip() or f"the check \"{failure['name']}\" failed"})
+    if edith_missing and not any(p["area"] in ("build", EDITH) for p in found):
+        found.append({"area": EDITH, "message": EDITH_MISSING})
     return found
 
 
@@ -144,7 +162,7 @@ def restore(site: Path, config: dict, live_url: str, area: str, message: str) ->
     for rel, (text, since) in got.items():
         target = site / rel
         target.parent.mkdir(parents=True, exist_ok=True)
-        name = "Vision" if area == "vision" else "Predictions"
+        name = {"vision": "Vision", EDITH: "EDITH"}.get(area, "Predictions")
         note = f"{name}: {sentence(message)} This is the last good version, from {since}."
         target.write_text(with_banner(text, note, since), encoding="utf-8")
     if got:
@@ -154,7 +172,7 @@ def restore(site: Path, config: dict, live_url: str, area: str, message: str) ->
 
 def write_report(site: Path, status: dict, summary: Path | None) -> None:
     (site / "build_status.json").write_text(json.dumps(status, indent=1), encoding="utf-8")
-    labels = {"predictions": "Predictions", "vision": "Vision", "build": "Predictions and Vision",
+    labels = {"predictions": "Predictions", "vision": "Vision", "edith": "EDITH", "build": "Predictions and Vision",
               "history": "History", "jarvis": "Jarvis lines"}
     shown = {
         "last_good": "showing the last good version",
@@ -177,8 +195,11 @@ def run(args: argparse.Namespace) -> int:
     report = None
     if args.report and Path(args.report).is_file():
         report = json.loads(Path(args.report).read_text(encoding="utf-8"))
-    found = problems_found(args.flightsim, args.predictions, report, args.browser)
-    areas = {a for p in found for a in (PAGES if p["area"] == "build" else (p["area"],)) if a in PAGES}
+    pages = (*PAGES, EDITH) if args.edith else PAGES  # what this build was meant to make
+    missing = args.edith and not all((site / rel).is_file() for rel in page_files(config, EDITH))
+    found = problems_found(args.flightsim, args.predictions, report, args.browser, missing)
+    found = [p for p in found if p["area"] != EDITH or args.edith]  # no EDITH problems when it was not asked for
+    areas = {a for p in found for a in (pages if p["area"] == "build" else (p["area"],)) if a in pages}
     shown: dict[str, tuple[str, str]] = {}
     for area in sorted(areas):
         message = next((p["message"] for p in found if p["area"] in (area, "build")), "")
@@ -186,8 +207,8 @@ def run(args: argparse.Namespace) -> int:
     problems = []
     for p in found:
         entry = dict(p)
-        if p["area"] == "build" or p["area"] in PAGES:
-            kinds = [shown[a] for a in (PAGES if p["area"] == "build" else (p["area"],)) if a in shown]
+        if p["area"] == "build" or p["area"] in pages:
+            kinds = [shown[a] for a in (pages if p["area"] == "build" else (p["area"],)) if a in shown]
             entry["shown"] = "last_good" if kinds and all(k[0] == "last_good" for k in kinds) else (kinds[0][0] if kinds else "none")
             entry["since"] = min((k[1] for k in kinds if k[1]), default="")
         problems.append(entry)
@@ -211,6 +232,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--flightsim", default="success", help="outcome of the flight_sim checkout")
     parser.add_argument("--predictions", default="success", help="outcome of the Predictions build")
     parser.add_argument("--browser", default="success", help="outcome of the browser test step")
+    parser.add_argument("--edith", action="store_true", help="this build was meant to make the EDITH page too")
     parser.add_argument("--report", default="", help="the browser test's --report file")
     parser.add_argument("--commit", default=os.environ.get("GITHUB_SHA", ""))
     parser.add_argument("--run-url", default="")
