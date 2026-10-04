@@ -16,9 +16,9 @@ What it checks, in order:
   Jarvis's apogee is not wildly far from OpenRocket's, and the units picked in the page reach it;
 * the Vision tab opens, has its canvas, and the 3D scene is drawn (not blank);
 * the EDITH tab (EDITH is the team's Monte Carlo simulation; its page is built only for some flight_sim branches): hidden
-  while there is no EDITH page, and when there is one the tab opens it with its chances, alerts, histogram and landing
-  map, the units picked in the page reach it, the summary card is on the Predictions page, and Vision can show the
-  apogee spread and the landing spread of the simulated flights;
+  while there is no EDITH page, and when there is one the tab opens it with its chances, alerts, charts over time and
+  picture of every flight path, the units picked in the page reach it, the summary card is on the Predictions page, and
+  Vision can show the apogee and landing spread of the simulated flights and the landing circles;
 * the big red Error bar at the top is there when the site's ``build_status.json`` says something broke, and when a tab
   cannot be loaded (a 404, a page that was not built);
 * no tab throws a script error or loads a file that is missing.
@@ -304,7 +304,7 @@ def check_vision(b: Browser, require: bool) -> str:
 def check_edith(b: Browser, require: bool, deep: bool) -> str:
     """The EDITH tab: absent without its page, and with it the page is drawn and follows the units.
 
-    ``deep`` looks inside the real page (its chances, histogram and map); the made-up site only has a stand-in page.
+    ``deep`` looks inside the real page (its chances, charts and recovery picture); the made-up site only has a stand-in page.
     """
     built = (b.site / EDITH_PAGE).is_file()
     b.open("tab=history&metric=apogee&view=abs")  # the tab is decided as the page opens
@@ -322,8 +322,15 @@ def check_edith(b: Browser, require: bool, deep: bool) -> str:
         frame.wait_for_selector("#verdict", timeout=10000)
         return "tab shows and opens the page"
     frame.wait_for_function("(v => !!v && v.innerText.trim().length > 10)(document.getElementById('verdict'))", timeout=30000)
-    for chart in ("apohist", "map"):  # these are the drawings themselves, filled in by the page
+    for chart in ("series", "spread"):  # these are the drawings themselves, filled in by the page
         frame.wait_for_function(f"(c => !!c && c.childElementCount > 3)(document.getElementById('{chart}'))", timeout=10000)
+    paths = frame.evaluate("document.querySelectorAll('#spread path').length")
+    assert paths > 10, f"the recovery spread picture has only {paths} paths"
+    for chart, title in (("mach", "Mach"), ("stability", "Stability"), ("altitude", "Altitude")):
+        frame.click(f"#seriesseg button[data-k={chart}]")
+        frame.wait_for_function(f"(h => !!h && h.textContent.startsWith('{title}'))(document.getElementById('seriestitle'))", timeout=5000)
+        bands = frame.evaluate("document.querySelectorAll('#series path').length")
+        assert bands >= 5, f"the {chart} chart has only {bands} lines and bands"
     verdict = frame.evaluate("document.getElementById('verdict').innerText")
     alerts = frame.evaluate("document.querySelectorAll('#alerts > *').length")
     assert alerts >= 1, "the alerts list is empty"
@@ -334,7 +341,7 @@ def check_edith(b: Browser, require: bool, deep: bool) -> str:
     assert "assumed" in page_text.lower(), "the page does not say that the conditions are assumed"
     assert not frame.evaluate("document.querySelector('header') && getComputedStyle(document.querySelector('header')).display !== 'none'"), "the page's own header shows inside the History page"
     b.shot("edith")
-    return f"{alerts} alerts, {checks} checks; {verdict.strip()[:60]!r}"
+    return f"{alerts} alerts, {checks} checks, three charts, {paths} paths; {verdict.strip()[:50]!r}"
 
 
 def check_units_reach_edith(b: Browser) -> str:
@@ -380,7 +387,20 @@ def check_vision_spread(b: Browser) -> str:
         assert sizes[mode] > 20000, f"the 3D scene looks blank with the {mode} spread ({sizes[mode]} bytes)"
         if mode != "off":
             b.shot(f"vision_{mode}_spread")
-    return "apogee and landing spread both draw, and the switch turns them off"
+    # the landing circles: their switch shows only with the landing spread chosen, off to start with
+    assert frame.evaluate("document.getElementById('circWrap').hidden"), "the circles' switch shows without the landing spread"
+    frame.click("#spread button[data-s=landing]")
+    frame.wait_for_function("(c => !!c && !c.hidden)(document.getElementById('circWrap'))", timeout=5000)
+    assert not frame.evaluate("document.getElementById('circ').checked"), "the landing circles should start off"
+    frame.click("#circ")
+    frame.wait_for_function("(k => !!k && !k.hidden && k.innerText.includes('90%'))(document.getElementById('circKey'))", timeout=5000)
+    b.page.wait_for_timeout(1200)
+    size = len(b.page.query_selector("#view-vision iframe").screenshot())
+    assert size > 20000, f"the 3D scene looks blank with the landing circles ({size} bytes)"
+    b.shot("vision_landing_circles")
+    frame.click("#spread button[data-s=off]")
+    frame.wait_for_function("document.getElementById('circKey').hidden && document.getElementById('circWrap').hidden", timeout=5000)
+    return "apogee and landing spread both draw, the switch turns them off, and the landing circles turn on and off"
 
 
 def check_back_to_history(b: Browser) -> str:
@@ -439,7 +459,7 @@ def run(site: Path, args: argparse.Namespace) -> int:
         report.check("EDITH tab shows only with its page, and opens it", "edith", lambda: check_edith(b, require_edith, deep))
         report.check("units chosen in the page reach the EDITH tab", "edith", lambda: check_units_reach_edith(b))
         report.check("EDITH summary card on the Predictions page", "edith", lambda: check_jarvis_edith_card(b))
-        report.check("Vision shows the apogee and landing spread of EDITH's flights", "edith", lambda: check_vision_spread(b))
+        report.check("Vision shows EDITH's apogee and landing spread, and the landing circles", "edith", lambda: check_vision_spread(b))
         report.check("back on History, the address follows", "history", lambda: check_back_to_history(b))
         for area, what in (("history", "History"), ("predictions", "Predictions"), ("vision", "Vision"), ("edith", "EDITH")):
             report.check(f"no script errors and no missing files in {what}", area, lambda area=area: check_no_problems(b, area))

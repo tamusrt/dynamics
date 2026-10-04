@@ -95,11 +95,14 @@ counts the flights that break an IREC rule, miss the wanted apogee (30,000 ft, w
 warning. When it is on, each rocket gets:
 
 - **the EDITH tab** (`/predictions/edith/`): the chances with a range for each ("likely range", 90%), a red / amber /
-  green alert for each, a histogram of the apogees, a map of where the rocket lands, and an explanation of what EDITH
+  green alert for each, charts of altitude, Mach number and stability over time (the average flight with bands for one
+  and two standard deviations, and the highest and lowest flight; buttons switch between them), a fixed 3D picture of
+  every flight's path and where it landed, and an explanation of what EDITH
   does not cover;
 - **a summary card** on the JARVIS predictions tab, with a link to the EDITH tab;
-- **a switch in VISION** to draw the simulated flights around the replay: where they peaked (apogee spread) or where
-  they came down (landing spread).
+- **in VISION**, a switch to draw the simulated flights around the replay as small dots (where they peaked, or where they
+  came down), and, with the landing spread chosen, **EDITH landing circles** (off to start with): circles on the ground,
+  centred on the average landing point, holding 25%, 50%, 75% and 90% of the landings.
 
 Only the default launch condition of the design (`sim` in the config) is flown by EDITH.
 
@@ -115,7 +118,8 @@ the time limit is not kept.
 
 **It cannot break the site.** If EDITH fails or runs out of time, the JARVIS and VISION pages stay as they were built
 and `site_status.py` puts the last good EDITH page back with a red Error bar (see below). `browser_test.py` checks the
-EDITH tab, page, card and VISION switch when EDITH is on (`--require-edith`).
+EDITH tab, page (with its charts and picture), card, and VISION's spread switch and landing circles when EDITH is on
+(`--require-edith`).
 
 **Placeholders.** The wind, weather, parachute strength and the spread of every input are assumed, not measured. The
 EDITH page says so in a banner at the top until they are replaced. To use the team's own numbers, write a JSON file
