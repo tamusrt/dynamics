@@ -104,7 +104,7 @@ def plan(config_path: Path, site: Path, edith: bool = False, edith_cache: Path |
         if missing or not ("motor" in spec or "motor_dir" in spec):
             needs = [*missing, *([] if "motor" in spec or "motor_dir" in spec else ["motor or motor_dir"])]
             raise SystemExit(f"{config_path}: rocket {key!r} is missing these settings: {', '.join(needs)}.")
-        paths = {k: base / spec[k] for k in (*_FILES, "rasaero") if k in spec}
+        paths = {k: base / spec[k] for k in (*_FILES, "rasaero", "rasaero_results") if k in spec}
         note = ""
         if "motor" in spec:  # one motor named in the config beats everything else
             paths["motor"] = base / spec["motor"]
@@ -132,6 +132,8 @@ def plan(config_path: Path, site: Path, edith: bool = False, edith_cache: Path |
             cmd += ["--motor-note", note]
         if "rasaero" in paths:
             cmd += ["--rasaero", str(paths["rasaero"])]
+        if "rasaero_results" in paths:
+            cmd += ["--rasaero-results", str(paths["rasaero_results"])]
         if "sim" in spec:
             cmd += ["--sim", spec["sim"]]
         if (site / "data.json").is_file():  # the History site was built first

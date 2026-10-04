@@ -1,0 +1,36 @@
+{
+ "_readme": [
+  "RASAero II's own flight results for this design, typed in from its Flight window (Simulations -> Flight).",
+  "The JARVIS predictions page shows them next to Jarvis and OpenRocket for the launch condition named in 'sim'",
+  "(a simulation saved in the .ork). Use null for 'sim' when the .ork has no matching condition; the page lists it",
+  "in a note instead. Units are as RASAero shows them: feet, feet per second, seconds, degrees from vertical, mph.",
+  "Update these numbers whenever RASAero is run again on a changed design."
+ ],
+ "motor": "ENGINE-2027-python (TAMUSRT)",
+ "launch_site": {
+  "elevation_ft": 2950,
+  "temperature_f": 76,
+  "barometric_pressure_inhg": 29.83,
+  "rail_length_ft": 32.8
+ },
+ "runs": [
+  {
+   "label": "no wind, 8° rail",
+   "sim": "no wind - worst",
+   "rail_deg": 8,
+   "wind_mph": 0,
+   "apogee_ft": 31737,
+   "max_velocity_ft_s": 1758.9,
+   "time_to_apogee_s": 45.3
+  },
+  {
+   "label": "no wind, 4° rail",
+   "sim": null,
+   "rail_deg": 4,
+   "wind_mph": 0,
+   "apogee_ft": 33379,
+   "max_velocity_ft_s": 1755.0,
+   "time_to_apogee_s": 46.5
+  }
+ ]
+}
