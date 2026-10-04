@@ -75,7 +75,7 @@ function run(params) {
   global.location = { hash: '#' + new URLSearchParams(params).toString() };
   requested.length = 0; calls.length = 0; simRows = [];
   for (const k of Object.keys(els)) delete els[k];
-  eval(js + ';globalThis.__P = { state, addY, flipY, removeY, exportCsv, csvText, update, stabSel, unitSel, simLabel, fvar, ALL, frames, FRAMES, syncPredictions, frameMissing, setJarvis, setBuildStatus };');
+  eval(js + ';globalThis.__P = { state, addY, flipY, removeY, exportCsv, csvText, update, stabSel, unitSel, simLabel, fvar, ALL, frames, FRAMES, syncFrame, frameMissing, setJarvis, setBuildStatus };');
   P = globalThis.__P;
   for (const src of [...requested]) eval(fs.readFileSync(path.join(site, src), 'utf8'));   // what the browser's <script> tags do
   return calls[calls.length - 1];
@@ -419,6 +419,25 @@ test('units and stability chosen in this page reach the Predictions frame', () =
   assert.strictEqual(els['view-predictions'].children[0], f, 'the frame is kept, not rebuilt');
   f.contentWindow = { get location() { throw new Error('cross-origin'); } };
   P.state.units = 'imperial'; P.update();   // must not throw
+});
+test('the EDITH tab stays hidden until its page exists, and its frame follows the units', () => {
+  assert(html.includes('id="tab-edith" hidden'), 'EDITH is only built on the EDITH branch, so its tab starts hidden');
+  assert(!html.includes('id="tab-edith" hidden>EDITH</button><button'), 'the EDITH tab is the last one');
+  run({ tab: 'edith', units: 'metric', stab: 'cal', sel: enc([A]) });
+  assert.strictEqual(els['tab-edith'].hidden, false, 'a link to the tab shows it');
+  const f = els['view-edith'].children[0];
+  assert.strictEqual(f.tag, 'iframe'); assert.strictEqual(f.src, 'predictions/edith/index.html#embed=1&units=metric&stab=cal');
+  assert.strictEqual(els['view-edith'].hidden, false); assert.strictEqual(els['view-history'].hidden, true);
+  assert.strictEqual(els['stab-label'].hidden, true, 'EDITH has no stability to choose'); assert.strictEqual(els['units-label'].hidden, false);
+  const win = { location: { hash: '#embed=1&units=metric&stab=cal' } };
+  f.contentWindow = win; f.onload();
+  P.state.units = 'imperial'; P.update();
+  assert.strictEqual(new URLSearchParams(win.location.hash.slice(1)).get('units'), 'imperial');
+  assert.strictEqual(els['view-edith'].children[0], f, 'the frame is kept, not rebuilt');
+  run({ tab: 'history', sel: enc([A]) });
+  assert.strictEqual(els['view-edith'].hidden, true); assert.strictEqual(els['stab-label'].hidden, false);
+  P.frameMissing('edith');
+  assert(/FLIGHT_SIM_REF is EDITH/.test(els['view-edith'].children[0].textContent), 'a missing page says when it is built');
 });
 test('a page that was not built is explained instead of shown empty', () => {
   run({ tab: 'predictions', sel: enc([A]) });

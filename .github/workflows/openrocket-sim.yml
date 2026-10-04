@@ -13,12 +13,15 @@ on:
       - "aero_modeling/**/*.eng"
       - "aero_modeling/**/*.csv"
       - "aero_modeling/**/*.CDX1"
-      - "aero_modeling/whatif_config.json"
+      - "aero_modeling/**/*.json"     # whatif_config.json, sim_config.json and any EDITH site settings file
       - "tools/whatif/**"
-      - "aero_modeling/sim_config.json"
       - "tools/openrocket/or_ci.py"
       - "tools/openrocket/tests/**"
       - ".github/workflows/openrocket-sim.yml"
+  # flight_sim tells this repository when the branch the site is built from changes (its notify-dynamics.yml),
+  # so the JARVIS, VISION and EDITH pages are rebuilt with the new code. It runs on main, like a push to main.
+  repository_dispatch:
+    types: [flight-sim-updated]
   workflow_dispatch:
     inputs:
       base:
@@ -42,7 +45,7 @@ concurrency:
 jobs:
   simulate:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 50   # the history site and the predictions take about 10; EDITH, when it is on, is allowed up to ~17 more
     steps:
       - name: Check out (full history, so the base commit is available)
         uses: actions/checkout@v7
@@ -181,16 +184,40 @@ jobs:
           token: ${{ secrets.FLIGHT_SIM_TOKEN || github.token }}
           path: flight_sim_src
 
+      # ---- EDITH: the Monte Carlo simulation, which adds its own page, a summary on the Predictions page and the
+      # cloud of flights in Vision. It runs only while the repository variable FLIGHT_SIM_REF is EDITH (the flight_sim
+      # branch that has it), so a site built from any other flight_sim branch is unchanged. Its result is kept
+      # between runs (.edith_cache) and reused until the design, the aero table, the motor, the site settings or the
+      # simulator code change, so most pushes do not wait for it. If EDITH fails or runs out of time the pages built
+      # before it are left as they were and the step after the browser check says so.
+      - name: Is EDITH on?
+        id: edith
+        if: always() && github.ref == 'refs/heads/main'
+        env:
+          REF: ${{ vars.FLIGHT_SIM_REF }}
+        run: echo "enabled=$([ "$REF" = "EDITH" ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+
+      - name: Keep EDITH's result between runs (main only)
+        if: always() && github.ref == 'refs/heads/main' && steps.edith.outputs.enabled == 'true'
+        uses: actions/cache@v6
+        with:
+          path: .edith_cache
+          key: edith-${{ github.sha }}
+          restore-keys: |
+            edith-
+
       - name: Build the predictions page (main only)
         id: predictions
         if: always() && github.ref == 'refs/heads/main' && steps.flightsim.outcome == 'success'
         continue-on-error: true          # a predictions-page problem must never block the history site
+        env:
+          EDITH: ${{ steps.edith.outputs.enabled == 'true' && '--edith --edith-cache .edith_cache' || '' }}
         run: |
           pip install ./flight_sim_src
-          python tools/whatif/build_site.py --config aero_modeling/whatif_config.json --site site
+          python tools/whatif/build_site.py --config aero_modeling/whatif_config.json --site site $EDITH
 
       # ---- Real-browser check of the built site, before it goes live ----
-      # Opens the site in Chromium and clicks through History, Predictions and Vision (tools/whatif/tests/browser_test.py).
+      # Opens the site in Chromium and clicks through History, Predictions, Vision and, when EDITH is on, EDITH (tools/whatif/tests/browser_test.py).
       # If the predictions build above worked, the Predictions page and Vision must be there and working; if it
       # did not (for example flight_sim could not be checked out), only the History tab is checked here.
       # This step may fail without stopping the run: the step after it decides what to do about it.
@@ -206,7 +233,8 @@ jobs:
         continue-on-error: true
         env:
           REQUIRE: ${{ steps.predictions.outcome == 'success' && '--require-predictions' || '' }}
-        run: python tools/whatif/tests/browser_test.py --site site --shots browser_test_pictures --report browser_report.json $REQUIRE
+          EDITH: ${{ steps.predictions.outcome == 'success' && steps.edith.outputs.enabled == 'true' && '--require-edith' || '' }}
+        run: python tools/whatif/tests/browser_test.py --site site --shots browser_test_pictures --report browser_report.json $REQUIRE $EDITH
 
       # ---- If this push broke Predictions or Vision, the site keeps showing the last good ones ----
       # Takes the Predictions page and Vision that are live now and puts them in the site in place of the broken
@@ -214,16 +242,17 @@ jobs:
       # saying what broke (tools/whatif/site_status.py). The site is still published. A problem in the History
       # tab itself fails this step: nothing is published, and the site that is live now stays as it is.
       # LIVE_SITE_URL is an optional repository variable, for a site that is not at <owner>.github.io/<repo>.
-      - name: Keep the last good Predictions and Vision if this push broke them (main only)
+      - name: Keep the last good Predictions, Vision and EDITH if this push broke them (main only)
         id: status
         if: always() && github.ref == 'refs/heads/main' && hashFiles('site/index.html') != ''
         env:
+          EDITH: ${{ steps.edith.outputs.enabled == 'true' && '--edith' || '' }}
           LIVE_URL: ${{ vars.LIVE_SITE_URL || format('https://{0}.github.io/{1}', github.repository_owner, github.event.repository.name) }}
         run: |
           python tools/whatif/site_status.py --site site --config aero_modeling/whatif_config.json \
             --live-url "$LIVE_URL" \
             --flightsim "${{ steps.flightsim.outcome }}" --predictions "${{ steps.predictions.outcome }}" \
-            --browser "${{ steps.browser.outcome }}" --report browser_report.json \
+            --browser "${{ steps.browser.outcome }}" --report browser_report.json $EDITH \
             --commit "${{ github.sha }}" \
             --run-url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
 

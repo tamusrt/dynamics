@@ -51,7 +51,7 @@ def _new_site(root: Path) -> Path:
     return site
 
 
-def _run(root: Path, site: Path, live: str, *, flightsim="success", predictions="success", failed=None, config=CONFIG, browser="success", report_file=True) -> tuple[int, dict]:
+def _run(root: Path, site: Path, live: str, *, flightsim="success", predictions="success", failed=None, config=CONFIG, browser="success", report_file=True, edith=False) -> tuple[int, dict]:
     report = root / "report.json"
     report.unlink(missing_ok=True)
     if report_file:
@@ -60,6 +60,8 @@ def _run(root: Path, site: Path, live: str, *, flightsim="success", predictions=
     cfg.write_text(json.dumps(config))
     args = ["--site", str(site), "--config", str(cfg), "--live-url", live, "--flightsim", flightsim, "--predictions", predictions,
             "--browser", browser, "--report", str(report), "--commit", "abcdef1234", "--run-url", "https://example.test/run/9", "--summary", str(root / "summary.md")]
+    if edith:
+        args.append("--edith")
     code = site_status.main(args)
     return code, json.loads((site / "build_status.json").read_text())
 
@@ -67,6 +69,80 @@ def _run(root: Path, site: Path, live: str, *, flightsim="success", predictions=
 def test_page_places_are_per_rocket_with_the_default_at_the_root():
     assert site_status.page_files(CONFIG, "predictions") == ["predictions/index.html", "predictions/other/index.html"]
     assert site_status.page_files(CONFIG, "vision") == ["predictions/viewer/index.html", "predictions/other/viewer/index.html"]
+
+
+def test_the_edith_page_is_per_rocket_too():
+    assert site_status.page_files(CONFIG, "edith") == ["predictions/edith/index.html", "predictions/other/edith/index.html"]
+
+
+def _edith_names():
+    return ("predictions/edith/index.html", "predictions/other/edith/index.html")
+
+
+def _with_edith(site: Path) -> Path:
+    for rel in _edith_names():
+        (site / rel).parent.mkdir(parents=True, exist_ok=True)
+        (site / rel).write_text("<html><body>NEW EDITH</body></html>", encoding="utf-8")
+    return site
+
+
+def test_a_clean_build_with_edith_keeps_the_new_edith_page():
+    with tempfile.TemporaryDirectory() as tmp, live_site({**_all_live(), **{n: GOOD.format(name=n) for n in _edith_names()}}) as live:
+        root = Path(tmp)
+        site = _with_edith(_new_site(root))
+        code, status = _run(root, site, live, edith=True)
+        assert code == 0 and status["ok"] is True
+        assert "NEW EDITH" in (site / "predictions/edith/index.html").read_text()
+
+
+def test_an_edith_page_that_was_not_made_is_replaced_by_the_last_good_one():
+    live_files = {**_all_live(), **{n: GOOD.format(name=n) for n in _edith_names()}}
+    with tempfile.TemporaryDirectory() as tmp, live_site(live_files) as live:
+        root = Path(tmp)
+        site = _new_site(root)  # the JARVIS pages are fine, EDITH made nothing
+        code, status = _run(root, site, live, edith=True)
+        assert code == 0, "an EDITH problem does not stop the site from being published"
+        assert [p["area"] for p in status["problems"]] == ["edith"] and status["problems"][0]["shown"] == "last_good"
+        page = (site / "predictions/edith/index.html").read_text()
+        assert "last good page predictions/edith/index.html" in page and "EDITH: " in page and 'id="srt-error"' in page
+        assert "NEW BROKEN" in (site / "predictions/index.html").read_text(), "the JARVIS page is left alone"
+        assert "EDITH" in (root / "summary.md").read_text()
+
+
+def test_without_the_edith_flag_nothing_about_edith_is_checked_or_put_back():
+    live_files = {**_all_live(), **{n: GOOD.format(name=n) for n in _edith_names()}}
+    with tempfile.TemporaryDirectory() as tmp, live_site(live_files) as live:
+        root = Path(tmp)
+        site = _new_site(root)
+        code, status = _run(root, site, live)
+        assert code == 0 and status["ok"] is True
+        assert not (site / "predictions/edith").exists(), "an old EDITH page is not brought back"
+        failed = [{"name": "EDITH page", "area": "edith", "message": "x"}]
+        _, status = _run(root, site, live, failed=failed)
+        assert not (site / "predictions/edith").exists()
+
+
+def test_a_broken_edith_page_found_by_the_browser_test_is_replaced():
+    live_files = {**_all_live(), **{n: GOOD.format(name=n) for n in _edith_names()}}
+    with tempfile.TemporaryDirectory() as tmp, live_site(live_files) as live:
+        root = Path(tmp)
+        site = _with_edith(_new_site(root))
+        failed = [{"name": "EDITH page shows its chances", "area": "edith", "message": "no apogee chart"}]
+        code, status = _run(root, site, live, failed=failed, edith=True)
+        assert code == 0 and [p["area"] for p in status["problems"]] == ["edith"]
+        assert "no apogee chart" in (site / "predictions/edith/index.html").read_text()
+
+
+def test_a_failed_build_also_puts_back_edith_when_it_was_expected():
+    live_files = {**_all_live(), **{n: GOOD.format(name=n) for n in _edith_names()}}
+    with tempfile.TemporaryDirectory() as tmp, live_site(live_files) as live:
+        root = Path(tmp)
+        site = root / "site"
+        site.mkdir()
+        _, status = _run(root, site, live, predictions="failure", edith=True)
+        assert [p["area"] for p in status["problems"]] == ["build"], "one problem, not one per page"
+        for rel in (*_all_live(), *_edith_names()):
+            assert f"last good page {rel}" in (site / rel).read_text(), rel
 
 
 def test_a_clean_build_changes_nothing_and_says_ok():

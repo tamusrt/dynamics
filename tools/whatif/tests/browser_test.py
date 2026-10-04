@@ -1,6 +1,6 @@
 """Opens the built site in a real browser and clicks through it, the way a person would.
 
-    python tools/whatif/tests/browser_test.py --site site [--require-predictions]
+    python tools/whatif/tests/browser_test.py --site site [--require-predictions] [--require-edith]
     python tools/whatif/tests/browser_test.py --synthetic        # a made-up History site, no build needed
 
 The other tests run the pages' code with stand-ins for the browser. This one uses Chromium
@@ -15,16 +15,20 @@ What it checks, in order:
 * the Predictions tab opens inside the page, with its table, its chart and the weather table,
   Jarvis's apogee is not wildly far from OpenRocket's, and the units picked in the page reach it;
 * the Vision tab opens, has its canvas, and the 3D scene is drawn (not blank);
+* the EDITH tab (EDITH is the team's Monte Carlo simulation; its page is built only for some flight_sim branches): hidden
+  while there is no EDITH page, and when there is one the tab opens it with its chances, alerts, histogram and landing
+  map, the units picked in the page reach it, the summary card is on the Predictions page, and Vision can show the
+  apogee spread and the landing spread of the simulated flights;
 * the big red Error bar at the top is there when the site's ``build_status.json`` says something broke, and when a tab
   cannot be loaded (a 404, a page that was not built);
 * no tab throws a script error or loads a file that is missing.
 
-A page that has not been built is fine unless ``--require-predictions`` is given: then it is a
-failure. The workflow gives that flag only when the build step before it worked. Exit code 1 on
+A page that has not been built is fine unless ``--require-predictions`` (or, for EDITH, ``--require-edith``) is
+given: then it is a failure. The workflow gives that flag only when the build step before it worked. Exit code 1 on
 any failure. ``--shots DIR`` saves a picture of each tab, for the workflow to keep.
 
-``--report FILE`` writes what failed as JSON, each failure with the area it belongs to (history, predictions, vision
-or jarvis), for ``tools/whatif/site_status.py``: a problem in Predictions or Vision makes the site show their last good
+``--report FILE`` writes what failed as JSON, each failure with the area it belongs to (history, predictions, vision,
+edith or jarvis), for ``tools/whatif/site_status.py``: a problem in Predictions or Vision makes the site show their last good
 versions with an Error bar, and a problem in History keeps the site from being published.
 """
 
@@ -47,7 +51,8 @@ OPENROCKET_TESTS = HERE.parents[1] / "openrocket" / "tests"
 # Files that may be missing without it being a problem (the page copes with each).
 MAY_BE_MISSING = ("/api/status", "jarvis_by_commit.json", "build_status.json", "favicon.ico")
 BROWSER_ARGS = ["--no-sandbox", "--use-gl=swiftshader", "--enable-unsafe-swiftshader"]
-TABS = ("history", "flight", "changelog", "predictions", "vision")
+TABS = ("history", "flight", "changelog", "predictions", "vision")  # EDITH's tab is separate: it shows only when its page exists
+EDITH_PAGE = "predictions/edith/index.html"
 
 
 class Report:
@@ -107,6 +112,16 @@ def make_synthetic(target: Path) -> None:
             }
         designs[file] = {"motor": "test.rse", "note": "Each point is made up for this test", "skipped": 0, "sims": out}
     (target / "jarvis_by_commit.json").write_text(json.dumps({"designs": designs}), encoding="utf-8")
+    # a stand-in for the EDITH page (the real one comes from flight_sim): it shows the units it was given
+    stand_in = target / EDITH_PAGE
+    stand_in.parent.mkdir(parents=True, exist_ok=True)
+    stand_in.write_text(
+        "<!doctype html><html><body><p id=verdict>Stand-in for the EDITH page</p><p id=apofigs></p><script>"
+        "function show(){var u=(location.hash.match(/units=(\\w+)/)||[])[1]||'imperial';"
+        "document.getElementById('apofigs').innerText=u=='metric'?'9144 m':'30000 ft'}"
+        "show();addEventListener('hashchange',show)</script></body></html>",
+        encoding="utf-8",
+    )
 
 
 def numbers(text: str) -> float | None:
@@ -117,6 +132,8 @@ def numbers(text: str) -> float | None:
 
 def area_of(where: str) -> str:
     """Which part of the site an address (or a path) belongs to."""
+    if "/predictions/edith/" in where:
+        return "edith"
     if "/predictions/viewer/" in where or "three.js" in where:
         return "vision"
     return "predictions" if "/predictions/" in where else "history"
@@ -156,7 +173,7 @@ class Browser:
         if path.endswith(MAY_BE_MISSING):
             return True
         tail = path.split("/", 3)[-1]  # the file's place in the site
-        return tail in ("predictions/index.html", "predictions/viewer/index.html") and not (self.site / tail).is_file()
+        return tail in ("predictions/index.html", "predictions/viewer/index.html", EDITH_PAGE) and not (self.site / tail).is_file()
 
     def _response(self, response) -> None:
         if response.status >= 400 and not self._may_be_missing(response.url):
@@ -284,6 +301,88 @@ def check_vision(b: Browser, require: bool) -> str:
     return f"{len(picture) // 1000} kB picture"
 
 
+def check_edith(b: Browser, require: bool, deep: bool) -> str:
+    """The EDITH tab: absent without its page, and with it the page is drawn and follows the units.
+
+    ``deep`` looks inside the real page (its chances, histogram and map); the made-up site only has a stand-in page.
+    """
+    built = (b.site / EDITH_PAGE).is_file()
+    b.open("tab=history&metric=apogee&view=abs")  # the tab is decided as the page opens
+    b.page.wait_for_selector("#hplot .main-svg", timeout=30000)
+    if not built:
+        assert not require, "EDITH should have been built but its page is not there"
+        b.page.wait_for_timeout(800)  # the page asks whether EDITH is there as it opens
+        assert b.page.is_hidden("#tab-edith"), "the EDITH tab is showing but there is no EDITH page"
+        return "skipped: not built; the tab stays hidden"
+    b.page.wait_for_selector("#tab-edith:not([hidden])", timeout=10000)
+    b.page.click("#tab-edith")
+    assert "tab=edith" in b.page.evaluate("location.hash"), "the address did not follow the tab"
+    frame = b.frame("/predictions/edith/index.html")
+    if not deep:
+        frame.wait_for_selector("#verdict", timeout=10000)
+        return "tab shows and opens the page"
+    frame.wait_for_function("(v => !!v && v.innerText.trim().length > 10)(document.getElementById('verdict'))", timeout=30000)
+    for chart in ("apohist", "map"):  # these are the drawings themselves, filled in by the page
+        frame.wait_for_function(f"(c => !!c && c.childElementCount > 3)(document.getElementById('{chart}'))", timeout=10000)
+    verdict = frame.evaluate("document.getElementById('verdict').innerText")
+    alerts = frame.evaluate("document.querySelectorAll('#alerts > *').length")
+    assert alerts >= 1, "the alerts list is empty"
+    checks = frame.evaluate("document.querySelectorAll('#checks tr').length")
+    assert checks > 5, f"the table of checks has only {checks} rows"
+    page_text = frame.evaluate("document.body.innerText")
+    assert "Monte Carlo" in page_text, "the page does not say that EDITH is the Monte Carlo simulation"
+    assert "assumed" in page_text.lower(), "the page does not say that the conditions are assumed"
+    assert not frame.evaluate("document.querySelector('header') && getComputedStyle(document.querySelector('header')).display !== 'none'"), "the page's own header shows inside the History page"
+    b.shot("edith")
+    return f"{alerts} alerts, {checks} checks; {verdict.strip()[:60]!r}"
+
+
+def check_units_reach_edith(b: Browser) -> str:
+    if not (b.site / EDITH_PAGE).is_file():
+        return "skipped: EDITH not built"
+    frame = b.frame("/predictions/edith/index.html")
+    for units, want in (("imperial", True), ("metric", False)):
+        b.page.select_option("#units", units)
+        frame.wait_for_function(
+            f"(a => !!a && /\\bft\\b/.test(a.innerText) === {str(want).lower()})(document.getElementById('apofigs'))", timeout=10000
+        )
+    return "metric and imperial both arrive"
+
+
+def check_jarvis_edith_card(b: Browser) -> str:
+    if not (b.site / EDITH_PAGE).is_file() or not (b.site / "predictions" / "index.html").is_file():
+        return "skipped: EDITH or Predictions not built"
+    b.page.click("#tab-predictions")
+    frame = b.frame("/predictions/index.html")
+    # the frame may be reloading after a units change, so the card can be missing for a moment
+    frame.wait_for_function("(c => !!c && !c.hidden)(document.getElementById('edithcard'))", timeout=20000)
+    text = frame.evaluate("document.getElementById('edithcard').innerText")
+    assert "EDITH" in text and "chance" in text, f"the EDITH summary card reads {text[:80]!r}"
+    frame.click("#edithlink")
+    b.page.wait_for_function("location.hash.includes('tab=edith')", timeout=10000)
+    b.frame("/predictions/edith/index.html")
+    return "card shows and its link opens the EDITH tab"
+
+
+def check_vision_spread(b: Browser) -> str:
+    if not (b.site / EDITH_PAGE).is_file() or not (b.site / "predictions" / "viewer" / "index.html").is_file():
+        return "skipped: EDITH or Vision not built"
+    b.page.click("#tab-vision")
+    frame = b.frame("/predictions/viewer/index.html")
+    frame.wait_for_function("window.__viewer !== undefined", timeout=30000)
+    frame.wait_for_function("(c => !!c && !c.hidden)(document.getElementById('spread'))", timeout=10000)
+    sizes = {}
+    for mode in ("apogee", "landing", "off"):
+        frame.click(f"#spread button[data-s={mode}]")
+        frame.wait_for_function(f"document.querySelector('#spread button.on').dataset.s === '{mode}'", timeout=5000)
+        b.page.wait_for_timeout(1200)
+        sizes[mode] = len(b.page.query_selector("#view-vision iframe").screenshot())
+        assert sizes[mode] > 20000, f"the 3D scene looks blank with the {mode} spread ({sizes[mode]} bytes)"
+        if mode != "off":
+            b.shot(f"vision_{mode}_spread")
+    return "apogee and landing spread both draw, and the switch turns them off"
+
+
 def check_back_to_history(b: Browser) -> str:
     b.page.click("#tab-history")
     b.page.wait_for_selector("#hplot .main-svg", timeout=10000)
@@ -320,6 +419,7 @@ def run(site: Path, args: argparse.Namespace) -> int:
     from playwright.sync_api import sync_playwright
 
     require, shots = args.require_predictions, Path(args.shots) if args.shots else None
+    require_edith, deep = args.require_edith, not args.synthetic
     server, port = serve(site)
     report = Report()
     print(f"browser test: {site}")
@@ -336,8 +436,12 @@ def run(site: Path, args: argparse.Namespace) -> int:
         report.check("Predictions tab opens inside the page with its tables and chart", "predictions", lambda: check_predictions(b, require))
         report.check("units chosen in the page reach the Predictions tab", "predictions", lambda: check_units_reach_predictions(b))
         report.check("Vision tab draws the 3D scene", "vision", lambda: check_vision(b, require))
+        report.check("EDITH tab shows only with its page, and opens it", "edith", lambda: check_edith(b, require_edith, deep))
+        report.check("units chosen in the page reach the EDITH tab", "edith", lambda: check_units_reach_edith(b))
+        report.check("EDITH summary card on the Predictions page", "edith", lambda: check_jarvis_edith_card(b))
+        report.check("Vision shows the apogee and landing spread of EDITH's flights", "edith", lambda: check_vision_spread(b))
         report.check("back on History, the address follows", "history", lambda: check_back_to_history(b))
-        for area, what in (("history", "History"), ("predictions", "Predictions"), ("vision", "Vision")):
+        for area, what in (("history", "History"), ("predictions", "Predictions"), ("vision", "Vision"), ("edith", "EDITH")):
             report.check(f"no script errors and no missing files in {what}", area, lambda area=area: check_no_problems(b, area))
         if args.synthetic:  # a made-up failure, to see the Error bar
             (site / "build_status.json").write_text(json.dumps({"ok": False, "commit": "abcdef0", "run_url": "https://example.test/run", "problems": [
@@ -356,6 +460,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--site", help="the built site folder (the one that gets published)")
     parser.add_argument("--synthetic", action="store_true", help="build a made-up History site and test that")
     parser.add_argument("--require-predictions", action="store_true", help="fail when the Predictions page or Vision is missing")
+    parser.add_argument("--require-edith", action="store_true", help="fail when the EDITH page is missing")
     parser.add_argument("--shots", help="save a picture of each tab in this folder")
     parser.add_argument("--report", help="write what failed, by area, to this JSON file (for site_status.py)")
     parser.add_argument("--plotly", help="a local copy of Plotly, for a computer with no internet")

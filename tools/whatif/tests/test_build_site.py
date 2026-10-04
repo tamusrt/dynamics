@@ -245,6 +245,71 @@ def test_the_by_commit_files_of_all_rockets_are_joined_for_the_history_page():
         assert build_site.merge_by_commit(builds, site) is None, "nothing left to join"
 
 
+def test_edith_is_planned_only_when_asked_and_uses_the_rockets_settings():
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        spec = {"ork": "a.ork", "aero": "a.csv", "motor": "a.eng", "sim": "average", "edith_site": "site.json", "edith_minutes": 4}
+        (root / "site.json").write_text("{}")
+        path = _config(root, {"R": spec}, "R")
+        assert build_site.plan(path, root / "site")[0]["edith"] is None, "off unless asked for"
+        build = build_site.plan(path, root / "site", True, root / "cache")[0]
+        cmd = build["edith"]
+        assert cmd[1:3] == ["-m", "flight_sim.whatif.edith_site"]
+        assert cmd[cmd.index("--out") + 1] == str(root / "site" / "predictions")
+        assert cmd[cmd.index("--sim") + 1] == "average" and cmd[cmd.index("--minutes") + 1] == "4"
+        assert cmd[cmd.index("--site") + 1] == str(root / "site.json")
+        assert cmd[cmd.index("--cache") + 1] == str(root / "cache" / "r")
+        assert build["edith_timeout_s"] == 4 * 60 * 1.5 + build_site.EDITH_GRACE_S
+        plain = build_site.plan(_config(root, {"R": {"ork": "a.ork", "aero": "a.csv", "motor": "a.eng"}}, "R"), root / "site", True)[0]["edith"]
+        assert "--site" not in plain and "--cache" not in plain and "--sim" not in plain
+        assert plain[plain.index("--minutes") + 1] == "10"
+
+
+def test_a_missing_edith_settings_file_is_named():
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        path = _config(root, {"R": {"ork": "a.ork", "aero": "a.csv", "motor": "a.eng", "edith_site": "nope.json"}}, "R")
+        try:
+            build_site.plan(path, root / "site", True)
+        except SystemExit as stop:
+            assert "nope.json" in str(stop)
+        else:
+            raise AssertionError("a missing settings file must stop the build with its name")
+
+
+def test_an_edith_failure_or_timeout_is_reported_and_never_raised():
+    py = sys.executable
+    build = {"key": "R", "edith_timeout_s": 30, "edith": [py, "-c", "raise SystemExit(0)"]}
+    assert build_site.run_edith(build) is True
+    assert build_site.run_edith({**build, "edith": [py, "-c", "raise SystemExit(3)"]}) is False
+    assert build_site.run_edith({**build, "edith": [py, "-c", "import time; time.sleep(30)"], "edith_timeout_s": 0.5}) is False
+    assert build_site.run_edith({**build, "edith": ["/no/such/program"]}) is False
+
+
+def test_main_runs_edith_after_the_page_and_a_failure_does_not_change_the_exit_code():
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        path = _config(root, {"R": {"ork": "a.ork", "aero": "a.csv", "motor": "a.eng"}}, "R")
+        calls: list[str] = []
+        real = subprocess.run
+
+        def fake(cmd, **kw):
+            calls.append(cmd[2] if len(cmd) > 2 and cmd[1] == "-m" else cmd[0])
+            return subprocess.CompletedProcess(cmd, 1 if "edith_site" in cmd[2] else 0)
+
+        subprocess.run = fake
+        try:
+            code = build_site.main(["--config", str(path), "--site", str(root / "site"), "--edith"])
+            with_edith = list(calls)
+            calls.clear()
+            build_site.main(["--config", str(path), "--site", str(root / "site")])
+        finally:
+            subprocess.run = real
+        assert code == 0, "EDITH failing must not fail the build"
+        assert with_edith == ["flight_sim.whatif.build", "flight_sim.whatif.edith_site"], "EDITH runs after the page"
+        assert calls == ["flight_sim.whatif.build"], "without --edith it is not run"
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):

@@ -1530,7 +1530,7 @@ SITE_HTML = r"""<!doctype html>
 </div>
 <header>
   <h1>Rocket performance</h1>
-  <div class="tabs"><button id="tab-history">History</button><button id="tab-flight">Flight plots</button><button id="tab-changelog">Changelog</button><button id="tab-predictions">JARVIS predictions</button><button id="tab-vision">VISION</button></div>
+  <div class="tabs"><button id="tab-history">History</button><button id="tab-flight">Flight plots</button><button id="tab-changelog">Changelog</button><button id="tab-predictions">JARVIS predictions</button><button id="tab-vision">VISION</button><button id="tab-edith" hidden>EDITH</button></div>
   <span class="sub" id="sub"></span>
   <span class="hctl">
     <label class="sub" id="units-label">units <select id="units"><option value="metric">metric (m, m/s, kPa)</option><option value="imperial">imperial (ft, ft/s, psi)</option></select></label>
@@ -1563,6 +1563,7 @@ SITE_HTML = r"""<!doctype html>
    </section>
    <section id="view-predictions" hidden></section>
    <section id="view-vision" hidden></section>
+   <section id="view-edith" hidden></section>
   </main>
 </div>
 <script id="data" type="application/json">__DATA__</script>
@@ -1583,7 +1584,8 @@ const VIEWS = [['abs', 'Absolute'], ['dline', 'Δ line'], ['dbar', 'Δ bars']];
 const state = { metric: DATA.metrics[0].key, view: 'abs', sel: new Set(), units: DATA.default_units || 'metric', stab: DATA.default_stability || 'cal',
                 tab: 'history', fx: 'altitude', fys: [{ key: 'stability', side: 'l' }], fapo: true, fprev: false, jarvis: true };   // fys: Y variables in order, side l|r
 const FVARS = DATA.flight_vars || {};
-const FRAMES = { predictions: 'predictions/index.html', vision: 'predictions/viewer/index.html' };   // pages shown inside this one
+const FRAMES = { predictions: 'predictions/index.html', vision: 'predictions/viewer/index.html', edith: 'predictions/edith/index.html' };   // pages shown inside this one
+// EDITH (the many-flight simulation) is only built for the EDITH branch of flight_sim, so its tab stays hidden until its page is there (see showEdithTab)
 // Y variables travel in the URL as 'altitude,velocity_total:r' (':r' = right axis)
 const parseFys = s => s.split(',').map(x => { const [key, side] = x.split(':'); return { key, side: side === 'r' ? 'r' : 'l' }; }).filter(f => FVARS[f.key]);
 const fysText = fys => fys.map(f => f.key + (f.side === 'r' ? ':r' : '')).join(',');
@@ -1609,7 +1611,7 @@ function readHash() {
   state.view = VIEWS.some(v => v[0] === p.get('view')) ? p.get('view') : (p.get('delta') === '1' ? 'dline' : 'abs');
   if (p.get('units') === 'metric' || p.get('units') === 'imperial') state.units = p.get('units');
   if (p.get('stab') === 'cal' || p.get('stab') === 'pct') state.stab = p.get('stab');
-  state.tab = ['flight', 'changelog', 'predictions', 'vision'].includes(p.get('tab')) ? p.get('tab') : 'history';
+  state.tab = ['flight', 'changelog', 'predictions', 'vision', 'edith'].includes(p.get('tab')) ? p.get('tab') : 'history';
   if (FVARS[p.get('fx')]) state.fx = p.get('fx');
   if (p.has('fy')) { const fys = parseFys(p.get('fy')); if (FVARS[p.get('fy2')]) fys.push({ key: p.get('fy2'), side: 'r' }); state.fys = fys; }   // fy2: old links
   if (p.has('apo')) state.fapo = p.get('apo') !== '0';
@@ -2103,15 +2105,16 @@ function drawChangelog() {
   box.innerHTML = h || '<p class="legend">No changelog yet: it starts with the second committed version of a design.</p>';
 }
 
-const TABS = { history: 'tab-history', flight: 'tab-flight', changelog: 'tab-changelog', predictions: 'tab-predictions', vision: 'tab-vision' };
+const TABS = { history: 'tab-history', flight: 'tab-flight', changelog: 'tab-changelog', predictions: 'tab-predictions', vision: 'tab-vision', edith: 'tab-edith' };
 // Predictions (Jarvis) and Vision (see FRAMES) are pages built by tools/whatif/build_site.py. They open inside this page, in frames, so
 // the tabs above keep working. The frame is made the first time its tab opens, so nothing loads before it is wanted.
 const FRAMES_MISSING = { predictions: 'The Predictions page has not been built yet. It appears here after the next successful run of the GitHub Action on main (see tools/whatif/README.md).',
-                         vision: 'Vision has not been built yet. It appears here together with the Predictions page, after the next successful run of the GitHub Action on main.' };
+                         vision: 'Vision has not been built yet. It appears here together with the Predictions page, after the next successful run of the GitHub Action on main.',
+                         edith: 'The EDITH page has not been built. EDITH is only built when the repository variable FLIGHT_SIM_REF is EDITH (see tools/whatif/README.md).' };
 const frames = {};
 function frameHash() { return 'embed=1&units=' + state.units + '&stab=' + state.stab; }
 // ---- the big Error bar: a push that broke something (build_status.json, written by the workflow) or a tab that cannot be loaded ----
-const AREAS = { predictions: 'Predictions', vision: 'Vision', build: 'Predictions and Vision', history: 'History', jarvis: 'Jarvis lines' };
+const AREAS = { predictions: 'Predictions', vision: 'Vision', edith: 'EDITH', build: 'Predictions and Vision', history: 'History', jarvis: 'Jarvis lines' };
 const SHOWN = { last_good: p => ' Showing the last good version' + (p.since ? ' from ' + p.since : '') + ' instead.',
                 as_built: () => ' There is no earlier version, so this is the new one as built.', none: () => ' There is no earlier version to show.' };
 let BUILD = null;
@@ -2141,21 +2144,22 @@ function frameMissing(tab) {
   const d = document.createElement('p'); d.className = 'framemsg'; d.textContent = FRAMES_MISSING[tab]; holder.appendChild(d);
   FRAME_ERRORS[tab] = 'the page is missing (404), so it cannot be shown.'; renderBigError();
 }
-function syncPredictions() {   // units and stability are chosen in this page's header; pass them on to the frame
-  const f = frames.predictions; if (!f || !f.loaded) return;
+function syncFrame(name) {   // units and stability are chosen in this page's header; pass them on to the frame
+  const f = frames[name]; if (!f || !f.loaded) return;
   try {
     const here = f.contentWindow.location.hash.slice(1);
     const p = new URLSearchParams(here); p.set('units', state.units); p.set('stab', state.stab); p.set('embed', '1');
     if (p.toString() !== here) f.contentWindow.location.hash = p.toString();
   } catch (e) { /* a frame we may not look into (a file opened from disk): it keeps its own choice */ }
 }
+const SYNCED = ['predictions', 'edith'];   // the framed pages that follow the units chosen above
 function showFrame(tab) {
-  if (frames[tab]) { if (tab === 'predictions') syncPredictions(); return; }
+  if (frames[tab]) { if (SYNCED.includes(tab)) syncFrame(tab); return; }
   const holder = document.getElementById('view-' + tab); holder.innerHTML = '';
   const f = document.createElement('iframe');
-  f.title = tab === 'vision' ? 'VISION: the simulated flight in 3D' : 'JARVIS predictions';
-  f.src = FRAMES[tab] + (tab === 'predictions' ? '#' + frameHash() : '');
-  f.onload = () => { f.loaded = true; if (tab === 'predictions') syncPredictions(); };
+  f.title = tab === 'vision' ? 'VISION: the simulated flight in 3D' : tab === 'edith' ? 'EDITH: the many-flight simulation' : 'JARVIS predictions';
+  f.src = FRAMES[tab] + (SYNCED.includes(tab) ? '#' + frameHash() : '');
+  f.onload = () => { f.loaded = true; if (SYNCED.includes(tab)) syncFrame(tab); };
   frames[tab] = f; holder.appendChild(f);
   if (typeof fetch === 'function') fetch(FRAMES[tab], { method: 'HEAD' }).then(r => { if (!r.ok) frameMissing(tab); }).catch(() => {});
 }
@@ -2164,7 +2168,8 @@ function update() {
   unitSel.value = state.units; stabSel.value = state.stab; assignColors(); writeHash(); refreshNav();
   const framed = !!FRAMES[state.tab];
   document.getElementById('layout').classList.toggle('wide', framed); document.getElementById('main').classList.toggle('frame', framed);
-  document.getElementById('units-label').hidden = document.getElementById('stab-label').hidden = state.tab === 'vision';   // Vision has no units to choose
+  document.getElementById('units-label').hidden = state.tab === 'vision';   // Vision has no units to choose
+  document.getElementById('stab-label').hidden = state.tab === 'vision' || state.tab === 'edith';   // nor does EDITH have a stability to choose
   for (const [name, id] of Object.entries(TABS)) {
     document.getElementById(id).className = state.tab === name ? 'on' : '';
     document.getElementById('view-' + name).hidden = state.tab !== name;
@@ -2179,7 +2184,14 @@ function update() {
   const shown = state.tab === 'flight' ? fplot : state.tab === 'history' ? hplot : null;
   if (shown && shown.data && Plotly.Plots) requestAnimationFrame(() => Plotly.Plots.resize(shown));
 }
-readHash(); buildNav(); update(); loadJarvis(); loadBuildStatus();
+// the EDITH tab shows only when the EDITH page was built (a build on the EDITH branch of flight_sim)
+function showEdithTab() {
+  const show = () => { document.getElementById('tab-edith').hidden = false; };
+  if (state.tab === 'edith') show();   // a link to it: leave the tab showing, the frame says if the page is missing
+  if (typeof fetch !== 'function') return;
+  try { fetch(FRAMES.edith, { method: 'HEAD' }).then(r => { if (r.ok) show(); }).catch(() => {}); } catch (e) { /* no network: no EDITH tab */ }
+}
+readHash(); buildNav(); update(); loadJarvis(); loadBuildStatus(); showEdithTab();
 window.addEventListener('hashchange', () => { readHash(); update(); });
 </script>
 </body>

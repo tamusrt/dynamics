@@ -6,7 +6,8 @@
 Reads the predictions page the build just made (site/predictions/index.html) and writes a few
 lines: a link to VISION, Jarvis's apogee in every saved condition (next to OpenRocket's), and
 warnings when the stability margin falls below 1.0 caliber, when the RASAero table does not match
-the rocket (run Update CSV), or when OpenRocket's saved runs used a different motor.
+the rocket (run Update CSV), or when the History tab flies a different motor file. (Jarvis takes
+the motor masses from the .ork, so the starting mass always matches OpenRocket's saved runs.)
 Writes jarvis_note.md (the commit comment) and jarvis_note.json (the Discord message, for
 discord_post.py). Writes nothing if there is no predictions page.
 """
@@ -80,15 +81,6 @@ def motor_problem(data: dict) -> str | None:
     motor = files.get("motor", "the motor file")
     if "history" in sources and data.get("openrocketMotor") and stem(data["openrocketMotor"]) != stem(motor):
         return f"OpenRocket (History tab) flies `{data['openrocketMotor']}`, Jarvis flies `{motor}`."
-    if "file" in sources and mf.get("propKg") and mf.get("savedPropKg") is not None:
-        what = []
-        if abs(mf["propKg"] - mf["savedPropKg"]) > 0.5:
-            what.append(f"propellant {mf['propKg'] / LB:.1f} lb vs {mf['savedPropKg'] / LB:.1f} lb")
-        if abs(mf.get("totalKg", 0) - mf.get("savedTotalKg", 0)) > 1.0:
-            what.append(f"total motor mass {mf['totalKg'] / LB:.1f} lb vs {mf['savedTotalKg'] / LB:.1f} lb")
-        if what:
-            return (f"`{motor}` and the motor in OpenRocket's saved runs differ: " + "; ".join(what)
-                    + f". Rerun the OpenRocket simulations with `{motor}`.")
     return None
 
 
