@@ -9,7 +9,7 @@ puts OpenRocket's numbers from it next to Jarvis's, and writes ``jarvis_by_commi
 flown on every commit of the design) for the History tab to draw. See tools/whatif/README.md.
 
 With ``--edith`` each rocket is then flown many times by EDITH (the team's Monte Carlo simulation, also in
-flight_sim). It adds its own page at ``predictions/edith/``, a summary card on the Predictions page and the
+flight_sim). It adds its own page at ``predictions/edith/`` and the
 cloud of flights in Vision. It takes minutes, so its result is kept in ``--edith-cache`` until something it
 depends on changes, and whatever goes wrong with it leaves the pages built before it exactly as they were.
 """
@@ -90,7 +90,9 @@ def plan(config_path: Path, site: Path, edith: bool = False, edith_cache: Path |
 
     With ``edith`` each build also has the command that runs EDITH on the page it makes. A rocket's own
     settings may name ``edith_site`` (a JSON file of the launch site's wind, weather and target, relative to the
-    config) and ``edith_minutes`` (how long EDITH may take); without them EDITH uses its placeholder site.
+    config), ``edith_minutes`` (how long EDITH may take) and ``edith_accepted`` (IREC recommendations the team
+    has accepted, by check id, such as ``stability_static_max``: the EDITH page shows them greyed); without them
+    EDITH uses its placeholder site.
     """
     config = json.loads(config_path.read_text(encoding="utf-8"))
     rockets = config["rockets"]
@@ -168,6 +170,9 @@ def plan(config_path: Path, site: Path, edith: bool = False, edith_cache: Path |
                 edith_cmd += ["--site", str(base / spec["edith_site"])]
             if edith_cache is not None:
                 edith_cmd += ["--cache", str(edith_cache / key.lower())]
+            accepted = [str(a).strip() for a in spec.get("edith_accepted", []) if str(a).strip()]
+            if accepted:  # IREC recommendations the team accepts: greyed on the EDITH page, not a reason to rerun it
+                edith_cmd += ["--accepted", ",".join(accepted)]
         builds.append({
             "key": key, "out": out, "cmd": cmd, "by_commit": by_commit, "motor": paths["motor"], "note": note,
             "edith": edith_cmd, "edith_timeout_s": minutes * 60 * 1.5 + EDITH_GRACE_S,
