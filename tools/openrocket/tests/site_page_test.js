@@ -428,7 +428,7 @@ test('the EDITH tab stays hidden until its page exists, and its frame follows th
   const f = els['view-edith'].children[0];
   assert.strictEqual(f.tag, 'iframe'); assert.strictEqual(f.src, 'predictions/edith/index.html#embed=1&units=metric&stab=cal');
   assert.strictEqual(els['view-edith'].hidden, false); assert.strictEqual(els['view-history'].hidden, true);
-  assert.strictEqual(els['stab-label'].hidden, true, 'EDITH has no stability to choose'); assert.strictEqual(els['units-label'].hidden, false);
+  assert.strictEqual(els['stab-label'].hidden, false, 'EDITH\'s stability chart follows the choice'); assert.strictEqual(els['units-label'].hidden, false);
   const win = { location: { hash: '#embed=1&units=metric&stab=cal' } };
   f.contentWindow = win; f.onload();
   P.state.units = 'imperial'; P.update();

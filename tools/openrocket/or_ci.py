@@ -2169,7 +2169,7 @@ function update() {
   const framed = !!FRAMES[state.tab];
   document.getElementById('layout').classList.toggle('wide', framed); document.getElementById('main').classList.toggle('frame', framed);
   document.getElementById('units-label').hidden = state.tab === 'vision';   // Vision has no units to choose
-  document.getElementById('stab-label').hidden = state.tab === 'vision' || state.tab === 'edith';   // nor does EDITH have a stability to choose
+  document.getElementById('stab-label').hidden = state.tab === 'vision';   // nor a stability (EDITH's stability chart follows it)
   for (const [name, id] of Object.entries(TABS)) {
     document.getElementById(id).className = state.tab === name ? 'on' : '';
     document.getElementById('view-' + name).hidden = state.tab !== name;
