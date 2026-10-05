@@ -277,6 +277,49 @@ def test_the_error_bar_text_is_escaped():
     assert site_status.with_banner("no body tag", "t", "s").endswith("no body tag")
 
 
+def test_the_failed_build_s_own_message_is_in_the_problem():
+    with tempfile.TemporaryDirectory() as tmp:
+        log = Path(tmp) / "build_log.txt"
+        log.write_text("Collecting x\nTraceback (most recent call last):\n  File \"a.py\", line 3\n"
+                       "Rocket 'A': the motor_dir /r/Thrust Curves is not a folder.\n", encoding="utf-8")
+        said = site_status.build_detail(str(log))
+        assert said == "Rocket 'A': the motor_dir /r/Thrust Curves is not a folder.", said
+        message = site_status.problems_found("success", "failure", None, "success", False, said)[0]["message"]
+        assert "not a folder" in message and "Build the predictions page (main only)" in message
+        assert site_status.build_detail(str(Path(tmp) / "nothing.txt")) == ""
+
+
+def test_the_whole_predictions_tree_is_put_back_from_the_live_site():
+    import functools
+    import http.server
+    import threading
+
+    with tempfile.TemporaryDirectory() as tmp:
+        live, site = Path(tmp) / "live", Path(tmp) / "site"
+        (live / "predictions" / "viewer").mkdir(parents=True)
+        (live / "predictions" / "index.html").write_text("<html><body>good page</body></html>")
+        (live / "predictions" / "viewer" / "index.html").write_text("<html><body>good viewer</body></html>")
+        (live / "predictions" / "data.bin").write_bytes(b"\x00\x01good")
+        site_status.write_manifest(live)
+        (site / "predictions").mkdir(parents=True)
+        (site / "predictions" / "index.html").write_text("<html><body>broken</body></html>")
+        (site / "predictions" / "stray.json").write_text("{}")
+        handler = functools.partial(http.server.SimpleHTTPRequestHandler, directory=str(live))
+        handler.log_message = lambda *a, **k: None
+        server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        try:
+            config = {"default": "R", "rockets": {"R": {}}}
+            url = f"http://127.0.0.1:{server.server_address[1]}"
+            shown = site_status.restore_tree(site, config, url, {"predictions": "it broke"})
+            assert shown and shown["predictions"][0] == "last_good"
+            assert "good page" in (site / "predictions" / "index.html").read_text() and "it broke" in (site / "predictions" / "index.html").read_text()
+            assert (site / "predictions" / "data.bin").read_bytes() == b"\x00\x01good" and not (site / "predictions" / "stray.json").exists()
+            assert site_status.restore_tree(site, config, "http://127.0.0.1:1", {"predictions": "x"}) is None
+        finally:
+            server.shutdown()
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):

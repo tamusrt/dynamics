@@ -41,6 +41,10 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE))
+import aero_meta  # noqa: E402  (same folder; only the standard library)
+
+USE_SUFFIXES = {"ork": (".ork",), "motor": (".eng", ".rse"), "rasaero": (".cdx1",), "aero": (".csv",)}
 ALPHA_COUNT = 31
 DEFAULT_PORT = 8765
 DEFAULT_ORIGIN = "https://tamusrt.github.io"
@@ -259,6 +263,36 @@ class Helper:
         threading.Thread(target=self._run, args=(job,), daemon=True).start()
         return None
 
+    def use_file(self, rocket: str, setting: str, path: str) -> tuple[int, dict]:
+        """Point the config at another file (the page's "Files used" drop-down), commit and push that one change."""
+        ctx = self.ctx
+        if rocket != ctx.key:
+            return 400, {"ok": False, "message": f"This helper is set up for {ctx.key}, not {rocket}."}
+        suffixes = USE_SUFFIXES.get(setting)
+        base = ctx.config.parent.resolve()
+        target = (base / path).resolve()
+        if suffixes is None or not target.is_file() or base not in target.parents or not target.name.lower().endswith(suffixes):
+            return 400, {"ok": False, "message": f"{path!r} is not a {setting} file in aero_modeling."}
+        with self.lock:
+            if self.busy:
+                return 409, {"ok": False, "message": "Still busy: wait for the current step to finish."}
+            self.busy = "use-file"
+        try:
+            config = json.loads(ctx.config.read_text(encoding="utf-8"))
+            config["rockets"][ctx.key][setting] = target.relative_to(base).as_posix()
+            ctx.config.write_text(json.dumps(config, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+            file = self._rel(ctx.config)
+            if self._git("add", "--", file) != 0 or self._git("commit", "-m", f"Use {target.name} for {ctx.key}", "--", file) != 0:
+                return 500, {"ok": False, "message": "The config was changed but git could not commit it. See the helper window."}
+            if self._git("push") != 0 and (self._git("pull", "--rebase", "--autostash") != 0 or self._git("push") != 0):
+                return 500, {"ok": False, "message": "Committed on this computer but not pushed. In a terminal run: git pull, then git push."}
+            return 200, {"ok": True, "message": f"Now using {target.name}. The site rebuilds by itself."}
+        except (OSError, ValueError, KeyError) as error:
+            return 500, {"ok": False, "message": f"Could not change the config: {error}"}
+        finally:
+            with self.lock:
+                self.busy = None
+
     def cancel(self) -> None:
         """Ask the running job to stop."""
         self.cancel_event.set()
@@ -312,6 +346,11 @@ class Helper:
                         f"(the lines above say what changed). RASAero still has the old version open. In RASAero use File, Open "
                         f"and open {ctx.cdx.name} again (do not save the old one over it), click back on this page and press "
                         "Create again.")
+        for stale in self.alpha_files().values():  # files of an older run must not pass for this run's
+            try:
+                stale.unlink()
+            except OSError:
+                return f"Could not remove the old RASAero file {stale.name}. Close anything that has it open and try again."
         expect = ["--expect", ctx.cdx.name] if ctx.cdx is not None else []
         code = self._step([ctx.python, "-u", HERE / "rasaero_sweep.py", "--out", ctx.alpha_dir, "--window", ctx.window, "--countdown", "5", *expect])
         if code != 0:
@@ -338,21 +377,49 @@ class Helper:
             temp.unlink(missing_ok=True)
             return "Could not turn the RASAero files into a CSV. The CSV is unchanged. See the lines above."
         os.replace(temp, ctx.csv)
+        meta_file = aero_meta.meta_path(ctx.csv)
+        old_meta = meta_file.read_bytes() if meta_file.exists() else None
+        if ctx.cdx is not None and ctx.cdx.exists():  # what the table was made from, to notice later when it no longer fits
+            try:
+                aero_meta.write_meta(ctx.csv, ctx.cdx)
+            except OSError as error:
+                self._say(f"Warning: could not write {meta_file.name} ({error}); the page cannot tell later whether the table is out of date.")
         self._say("Rebuilding the page (Jarvis and the detailed flight). This takes a few minutes.")
         code = self._step([ctx.python, HERE / "build_site.py", "--config", ctx.config, "--site", ctx.site])
         if code != 0:
             if old is not None:
                 ctx.csv.write_bytes(old)
+            if old_meta is not None:
+                meta_file.write_bytes(old_meta)
+            else:
+                meta_file.unlink(missing_ok=True)
             return "The rebuild failed, so the old CSV was put back. See the lines above."
         return self._publish() if self.auto_publish else None
 
     def _git(self, *args: str) -> int:
         return self._step(["git", *args])
 
+    def _remote_changed_csv(self) -> bool:
+        """True when GitHub's copy of the CSV was changed by someone else after this copy branched from it."""
+        said: list[str] = []
+        if self._collect(["git", "fetch", "--quiet"], said) != 0:
+            return False  # offline or no remote: the push itself will say so
+        base: list[str] = []
+        if self._collect(["git", "merge-base", "HEAD", "@{u}"], base) != 0 or not base:
+            return False  # no upstream branch to compare with
+        return self._git("diff", "--quiet", base[0].strip(), "@{u}", "--", self._rel(self.ctx.csv)) == 1
+
     def _publish(self) -> str | None:
         """Commit the CSV and the .CDX1 (nothing else) and push them, so the site rebuilds for everyone."""
         ctx = self.ctx
         paths = [self._rel(ctx.csv)] + ([self._rel(ctx.cdx)] if ctx.cdx is not None and ctx.cdx.exists() else [])
+        meta = aero_meta.meta_path(ctx.csv)
+        if meta.exists():
+            paths.append(self._rel(meta))
+        if self._remote_changed_csv():
+            return (f"Not published: the CSV ({ctx.csv.name}) has changed on GitHub since your copy was last updated. "
+                    "Wait a little and check whether someone else has already updated it. If they have, run: git pull, and see "
+                    "whether you still need to press Update CSV. If nobody has, run git pull, then press Update CSV again.")
         self._say("Publishing: committing " + " and ".join(paths) + " and pushing to GitHub")
         if self._git("add", "--", *paths) != 0:
             return "The CSV is updated, but git could not add it. Publish it by hand with the commands below."
@@ -468,6 +535,15 @@ def make_handler(helper: Helper) -> type:
             elif job == "cancel":
                 helper.cancel()
                 self._json(200, {"cancelled": True}, origin)
+            elif job == "use-file":
+                try:
+                    size = min(int(self.headers.get("Content-Length") or 0), 4096)
+                    body = json.loads(self.rfile.read(size) or b"{}")
+                    args = [str(body.get(k, "")) for k in ("rocket", "setting", "path")]
+                except (ValueError, AttributeError):
+                    args = ["", "", ""]
+                code, reply = helper.use_file(*args)
+                self._json(code, reply, origin)
             elif job in ("sweep", "update"):
                 error = helper.start(job)
                 self._json(409 if error else 200, {"error": error} if error else {"started": job}, origin)

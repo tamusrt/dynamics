@@ -26,12 +26,12 @@
   },
   "files": {
     "IREC_2027/OR/2027_OR.ork": {
-      "default_motor": "IREC_2027/Thrust Curves/ENGINE-2027-python.rse"
+      "default_motor": "IREC_2027/2027_Thrust_Curves/2027_v1.rse"
     },
     "IREC_2027/OR/Invictus_ReferenceOR.ork": {
       "default_motors": {
-        "Ox Tank": "IREC_2027/Thrust Curves/Invictus_Curves_Latest/OXTank.eng",
-        "Combustion Chamber": "IREC_2027/Thrust Curves/Invictus_Curves_Latest/CC.eng"
+        "Ox Tank": "IREC_2027/2026_Curves_(OLD)/OXTank.eng",
+        "Combustion Chamber": "IREC_2027/2026_Curves_(OLD)/CC.eng"
       }
     },
     "LUMINA/OpenRocket/Lumina.ork": {

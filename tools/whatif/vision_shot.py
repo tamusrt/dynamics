@@ -69,6 +69,7 @@ def shoot(site: Path, out: Path, width: int, height: int) -> int:
     finally:
         server.shutdown()
     if errors:
+        out.unlink(missing_ok=True)  # a picture of a broken scene must not go out as if it were fine
         print("VISION had script errors: " + "; ".join(errors), flush=True)
         return 1
     print(f"VISION picture: {out}", flush=True)
