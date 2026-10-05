@@ -330,6 +330,7 @@ class Helper:
         if ctx.cdx and ctx.cdx.exists() and min(p.stat().st_mtime for p in files.values()) < ctx.cdx.stat().st_mtime - 60:
             self._say(f"Warning: some RASAero files are older than {ctx.cdx.name}. If the rocket changed since then, run step 3 again.")
         old = ctx.csv.read_bytes() if ctx.csv.exists() else None
+        ctx.csv.parent.mkdir(parents=True, exist_ok=True)
         temp = ctx.csv.with_name(ctx.csv.name + ".tmp")
         self._say("Turning the RASAero files into the CSV")
         code = self._step([ctx.python, "-m", "flight_sim.whatif.ras_csv", "--in", ctx.alpha_dir, "--out", temp])

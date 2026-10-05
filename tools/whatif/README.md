@@ -46,12 +46,20 @@ This folder builds the JARVIS predictions and VISION tabs. The pages are also av
 | Input | File (SRT14) | Used for |
 | --- | --- | --- |
 | OpenRocket design | `IREC_2027/OR/2027_OR.ork` | Geometry, masses and launch conditions |
-| RASAero table | `IREC_2027/RASA/ignis_2027_aero.csv` | Drag, lift and center of pressure |
+| RASAero table | `IREC_2027/JARVIS/ignis_2027_aero.csv` | Drag, lift and center of pressure |
 | RASAero design | `IREC_2027/RASA/rasaero.CDX1` | The shape the RASAero table was made for |
 | RASAero results | `IREC_2027/RASA/rasaero_results.json` | RASAero II's own apogee, top speed and time to apogee, to compare with |
 | Motor | `default_motor` in `sim_config.json`, otherwise the newest `.eng` or `.rse` in `IREC_2027/Thrust Curves/` | Thrust curve (the motor masses come from the `.ork`, so the starting mass matches OpenRocket) |
 
 Paths are relative to `aero_modeling/` and are set in `aero_modeling/whatif_config.json`.
+
+**Where Jarvis keeps its files.** Everything Jarvis creates (the RASAero table and the RASAero alpha files it is made from) goes in
+`aero_modeling/<ROCKET>/JARVIS/`, inside that rocket's own folder. What Jarvis only reads (the `.ork`, `.CDX1` and motor files)
+stays where it is. For a new rocket, make `aero_modeling/<ROCKET>/JARVIS/` and point its `aero` and `alpha_dir` there.
+
+**RASAero surface finish.** Set RASAero's surface roughness to rough camouflage paint, even when OpenRocket uses a smooth finish.
+Jarvis takes its drag from the RASAero table, so OpenRocket's finish does not matter to it. Rough paint adds skin friction and lowers
+the predicted apogee. Make the table and `rasaero_results.json` with the same finish, so the two can be compared.
 
 - **OpenRocket results** come from the History tab (the latest successful run of each simulation). When no History
   site is available, the results saved in the `.ork` are used instead, and the page says which.

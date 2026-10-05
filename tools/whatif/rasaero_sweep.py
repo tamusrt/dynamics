@@ -1,6 +1,6 @@
 """Run RASAero II's "Run Test" for angles of attack 0 to 30 degrees and write alpha0.txt ... alpha30.txt.
 
-    python tools/whatif/rasaero_sweep.py --out aero_modeling/IREC_2027/RASA/alpha
+    python tools/whatif/rasaero_sweep.py --out aero_modeling/IREC_2027/JARVIS/alpha
 
 This is brute_force_aero.py (Luke Adams, Sarah Kinney, Nacho Durante) with the output folder as an
 argument, a countdown, and a check that the window it switched to really is RASAero before it types.
