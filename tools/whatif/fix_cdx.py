@@ -13,7 +13,9 @@ the tube lengths have come out wrong). This rewrites, from the .ork:
               to the fins' leading edge; 0 puts the whole fin behind the tube, the root chord
               puts its trailing edge at the tube's end)
   boat tail   length and rear diameter (RASAero takes the front diameter from the body tube)
-Everything else in the file (surface, launch site, simulations) is kept as it is.
+  surface     always "Rough Camouflage Paint", even when OpenRocket uses a smooth finish (Jarvis takes its drag
+              from RASAero, so OpenRocket's finish does not matter to it; rough paint adds skin friction)
+Everything else in the file (launch site, simulations) is kept as it is.
 The old file is kept next to it as <name>.before-fix. Prints one line per value it changed.
 """
 
@@ -28,6 +30,7 @@ import zipfile
 from pathlib import Path
 
 IN = 0.0254
+SURFACE = "Rough Camouflage Paint"  # RASAero's surface finish for every rocket, whatever OpenRocket uses
 BODY = ("nosecone", "bodytube", "transition")
 
 
@@ -147,6 +150,10 @@ def fix(ork: Path, cdx: Path, dry_run: bool = False) -> list[str]:
     if tail is not None and "tail" in shape:
         for tag, value in shape["tail"].items():
             _set(tail, tag, value, "boat tail", changes)
+    surface = design.find("Surface")
+    if surface is not None and (surface.text or "").strip() != SURFACE:
+        changes.append(f"surface finish: {(surface.text or '').strip() or 'empty'} -> {SURFACE}")
+        surface.text = SURFACE
     # every part starts where the one before it ends
     station = 0.0
     for part in design:

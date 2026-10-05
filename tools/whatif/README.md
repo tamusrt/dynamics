@@ -180,7 +180,8 @@ with RASAero II, a copy of this repository and `flight_sim` installed.
    CSV, rebuilds the page, commits and pushes the CSV and `rasaero.CDX1`, and closes. The site updates in about
    10–20 minutes.
 
-Before step 2 starts, the helper checks `rasaero.CDX1` against the `.ork` (`fix_cdx.py`). If it has to correct the file,
+Before step 2 starts, the helper checks `rasaero.CDX1` against the `.ork` (`fix_cdx.py`). It also sets RASAero's surface
+finish to **Rough Camouflage Paint** if it is anything else, whatever OpenRocket uses. If it has to correct the file,
 it stops without typing anything, because RASAero still has the old version open: open the file again in RASAero
 (**File → Open**) and click the button again. It also stops if RASAero's window title names a different `.CDX1`.
 If the rebuild fails, the previous CSV is restored.

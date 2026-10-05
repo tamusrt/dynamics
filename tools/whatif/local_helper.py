@@ -308,7 +308,7 @@ class Helper:
                 return f"Could not check {ctx.cdx.name} against {ctx.ork.name}. See the lines above. Nothing was typed into RASAero."
             if any("was corrected" in line for line in said):
                 # the helper cannot change what RASAero has in memory: only a person can open the file again
-                return (f"Nothing was typed into RASAero: {ctx.cdx.name} did not match the OpenRocket file, so it was corrected "
+                return (f"Nothing was typed into RASAero: {ctx.cdx.name} did not match the OpenRocket file or the rough camouflage paint finish, so it was corrected "
                         f"(the lines above say what changed). RASAero still has the old version open. In RASAero use File, Open "
                         f"and open {ctx.cdx.name} again (do not save the old one over it), click back on this page and press "
                         "Create again.")
