@@ -3,7 +3,9 @@
     "Rockets for the predictions page and 3D flight (tools/whatif/build_site.py, built by openrocket-sim.yml on main).",
     "Paths are relative to this file. 'default' is the rocket at <site>/predictions/; any other is at <site>/predictions/<key lowercased>/.",
     "ork: the OpenRocket design (geometry, masses and launch conditions from the simulations saved in it).",
-    "aero: the RASAero CSV for that design; the page's Update CSV section remakes it (tools/whatif/local_helper.py).",
+    "aero: the RASAero CSV for that design; the page's Update CSV section remakes it (tools/whatif/local_helper.py). It lives in the rocket's own JARVIS folder.",
+    "JARVIS folders: everything Jarvis creates (the aero CSV and the RASAero alpha files it is made from) goes in aero_modeling/<ROCKET>/JARVIS/. What Jarvis only reads (the .ork, the .CDX1, motor files) stays in the rocket's other folders.",
+    "RASAero settings: always use rough camouflage paint for the surface finish, even when OpenRocket uses smooth. Jarvis takes its drag from the RASAero CSV, so OpenRocket's finish does not matter to it.",
     "rasaero: the RASAero .CDX1 the CSV was made from; the page corrects for any difference from the .ork.",
     "rasaero_results: RASAero II's own flight results (apogee, top speed, time to apogee), shown next to Jarvis for the matching launch condition.",
     "alpha_dir: where RASAero's alpha0.txt ... alpha30.txt go before they become the CSV (not committed).",
@@ -23,12 +25,12 @@
     "SRT14": {
       "name": "SRT14 (IREC 2027)",
       "ork": "IREC_2027/OR/2027_OR.ork",
-      "aero": "IREC_2027/RASA/ignis_2027_aero.csv",
+      "aero": "IREC_2027/JARVIS/ignis_2027_aero.csv",
       "rasaero": "IREC_2027/RASA/rasaero.CDX1",
       "rasaero_results": "IREC_2027/RASA/rasaero_results.json",
       "motor_dir": "IREC_2027/Thrust Curves",
       "sim": "average",
-      "alpha_dir": "IREC_2027/RASA/alpha",
+      "alpha_dir": "IREC_2027/JARVIS/alpha",
       "edith_accepted": []
     }
   }
