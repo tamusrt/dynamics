@@ -298,7 +298,8 @@ def test_main_runs_edith_after_the_page_and_a_failure_does_not_change_the_exit_c
         real = subprocess.run
 
         def fake(cmd, **kw):
-            calls.append(cmd[2] if len(cmd) > 2 and cmd[1] == "-m" else cmd[0])
+            if cmd[0] != "git":  # looking up the repository is not a build step
+                calls.append(cmd[2] if len(cmd) > 2 and cmd[1] == "-m" else cmd[0])
             return subprocess.CompletedProcess(cmd, 1 if "edith_site" in cmd[2] else 0)
 
         subprocess.run = fake

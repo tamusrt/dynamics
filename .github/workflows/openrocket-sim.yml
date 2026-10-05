@@ -34,9 +34,7 @@ on:
         default: false
 
 permissions:
-  contents: write   # needed to post commit comments with GITHUB_TOKEN
-  pages: write      # GitHub Pages deployment (history site)
-  id-token: write   # required by actions/deploy-pages
+  contents: read    # each job below asks for more only when it needs it
 
 concurrency:
   group: openrocket-sim-${{ github.ref }}
@@ -44,13 +42,19 @@ concurrency:
 
 jobs:
   simulate:
+    # a rebuild asked for by flight_sim is only for the branch the site is built from (FLIGHT_SIM_REF, default main):
+    # a push to some other flight_sim branch must not rebuild (or overwrite) the live site
+    if: github.event_name != 'repository_dispatch' || (github.event.client_payload.ref || 'main') == (vars.FLIGHT_SIM_REF || 'main')
     runs-on: ubuntu-latest
+    permissions:
+      contents: write   # commit comments
     timeout-minutes: 50   # the history site and the predictions take about 10; EDITH, when it is on, is allowed up to ~17 more
     steps:
       - name: Check out (full history, so the base commit is available)
         uses: actions/checkout@v7
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Java 17 (Temurin)
         uses: actions/setup-java@v6
@@ -68,6 +72,14 @@ jobs:
           cache-dependency-path: |
             tools/openrocket/requirements.txt
             .github/workflows/openrocket-sim.yml
+
+      # Looks at the files the site is built from (the two configs, the .ork, the motor curve) before anything runs
+      # and says in plain words what was moved, is missing or is hidden by .gitignore. It never stops the run: what it
+      # finds goes into the annotations, the run summary and the commit comment (tools/whatif/doctor.py).
+      - name: Check the model files (moved, missing or hidden files)
+        id: doctor
+        continue-on-error: true
+        run: python tools/whatif/doctor.py --github --json doctor_report.json --markdown doctor_comment.md --warn-only
 
       - name: Install orlab
         run: pip install -r tools/openrocket/requirements.txt
@@ -190,6 +202,7 @@ jobs:
           ref: ${{ vars.FLIGHT_SIM_REF || 'main' }}
           token: ${{ secrets.FLIGHT_SIM_TOKEN || github.token }}
           path: flight_sim_src
+          persist-credentials: false
 
       # ---- EDITH: the Monte Carlo simulation, which adds its own page and the
       # cloud of flights in Vision. It runs only while the repository variable FLIGHT_SIM_REF is EDITH (the flight_sim
@@ -202,7 +215,12 @@ jobs:
         if: always() && github.ref == 'refs/heads/main'
         env:
           REF: ${{ vars.FLIGHT_SIM_REF }}
-        run: echo "enabled=$([ "$REF" = "EDITH" ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+        run: |
+          norm=$(printf '%s' "$REF" | tr -d '[:space:]' | tr '[:lower:]' '[:upper:]')
+          echo "enabled=$([ "$norm" = "EDITH" ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+          if [ "$norm" = "EDITH" ] && [ "$REF" != "EDITH" ]; then
+            echo "::warning title=FLIGHT_SIM_REF::It is '$REF'. EDITH was switched on anyway, but the checkout needs the branch name exactly (EDITH)."
+          fi
 
       - name: Keep EDITH's result between runs (main only)
         if: always() && github.ref == 'refs/heads/main' && steps.edith.outputs.enabled == 'true'
@@ -220,8 +238,11 @@ jobs:
         env:
           EDITH: ${{ steps.edith.outputs.enabled == 'true' && '--edith --edith-cache .edith_cache' || '' }}
         run: |
-          pip install ./flight_sim_src
-          python tools/whatif/build_site.py --config aero_modeling/whatif_config.json --site site $EDITH
+          set -o pipefail
+          {
+            pip install ./flight_sim_src
+            python tools/whatif/build_site.py --config aero_modeling/whatif_config.json --site site --notes build_notes.md $EDITH
+          } 2>&1 | tee build_log.txt     # the last line it printed goes into the red bar and the commit comment
 
       # ---- Real-browser check of the built site, before it goes live ----
       # Opens the site in Chromium and clicks through History, Predictions, Vision and, when EDITH is on, EDITH (tools/whatif/tests/browser_test.py).
@@ -233,13 +254,13 @@ jobs:
         uses: actions/cache@v6
         with:
           path: ~/.cache/ms-playwright
-          key: playwright-chromium-${{ runner.os }}-v1
+          key: playwright-chromium-${{ runner.os }}-${{ hashFiles('.github/workflows/openrocket-sim.yml') }}
 
       - name: Install the browser for the check (main only)
         if: always() && github.ref == 'refs/heads/main' && hashFiles('site/index.html') != ''
         run: |
           pip install playwright
-          python -m playwright install --with-deps chromium
+          python -m playwright install --with-deps chromium || { sleep 20; python -m playwright install --with-deps chromium; }
 
       - name: Click through the built site in a real browser (main only)
         id: browser
@@ -266,7 +287,7 @@ jobs:
           python tools/whatif/site_status.py --site site --config aero_modeling/whatif_config.json \
             --live-url "$LIVE_URL" \
             --flightsim "${{ steps.flightsim.outcome }}" --predictions "${{ steps.predictions.outcome }}" \
-            --browser "${{ steps.browser.outcome }}" --report browser_report.json $EDITH \
+            --browser "${{ steps.browser.outcome }}" --report browser_report.json --detail build_log.txt $EDITH \
             --commit "${{ github.sha }}" \
             --run-url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
 
@@ -289,8 +310,15 @@ jobs:
         if: always() && hashFiles('browser_test_pictures/*.png') != ''
         uses: actions/upload-artifact@v7
         with:
-          name: browser-test-pictures-${{ github.sha }}
+          name: browser-test-pictures-${{ github.sha }}-${{ github.run_attempt }}
           path: browser_test_pictures/
+
+      - name: Check the site is not near GitHub Pages' size limit (1 GB)
+        if: always() && github.ref == 'refs/heads/main' && hashFiles('site/index.html') != ''
+        run: |
+          mb=$(du -sm site | cut -f1)
+          echo "The site is ${mb} MB."
+          if [ "$mb" -gt 900 ]; then echo "::warning title=Site size::${mb} MB of the 1000 MB GitHub Pages allows"; fi
 
       - name: Upload the site for GitHub Pages
         if: always() && github.ref == 'refs/heads/main' && hashFiles('site/index.html') != '' && steps.status.outcome != 'failure'
@@ -302,7 +330,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: openrocket-sim-${{ github.sha }}
+          name: openrocket-sim-${{ github.sha }}-${{ github.run_attempt }}
           path: or_ci_results/
           if-no-files-found: ignore
 
@@ -319,6 +347,8 @@ jobs:
               for problem in json.loads(status.read_text(encoding="utf-8")).get("problems", []):
                   print(f"**ERROR ({problem['area']}):** {problem['message']}\n")
           PY
+            if [ -f doctor_comment.md ]; then cat doctor_comment.md; echo; fi
+            if [ -f build_notes.md ]; then cat build_notes.md; echo; fi
             cat or_ci_results/report.md
             echo
             if [ -f or_ci_results/history/history.md ]; then cat or_ci_results/history/history.md; echo; fi
@@ -353,6 +383,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
       - uses: actions/setup-python@v7
         with:
           python-version: "3.11"
@@ -368,20 +400,22 @@ jobs:
           python tools/whatif/tests/test_build_site.py
           python tools/whatif/tests/test_local_helper.py
           python tools/whatif/tests/test_fix_cdx.py
+          python tools/whatif/tests/test_doctor.py
+          python tools/whatif/tests/test_resolve.py
           python tools/whatif/tests/test_site_status.py
       # The same click-through as above, on a made-up History site (no OpenRocket needed), so every
       # push to any branch checks the History page, its tabs and the Jarvis lines in a real browser.
       - name: Install the browser for the click-through
         run: |
           pip install playwright
-          python -m playwright install --with-deps chromium
+          python -m playwright install --with-deps chromium || { sleep 20; python -m playwright install --with-deps chromium; }
       - name: Click through a made-up site in a real browser
         run: python tools/whatif/tests/browser_test.py --synthetic --shots browser_test_pictures
       - name: Keep the pictures the browser test took
         if: always() && hashFiles('browser_test_pictures/*.png') != ''
         uses: actions/upload-artifact@v7
         with:
-          name: browser-test-pictures-synthetic-${{ github.sha }}
+          name: browser-test-pictures-synthetic-${{ github.sha }}-${{ github.run_attempt }}
           path: browser_test_pictures/
 
   # Publishes the site built above. Runs only for pushes to main; the URL is shown on the run
@@ -390,6 +424,9 @@ jobs:
     needs: [simulate, page-test]
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+    permissions:
+      pages: write      # GitHub Pages deployment
+      id-token: write   # required by actions/deploy-pages
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}

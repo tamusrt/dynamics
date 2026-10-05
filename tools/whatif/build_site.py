@@ -22,6 +22,11 @@ import subprocess
 import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import aero_meta  # noqa: E402  (same folder; only the standard library)
+import resolve  # noqa: E402
+from doctor import Repo, git  # noqa: E402
+
 EDITH_MINUTES = 10.0  # EDITH stops starting new rounds of flights after this long
 EDITH_GRACE_S = 90  # on top of that, for the round it is in and for writing the pages
 
@@ -85,6 +90,87 @@ def history_motor(config_dir: Path, spec: dict) -> str:
     return file.name if file else ""
 
 
+_SEARCH = {"ork": (".ork",), "rasaero": (".cdx1",)}  # files that may be found as "the only one in the rocket's folder"
+
+
+def _resolve_files(repo: Repo, base: Path, spec: dict, notes: resolve.Notes) -> dict[str, resolve.Resolution]:
+    """Find the design, aero table, RASAero file and RASAero results the config names (see resolve.py)."""
+    found: dict[str, resolve.Resolution] = {}
+    folder = resolve.rocket_folder(base, spec)
+    for role in (*_FILES, "rasaero", "rasaero_results"):
+        if role not in spec:
+            continue
+        suffixes = _SEARCH.get(role, ())
+        got = resolve.resolve_file(repo, base, spec[role], role, folder if suffixes else None, suffixes)
+        if got is None:
+            raise SystemExit(f"{role}: these files are missing: {base / spec[role]} (git has no record of it moving). "
+                             "Run 'python tools/whatif/doctor.py' to see what changed.")
+        found[role] = got
+    return found
+
+
+def _changed_in_last_commit(repo: Repo, path: Path) -> bool:
+    """True when the newest commit changed this file (False without git or history)."""
+    done = git(repo.root, "diff", "--name-only", "HEAD~1", "HEAD", "--", repo.rel(path))
+    return bool(done is not None and done.returncode == 0 and isinstance(done.stdout, str) and done.stdout.strip())
+
+
+def files_used(repo, base, key, spec, mode, found, motor, note, history_file, notes) -> dict:
+    """What files_used.json says: the files the page was built from, how each was found, and what to mention."""
+    def rel(path: Path) -> str:
+        return resolve.config_value(base, path)
+
+    def others(role: str, chosen: Path) -> list[dict]:
+        if role == "ork":
+            pool = resolve.candidates(repo, resolve.rocket_folder(base, spec), (".ork",))
+        elif role == "rasaero":
+            pool = resolve.candidates(repo, resolve.rocket_folder(base, spec), (".cdx1",))
+        elif role == "aero":
+            pool = resolve.candidates(repo, chosen.parent, ("_aero.csv",))
+        elif role == "motor":
+            pool = resolve.candidates(repo, base / spec["motor_dir"], resolve.MOTOR_SUFFIXES, resolve.DEFAULT_IGNORE) \
+                if "motor_dir" in spec else []
+        else:
+            return []
+        return [{"path": rel(p), "changed": resolve.changed_date(repo, p)} for p in pool[: resolve.MAX_CANDIDATES]]
+
+    files = []
+    labels = {"ork": "OpenRocket design", "aero": "Aero table (RASAero CSV)", "rasaero": "RASAero file",
+              "rasaero_results": "RASAero results"}
+    for role, r in found.items():
+        files.append({"role": role, "label": labels[role], "setting": role, "path": rel(r.path), "how": r.how,
+                      "auto": r.auto, "changed": resolve.changed_date(repo, r.path), "candidates": others(role, r.path)})
+    files.append({"role": "motor", "label": "Motor thrust curve", "setting": "motor",
+                  "path": rel(motor.path), "how": note or motor.how, "auto": motor.auto,
+                  "changed": resolve.changed_date(repo, motor.path), "candidates": others("motor", motor.path)})
+    table: dict = {}
+    if "aero" in found and _changed_in_last_commit(repo, found["aero"].path):
+        notes.add("warn", f"The aero table {found['aero'].path.name} was changed by the latest push. Merging is turned off for it, "
+                          "so if two people updated it, check that the version on main is the one you meant.")
+    if "aero" in found:
+        table = aero_meta.check(found["aero"].path, found["rasaero"].path if "rasaero" in found else None, found["ork"].path)
+        for reason in table["stale"]:
+            notes.add("warn", f"The aero table may be out of date: {reason}. Open the local helper and press Update CSV.")
+    return {"version": 1, "rocket": key, "motor_mode": mode,
+            "history_motor": history_file.name if history_file else "", "files": files,
+            "notices": notes.notices, "table": table}
+
+
+def write_files_used(build: dict) -> None:
+    """Put files_used.json next to the page (the page lists the files and any notice from it)."""
+    build["out"].mkdir(parents=True, exist_ok=True)
+    (build["out"] / "files_used.json").write_text(json.dumps(build["files_used"], indent=1) + "\n", encoding="utf-8")
+
+
+def write_notes(builds: list[dict], target: Path) -> None:
+    """One short line per auto-fix or warning, for the commit comment and Discord (errors are reported elsewhere)."""
+    lines = [f"- {b['key']}: {n['text']}" for b in builds for n in b["files_used"]["notices"] if n["level"] != "error"]
+    if lines:
+        target.write_text("Build notes:\n" + "\n".join(lines) + "\n", encoding="utf-8")
+    elif target.exists():
+        target.unlink()
+
+
 def plan(config_path: Path, site: Path, edith: bool = False, edith_cache: Path | None = None) -> list[dict]:
     """The builds the config asks for: where each goes and the commands that make it.
 
@@ -100,29 +186,34 @@ def plan(config_path: Path, site: Path, edith: bool = False, edith_cache: Path |
     if default not in rockets:
         raise SystemExit(f"{config_path}: the default rocket {default!r} is not listed under 'rockets'.")
     base = config_path.parent
+    top = git(base, "rev-parse", "--show-toplevel")
+    named = (top.stdout or "").strip() if top is not None and top.returncode == 0 else ""
+    repo = Repo(Path(named) if named else base)
+    ignore = tuple(config.get("motor_ignore", resolve.DEFAULT_IGNORE))
     builds = []
     for key, spec in rockets.items():
         missing = [k for k in _FILES if k not in spec]
         if missing or not ("motor" in spec or "motor_dir" in spec):
             needs = [*missing, *([] if "motor" in spec or "motor_dir" in spec else ["motor or motor_dir"])]
             raise SystemExit(f"{config_path}: rocket {key!r} is missing these settings: {', '.join(needs)}.")
-        paths = {k: base / spec[k] for k in (*_FILES, "rasaero", "rasaero_results") if k in spec}
-        note = ""
-        if "motor" in spec:  # one motor named in the config beats everything else
-            paths["motor"] = base / spec["motor"]
-        elif "motor_dir" in spec:
-            if not (base / spec["motor_dir"]).is_dir():
-                raise SystemExit(f"Rocket {key!r}: the motor_dir {base / spec['motor_dir']} is not a folder.")
-            # Jarvis flies the motor the History tab flies, so the two always compare like with like;
-            # without one (or when its file is missing) it flies the newest in the folder
-            same = history_motor_file(base, spec)
-            if same is not None and same.suffix.lower() in _MOTOR_SUFFIXES and same.is_file():
-                paths["motor"], note = same, "same as the History tab"
-            else:
-                paths["motor"], note = newest_thrust_curve(base / spec["motor_dir"])
+        notes = resolve.Notes()
+        found = _resolve_files(repo, base, spec, notes)
+        paths = {k: r.path for k, r in found.items()}
+        mode = str(spec.get("motor_mode", config.get("motor_mode", "pinned"))).lower()
+        history_file = history_motor_file(base, spec)
+        motor, note = resolve.resolve_motor(repo, base, spec, mode, history_file, notes, ignore)
+        if motor is None:
+            where = spec.get("motor") or spec.get("motor_dir")
+            raise SystemExit(f"Rocket {key!r}: there is no motor file at {base / where} and git has no record of it moving. "
+                             "Run 'python tools/whatif/doctor.py' to see what changed.")
+        paths["motor"] = motor.path
         absent = [str(p) for p in paths.values() if not p.exists()]
         if absent:
             raise SystemExit(f"Rocket {key!r}: these files are missing: " + "; ".join(absent))
+        for role, r in found.items():
+            if r.auto:
+                notes.add("warn", f"{Path(r.old).name or role} was not where the config says; {r.how}: "
+                                  f"'{resolve.config_value(base, r.path)}'. Change '{role}' in whatif_config.json.")
         out = site / "predictions" if key == default else site / "predictions" / key.lower()
         cmd = [
             sys.executable, "-m", "flight_sim.whatif.build",
@@ -140,9 +231,9 @@ def plan(config_path: Path, site: Path, edith: bool = False, edith_cache: Path |
             cmd += ["--sim", spec["sim"]]
         if (site / "data.json").is_file():  # the History site was built first
             cmd += ["--history-site", str(site)]
-            motor = history_motor(base, spec)
-            if motor:
-                cmd += ["--history-motor", motor]
+            history_name = history_motor(base, spec)
+            if history_name:
+                cmd += ["--history-motor", history_name]
         by_commit = None
         if (site / "data.json").is_file():  # Jarvis on every commit, for the History tab's extra line
             by_commit = [
@@ -173,9 +264,10 @@ def plan(config_path: Path, site: Path, edith: bool = False, edith_cache: Path |
             accepted = [str(a).strip() for a in spec.get("edith_accepted", []) if str(a).strip()]
             if accepted:  # IREC recommendations the team accepts: greyed on the EDITH page, not a reason to rerun it
                 edith_cmd += ["--accepted", ",".join(accepted)]
+        used = files_used(repo, base, key, spec, mode, found, motor, note, history_file, notes)
         builds.append({
             "key": key, "out": out, "cmd": cmd, "by_commit": by_commit, "motor": paths["motor"], "note": note,
-            "edith": edith_cmd, "edith_timeout_s": minutes * 60 * 1.5 + EDITH_GRACE_S,
+            "edith": edith_cmd, "edith_timeout_s": minutes * 60 * 1.5 + EDITH_GRACE_S, "files_used": used,
         })  # fmt: skip
     return builds
 
@@ -230,10 +322,15 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--site", default="site", help="the folder GitHub Pages publishes")
     parser.add_argument("--dry-run", action="store_true", help="print the commands only")
     parser.add_argument("--edith", action="store_true", help="also run EDITH (the Monte Carlo simulation) on each rocket")
+    parser.add_argument("--notes", default=None, help="write one line per auto-fix or warning to this file")
     parser.add_argument("--edith-cache", default=None, help="folder that keeps EDITH's result between builds")
     args = parser.parse_args(argv)
     builds = plan(Path(args.config), Path(args.site), args.edith, Path(args.edith_cache) if args.edith_cache else None)
+    if args.notes:
+        write_notes(builds, Path(args.notes))
     for build in builds:
+        for notice in build["files_used"]["notices"]:
+            print(f"  [{notice['level']}] {notice['text']}", flush=True)
         print(f"{build['key']} -> {build['out']} (motor {build['motor'].name}, {build['note'] or 'named in the config'})", flush=True)
         if args.dry_run:
             print("  " + " ".join(build["cmd"]))
@@ -243,6 +340,7 @@ def main(argv: list[str] | None = None) -> int:
                 print("  " + " ".join(build["edith"]))
             continue
         subprocess.run(build["cmd"], check=True)
+        write_files_used(build)
         if build["by_commit"]:  # a problem here must not stop the page, only the extra History line
             if subprocess.run(build["by_commit"], check=False).returncode:
                 print(f"  (no Jarvis line by commit for {build['key']})", flush=True)

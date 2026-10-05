@@ -30,7 +30,9 @@ import html
 import json
 import os
 import re
+import shutil
 import sys
+import tempfile
 import urllib.error
 import urllib.request
 from datetime import datetime, timezone
@@ -44,13 +46,13 @@ MARK = re.compile(r"<!--srt-error-start-->.*?<!--srt-error-end-->", re.DOTALL)
 SINCE = re.compile(r"<!--srt-good-since:([^>]*?)-->")
 BUILD_FAILED = {
     "failure": "The Predictions build failed, so the new Predictions page and Vision could not be made "
-    "(see the step \"Build the predictions page\" in the run).",
+    "(see the step \"Build the predictions page (main only)\" in the run).",
     "skipped": "The Predictions build did not run, so the new Predictions page and Vision could not be made.",
 }
 EDITH_MISSING = (
     "EDITH (the Monte Carlo simulation) did not finish, so its page is missing or out of date, and the "
     "flights in Vision may be missing too "
-    "(see the step \"Build the predictions page\" in the run)."
+    "(see the step \"Build the predictions page (main only)\" in the run)."
 )
 FLIGHTSIM_FAILED = (
     "The flight_sim code could not be checked out, so the new Predictions page and Vision could not be made "
@@ -69,12 +71,35 @@ def page_files(config: dict, area: str) -> list[str]:
     return files
 
 
+def build_detail(path: str) -> str:
+    """The last thing the build said before it failed (its own error message), or '' when there is none.
+
+    ``path`` is a copy of the build's output. The last line that is not part of a traceback's frames is the
+    message: for a missing file it says which file, for a setting it says which one.
+    """
+    try:
+        text = Path(path).read_text(encoding="utf-8", errors="replace") if path else ""
+    except OSError:
+        return ""
+    for line in reversed(re.sub(r"\x1b\[[0-9;]*m", "", text).splitlines()):
+        line = line.strip()
+        if line and not line.startswith(("Traceback", "File ", "^", "...")) and not line.endswith("Error: "):
+            return line if len(line) <= 300 else line[:297] + "..."
+    return ""
+
+
 def problems_found(
-    flightsim: str, predictions: str, report: dict | None, browser: str = "success", edith_missing: bool = False
+    flightsim: str,
+    predictions: str,
+    report: dict | None,
+    browser: str = "success",
+    edith_missing: bool = False,
+    detail: str = "",
 ) -> list[dict]:
     """What is wrong, as [{area, message}], from the build's outcomes and the browser test's report.
 
     ``edith_missing``: EDITH was meant to be built and its page is not in the site.
+    ``detail``: what the failed Predictions build said (build_detail); it is added to the message.
     """
     found: list[dict] = []
     if browser == "failure" and report is None:  # it did not get as far as reporting: the site is unchecked
@@ -82,7 +107,8 @@ def problems_found(
     if flightsim == "failure":
         found.append({"area": "build", "message": FLIGHTSIM_FAILED})
     elif predictions in BUILD_FAILED:
-        found.append({"area": "build", "message": BUILD_FAILED[predictions]})
+        said = f" The build said: \u201c{detail}\u201d" if detail and predictions == "failure" else ""
+        found.append({"area": "build", "message": BUILD_FAILED[predictions] + said})
     for failure in (report or {}).get("failed", []):
         area = failure.get("area", "history")
         if area in (*PAGES, EDITH) and any(p["area"] == "build" for p in found):
@@ -170,6 +196,59 @@ def restore(site: Path, config: dict, live_url: str, area: str, message: str) ->
     return ("as_built" if any((site / rel).is_file() for rel in files) else "none"), ""
 
 
+MANIFEST = "predictions_manifest.json"  # what the live site holds under predictions/, so all of it can be put back
+
+
+def write_manifest(site: Path) -> None:
+    """List every file under predictions/ next to it. The next build's restore reads the live copy of this list."""
+    root = site / "predictions"
+    names = sorted(p.relative_to(root).as_posix() for p in root.rglob("*") if p.is_file()) if root.is_dir() else []
+    (site / MANIFEST).write_text(json.dumps({"files": names}, indent=1), encoding="utf-8")
+
+
+def restore_tree(site: Path, config: dict, live_url: str, area_messages: dict[str, str]) -> dict[str, tuple[str, str]] | None:
+    """Put back ALL of predictions/ from the live site (pages, Vision, EDITH, data and pictures) so nothing from the
+    broken build is left half there. None when the live site has no list of its files (the first build after this
+    was added) or any file cannot be had: nothing is changed then, and the caller restores the pages one by one."""
+    if not live_url:
+        return None
+    base = live_url.rstrip("/")
+    try:
+        with urllib.request.urlopen(f"{base}/{MANIFEST}", timeout=60) as reply:
+            names = [n for n in json.loads(reply.read())["files"] if isinstance(n, str) and ".." not in n.split("/")]
+    except (urllib.error.URLError, OSError, ValueError, KeyError, TypeError):
+        return None
+    if not names:
+        return None
+    with tempfile.TemporaryDirectory() as scratch:
+        for name in names:
+            target = Path(scratch) / name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                with urllib.request.urlopen(f"{base}/predictions/{name}", timeout=120) as reply:
+                    target.write_bytes(reply.read())
+            except (urllib.error.URLError, OSError):
+                return None
+        root = site / "predictions"
+        shutil.rmtree(root, ignore_errors=True)
+        shutil.copytree(scratch, root)
+    shown: dict[str, tuple[str, str]] = {}
+    for area, message in area_messages.items():
+        label = {"vision": "Vision", EDITH: "EDITH"}.get(area, "Predictions")
+        since = ""
+        for rel in page_files(config, area):
+            target = site / rel
+            if not target.is_file():
+                continue
+            text = target.read_text(encoding="utf-8", errors="replace")
+            old = SINCE.search(text)
+            since = html.unescape(old.group(1)) if old else when(None)
+            note = f"{label}: {sentence(message)} This is the last good version, from {since}."
+            target.write_text(with_banner(text, note, since), encoding="utf-8")
+        shown[area] = ("last_good" if since else "none", since)
+    return shown
+
+
 def write_report(site: Path, status: dict, summary: Path | None) -> None:
     (site / "build_status.json").write_text(json.dumps(status, indent=1), encoding="utf-8")
     labels = {"predictions": "Predictions", "vision": "Vision", "edith": "EDITH", "build": "Predictions and Vision",
@@ -197,13 +276,16 @@ def run(args: argparse.Namespace) -> int:
         report = json.loads(Path(args.report).read_text(encoding="utf-8"))
     pages = (*PAGES, EDITH) if args.edith else PAGES  # what this build was meant to make
     missing = args.edith and not all((site / rel).is_file() for rel in page_files(config, EDITH))
-    found = problems_found(args.flightsim, args.predictions, report, args.browser, missing)
+    found = problems_found(args.flightsim, args.predictions, report, args.browser, missing, build_detail(args.detail))
     found = [p for p in found if p["area"] != EDITH or args.edith]  # no EDITH problems when it was not asked for
     areas = {a for p in found for a in (pages if p["area"] == "build" else (p["area"],)) if a in pages}
     shown: dict[str, tuple[str, str]] = {}
+    messages = {a: next((p["message"] for p in found if p["area"] in (a, "build")), "") for a in sorted(areas)}
+    if messages:  # the whole predictions/ tree goes back, not only the broken page
+        shown = restore_tree(site, config, args.live_url, messages) or {}
     for area in sorted(areas):
-        message = next((p["message"] for p in found if p["area"] in (area, "build")), "")
-        shown[area] = restore(site, config, args.live_url, area, message)
+        if area not in shown:
+            shown[area] = restore(site, config, args.live_url, area, messages[area])
     problems = []
     for p in found:
         entry = dict(p)
@@ -220,6 +302,7 @@ def run(args: argparse.Namespace) -> int:
         "problems": problems,
     }
     write_report(site, status, Path(args.summary) if args.summary else None)
+    write_manifest(site)
     print(f"site status: {'ok' if status['ok'] else str(len(problems)) + ' problem(s)'}")
     return 1 if any(p["area"] in BLOCKING for p in problems) else 0
 
@@ -234,6 +317,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--browser", default="success", help="outcome of the browser test step")
     parser.add_argument("--edith", action="store_true", help="this build was meant to make the EDITH page too")
     parser.add_argument("--report", default="", help="the browser test's --report file")
+    parser.add_argument("--detail", default="", help="a copy of what the Predictions build printed, to quote its error")
     parser.add_argument("--commit", default=os.environ.get("GITHUB_SHA", ""))
     parser.add_argument("--run-url", default="")
     parser.add_argument("--summary", default=os.environ.get("GITHUB_STEP_SUMMARY", ""))

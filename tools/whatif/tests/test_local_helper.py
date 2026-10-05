@@ -69,6 +69,10 @@ class Rig:
             on_line("r.CDX1 was corrected (2 values)." if self.corrects else "r.CDX1 already matches a.ork.")
             return 0
         if text[0] == "git":
+            if text[1] == "merge-base" and getattr(self, "remote_check", False):
+                on_line("base123")
+            if text[1] == "diff" and "@{u}" in text:
+                return 1 if getattr(self, "remote_changed", False) else 0
             if text[1] == "diff":
                 return 1  # the CSV changed
             if text[1] in ("push", "pull") and self.push_fails:
@@ -297,11 +301,47 @@ def test_a_good_update_commits_only_the_csv_and_cdx_pushes_and_stops(rig):
     rig.post("update")
     st = rig.wait_idle()
     assert st["error"] is None and st["published"]["commit"] == "abc1234"
-    git = [c[1:] for c in rig.calls if c[0] == "git"]
-    paths = ["aero_modeling/R/RASA/a.csv", "aero_modeling/R/RASA/r.CDX1"]
+    git = [c[1:] for c in rig.calls if c[0] == "git" and c[1] not in ("fetch", "merge-base")]
+    paths = ["aero_modeling/R/RASA/a.csv", "aero_modeling/R/RASA/r.CDX1", "aero_modeling/R/RASA/a.meta.json"]
+    assert (rig.repo / paths[2]).is_file(), "Update CSV records how the table was made"
     assert git[0] == ["add", "--", *paths]
     assert ["commit", "-m", "Update R RASAero CSV", "--", *paths] in git and ["push"] in git
     assert rig.stopped.wait(2)
+
+
+@with_rig(publish=True)
+def test_a_csv_changed_on_github_is_never_overwritten(rig):
+    rig.remote_check, rig.remote_changed = True, True
+    rig.post("sweep")
+    rig.wait_idle()
+    rig.post("update")
+    st = rig.wait_idle()
+    assert "has changed on GitHub" in st["error"] and "Wait a little" in st["error"] and st["published"] is None
+    assert not any(c[:2] == ["git", "push"] for c in rig.calls)
+
+
+@with_rig()
+def test_old_rasaero_files_are_removed_before_a_new_sweep(rig):
+    alpha = rig.repo / "aero_modeling/R/RASA/alpha"
+    alpha.mkdir(parents=True, exist_ok=True)
+    (alpha / "alpha30.txt").write_text("from an older run")
+    rig.sweep_writes = 3
+    rig.post("sweep")
+    st = rig.wait_idle()
+    assert not (alpha / "alpha30.txt").exists() and "only 3 of 31" in st["error"]
+
+
+@with_rig()
+def test_use_file_changes_only_the_config_and_refuses_bad_paths(rig):
+    base = rig.repo / "aero_modeling"
+    (base / "R" / "b.ork").write_text("ork")
+    status, reply, _ = rig.post("use-file", {"rocket": "R", "setting": "ork", "path": "R/b.ork"})
+    assert status == 200 and reply["ok"], reply
+    assert json.loads((base / "whatif_config.json").read_text())["rockets"]["R"]["ork"] == "R/b.ork"
+    assert ["git", "commit", "-m", "Use b.ork for R", "--", "aero_modeling/whatif_config.json"] in rig.calls
+    for bad in ({"rocket": "Other", "setting": "ork", "path": "R/b.ork"}, {"rocket": "R", "setting": "ork", "path": "../x.ork"},
+                {"rocket": "R", "setting": "ork", "path": "R/a.eng"}, {"rocket": "R", "setting": "name", "path": "R/b.ork"}):
+        assert rig.post("use-file", bad)[0] == 400, bad
 
 
 @with_rig(publish=True, push_fails=True)

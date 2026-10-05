@@ -28,7 +28,7 @@
       "aero": "IREC_2027/JARVIS/ignis_2027_aero.csv",
       "rasaero": "IREC_2027/RASA/rasaero.CDX1",
       "rasaero_results": "IREC_2027/RASA/rasaero_results.json",
-      "motor_dir": "IREC_2027/Thrust Curves",
+      "motor_dir": "IREC_2027/2027_Thrust_Curves",
       "sim": "average",
       "alpha_dir": "IREC_2027/JARVIS/alpha",
       "edith_accepted": []

@@ -49,7 +49,7 @@ from urllib.parse import quote
 HERE = Path(__file__).resolve().parent
 OPENROCKET_TESTS = HERE.parents[1] / "openrocket" / "tests"
 # Files that may be missing without it being a problem (the page copes with each).
-MAY_BE_MISSING = ("/api/status", "jarvis_by_commit.json", "build_status.json", "favicon.ico")
+MAY_BE_MISSING = ("/api/status", "jarvis_by_commit.json", "build_status.json", "favicon.ico", "files_used.json")
 BROWSER_ARGS = ["--no-sandbox", "--use-gl=swiftshader", "--enable-unsafe-swiftshader"]
 TABS = ("history", "flight", "changelog", "predictions", "vision")  # EDITH's tab is separate: it shows only when its page exists
 EDITH_PAGE = "predictions/edith/index.html"
@@ -130,11 +130,14 @@ def numbers(text: str) -> float | None:
     return float(match.group(0).replace(",", "")) if match else None
 
 
-def area_of(where: str) -> str:
-    """Which part of the site an address (or a path) belongs to."""
+def area_of(where: str, requested_by: str = "") -> str:
+    """Which part of the site an address (or a path) belongs to. A file from another site (a library on a CDN)
+    belongs to the page that asked for it (``requested_by``), not to whichever tab its name sounds like."""
+    if where.startswith("http") and "127.0.0.1" not in where and "localhost" not in where and requested_by:
+        return area_of(requested_by)
     if "/predictions/edith/" in where:
         return "edith"
-    if "/predictions/viewer/" in where or "three.js" in where:
+    if "/predictions/viewer/" in where:
         return "vision"
     return "predictions" if "/predictions/" in where else "history"
 
@@ -165,7 +168,7 @@ class Browser:
             _, path, what = message.text.split("\t", 2)
             self.problems.append((area_of(path), f"a script stopped: {what}"))
         else:
-            self.problems.append((area_of(message.location.get("url", "")), f"the page logged an error: {message.text}"))
+            self.problems.append((area_of(message.location.get("url", ""), self.page.url), f"the page logged an error: {message.text}"))
 
     def _may_be_missing(self, url: str) -> bool:
         """A file the page copes with having none of: the optional ones, and a tab that was not built."""
@@ -177,7 +180,7 @@ class Browser:
 
     def _response(self, response) -> None:
         if response.status >= 400 and not self._may_be_missing(response.url):
-            self.problems.append((area_of(response.url), f"a file is missing ({response.status}): {response.url.split('/', 3)[-1]}"))
+            self.problems.append((area_of(response.url, response.frame.url if response.frame else ""), f"a file is missing ({response.status}): {response.url.split('/', 3)[-1]}"))
 
     def _failed(self, request) -> None:
         # "aborted" is the browser cancelling a request itself (a page left, a reply nobody read), not a failure;
@@ -187,7 +190,7 @@ class Browser:
         if "fonts.g" in request.url:
             return
         if not self._may_be_missing(request.url):
-            self.problems.append((area_of(request.url), f"a file could not be loaded: {request.url.split('/', 3)[-1]} ({request.failure})"))
+            self.problems.append((area_of(request.url, request.frame.url if request.frame else ""), f"a file could not be loaded: {request.url.split('/', 3)[-1]} ({request.failure})"))
 
     def open(self, hash_: str) -> None:
         self.page.goto("about:blank")  # a hash change alone would not reload the page: start clean
@@ -266,6 +269,8 @@ def check_predictions(b: Browser, require: bool) -> str:
     weather = frame.evaluate("document.querySelectorAll('#weather tr').length")
     assert weather >= 3, "the weather table has no rows"
     assert "Motor:" in frame.evaluate("document.getElementById('runinfo').innerText"), "the motor line is missing"
+    warned = frame.evaluate("(document.getElementById('warnings') || {innerText: ''}).innerText")
+    assert "does not match" not in warned, f"the page warns that the aero table does not match: {warned.strip()[:200]}"
     b.shot("predictions")
     return f"{len(rows) - 1} table rows, {weather - 1} weather rows, {note}"
 
@@ -292,6 +297,8 @@ def check_vision(b: Browser, require: bool) -> str:
     frame.wait_for_selector("canvas", timeout=30000)
     frame.wait_for_function("window.__viewer !== undefined", timeout=30000)
     assert frame.evaluate("document.querySelector('input[data-k=pad]').checked"), "the launch pad should be on to start with"
+    assert not frame.evaluate("!!window.__viewer.usingDemo"), "Vision is showing its built-in demo flight, not this rocket's: " + str(
+        frame.evaluate("window.__viewer.loadError || ''"))
     b.page.wait_for_timeout(1500)  # a few frames
     holder = b.page.query_selector("#view-vision iframe")
     picture = holder.screenshot()
