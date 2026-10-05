@@ -26,7 +26,7 @@
   },
   "files": {
     "IREC_2027/OR/2027_OR.ork": {
-      "default_motor": "IREC_2027/Thrust Curves/IGNIS_2027.rse"
+      "default_motor": "IREC_2027/Thrust Curves/ENGINE-2027-python.rse"
     },
     "IREC_2027/OR/Invictus_ReferenceOR.ork": {
       "default_motors": {

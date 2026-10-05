@@ -263,6 +263,10 @@ def test_edith_is_planned_only_when_asked_and_uses_the_rockets_settings():
         plain = build_site.plan(_config(root, {"R": {"ork": "a.ork", "aero": "a.csv", "motor": "a.eng"}}, "R"), root / "site", True)[0]["edith"]
         assert "--site" not in plain and "--cache" not in plain and "--sim" not in plain
         assert plain[plain.index("--minutes") + 1] == "10"
+        assert "--accepted" not in plain and "--accepted" not in cmd, "no accepted list, no flag"
+        spec["edith_accepted"] = ["stability_static_max", " main_altitude ", ""]
+        cmd = build_site.plan(_config(root, {"R": spec}, "R"), root / "site", True)[0]["edith"]
+        assert cmd[cmd.index("--accepted") + 1] == "stability_static_max,main_altitude"
 
 
 def test_a_missing_edith_settings_file_is_named():
@@ -308,6 +312,25 @@ def test_main_runs_edith_after_the_page_and_a_failure_does_not_change_the_exit_c
         assert code == 0, "EDITH failing must not fail the build"
         assert with_edith == ["flight_sim.whatif.build", "flight_sim.whatif.edith_site"], "EDITH runs after the page"
         assert calls == ["flight_sim.whatif.build"], "without --edith it is not run"
+
+
+def test_rasaero_results_are_passed_on_when_named():
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        spec = {"ork": "a.ork", "aero": "a.csv", "motor": "a.eng", "rasaero_results": "RASA/results.json"}
+        (root / "RASA").mkdir()
+        (root / "RASA" / "results.json").write_text("{}")
+        cmd = build_site.plan(_config(root, {"R": spec}, "R"), root / "site")[0]["cmd"]
+        assert cmd[cmd.index("--rasaero-results") + 1] == str(root / "RASA" / "results.json")
+        plain = build_site.plan(_config(root, {"R": {"ork": "a.ork", "aero": "a.csv", "motor": "a.eng"}}, "R"), root / "site")[0]["cmd"]
+        assert "--rasaero-results" not in plain
+        (root / "RASA" / "results.json").unlink()
+        try:
+            build_site.plan(_config(root, {"R": spec}, "R"), root / "site")
+        except SystemExit as stop:
+            assert "results.json" in str(stop), "a missing results file is named"
+        else:
+            raise AssertionError("a missing results file must stop the build")
 
 
 if __name__ == "__main__":

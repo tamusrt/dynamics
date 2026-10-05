@@ -32,9 +32,14 @@ This folder builds the JARVIS predictions and VISION tabs. The pages are also av
 - A chart of altitude, speed, Mach number, acceleration, stability margin or drag for the selected launch conditions,
   with Jarvis and OpenRocket as separate lines. **Difference from OpenRocket** shows the gap over time.
 - **Apogee by launch condition**: every simulation saved in the `.ork` (each has its own wind and launch rail).
-- Ascent and descent tables, with grey rows for the difference between Jarvis and OpenRocket.
+- Ascent and descent tables, with grey rows for the difference between Jarvis and OpenRocket (and RASAero II, below).
+  The descent is the same full model VISION replays (flight computer, ejection, tumble, shock cord, swing under the
+  canopy), so the descent table and VISION show the same flight.
+- **RASAero II's own results** (apogee, top speed, time to apogee), typed in from RASAero's Flight window, next to
+  Jarvis and OpenRocket for the launch condition they were run for, and as a diamond on the altitude chart.
 - Warnings, for example when the stability margin is below the team minimum or the RASAero table is out of date.
-- **IREC checks**, just below the chart: stability, rail exit speed, drogue and main descent rates and main deployment altitude against the IREC Design, Test & Evaluation Guide.
+- **IREC checks**, just below the chart: apogee between 21,000 and 39,000 ft above the pad (outside it the flight is
+  disqualified), stability, rail exit speed, drogue and main descent rates and main deployment altitude against the IREC Design, Test & Evaluation Guide.
 
 ## Inputs
 
@@ -43,6 +48,7 @@ This folder builds the JARVIS predictions and VISION tabs. The pages are also av
 | OpenRocket design | `IREC_2027/OR/2027_OR.ork` | Geometry, masses and launch conditions |
 | RASAero table | `IREC_2027/RASA/ignis_2027_aero.csv` | Drag, lift and center of pressure |
 | RASAero design | `IREC_2027/RASA/rasaero.CDX1` | The shape the RASAero table was made for |
+| RASAero results | `IREC_2027/RASA/rasaero_results.json` | RASAero II's own apogee, top speed and time to apogee, to compare with |
 | Motor | `default_motor` in `sim_config.json`, otherwise the newest `.eng` or `.rse` in `IREC_2027/Thrust Curves/` | Thrust curve (the motor masses come from the `.ork`, so the starting mass matches OpenRocket) |
 
 Paths are relative to `aero_modeling/` and are set in `aero_modeling/whatif_config.json`.
@@ -94,12 +100,14 @@ hundreds of times, each with a different wind, temperature, motor strength, rail
 counts the flights that break an IREC rule, miss the wanted apogee (30,000 ft, within plus or minus 5%) or get a
 warning. When it is on, each rocket gets:
 
-- **the EDITH tab** (`/predictions/edith/`): the chances with a range for each ("likely range", 90%), a red / amber /
-  green alert for each, charts of altitude, Mach number and stability over time (the average flight with bands for one
-  and two standard deviations, and the highest and lowest flight; buttons switch between them), a fixed 3D picture of
-  every flight's path and where it landed, and an explanation of what EDITH
-  does not cover;
-- **a summary card** on the JARVIS predictions tab, with a link to the EDITH tab;
+- **the EDITH tab** (`/predictions/edith/`): at the top one verdict line (IREC, apogee, chance of the target) and one
+  line for each red alert (amber is never an alert: it shows next to its check); then charts of altitude, Mach number
+  and stability over time (the average flight with bands for one and two standard deviations, and the highest and
+  lowest flight), the apogee chances, a fixed 3D picture of every flight's path and where it landed, and dropdowns for
+  the IREC rules, the rest of the flight, the assumptions, the inputs and how much to trust it. EDITH's results are only
+  on this page, not on the JARVIS predictions tab. IREC recommendations the team has accepted can be listed by check id
+  under `edith_accepted` in the rocket's entry of `aero_modeling/whatif_config.json`: they show greyed, marked accepted
+  (changing the list does not rerun EDITH);
 - **in VISION**, a switch to draw the simulated flights around the replay as small dots (where they peaked, or where they
   came down), and, with the landing spread chosen, **EDITH landing circles** (off to start with): circles on the ground,
   centred on the average landing point, holding 25%, 50%, 75% and 90% of the landings.
@@ -113,12 +121,13 @@ main branch, change the gate in `.github/workflows/openrocket-sim.yml`, step "Is
 **Time.** A full run takes about 5 minutes on the workflow's two cores. It stops starting new rounds of flights after
 10 minutes (`edith_minutes` in the rocket's config entry) and then reports the chances it has, with wider ranges and a
 note saying so. The result is kept in the workflow cache (`.edith_cache`) and reused until the design, the RASAero table,
-the motor, the site settings or the `flight_sim` code change, so most pushes do not wait for it. A result cut short by
+the motor, the site settings or the `flight_sim` code EDITH's flights run change, so most pushes do not wait for it (a
+change to the pages or to VISION alone keeps it). A result cut short by
 the time limit is not kept.
 
 **It cannot break the site.** If EDITH fails or runs out of time, the JARVIS and VISION pages stay as they were built
 and `site_status.py` puts the last good EDITH page back with a red Error bar (see below). `browser_test.py` checks the
-EDITH tab, page (with its charts and picture), card, and VISION's spread switch and landing circles when EDITH is on
+EDITH tab and page (with its charts and picture), that the Predictions page has nothing of EDITH's, and VISION's spread switch and landing circles when EDITH is on
 (`--require-edith`).
 
 **Placeholders.** The wind, weather, parachute strength and the spread of every input are assumed, not measured. The
@@ -215,7 +224,7 @@ meant to make it, so a site that does not run EDITH never shows an old EDITH pag
 ## Adding a rocket
 
 Add an entry under `rockets` in `aero_modeling/whatif_config.json` with `ork`, `aero`, and `motor_dir` or `motor`.
-`rasaero`, `sim` and `alpha_dir` are optional (`alpha_dir` is needed for Update CSV). The `default` rocket is at
+`rasaero`, `rasaero_results`, `sim` and `alpha_dir` are optional (`alpha_dir` is needed for Update CSV). The `default` rocket is at
 `/predictions/`; others are at `/predictions/<key in lowercase>/`.
 
 ## Building locally
@@ -234,3 +243,11 @@ python tools/whatif/tests/browser_test.py --site site --require-predictions --sh
 ```
 
 Then open `site/predictions/index.html`. `build_site.py --dry-run` prints the commands and the motor it would use.
+
+## Updating the RASAero results
+
+After running RASAero II's flight simulation (Simulations → Flight), type its numbers into
+`aero_modeling/IREC_2027/RASA/rasaero_results.json`: one entry per run, with `apogee_ft`, `max_velocity_ft_s` and
+`time_to_apogee_s` as RASAero shows them, and `sim` set to the name of the matching simulation in the `.ork` (for
+example `"no wind - worst"` for the 8° rail with no wind). Use `null` when the `.ork` has no matching condition; the
+page then lists the run in a note under the apogee table. Pushing the file rebuilds the site.

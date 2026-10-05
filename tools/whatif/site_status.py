@@ -48,8 +48,8 @@ BUILD_FAILED = {
     "skipped": "The Predictions build did not run, so the new Predictions page and Vision could not be made.",
 }
 EDITH_MISSING = (
-    "EDITH (the Monte Carlo simulation) did not finish, so its page is missing or out of date, and the summary "
-    "on the Predictions page and the flights in Vision may be missing too "
+    "EDITH (the Monte Carlo simulation) did not finish, so its page is missing or out of date, and the "
+    "flights in Vision may be missing too "
     "(see the step \"Build the predictions page\" in the run)."
 )
 FLIGHTSIM_FAILED = (
