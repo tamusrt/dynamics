@@ -54,8 +54,8 @@ sol_ignis = {
             "fuel_burned_lbm": 1.8,          # post-burn weigh-in; used to fit `a` (or give "a" directly)
         },
         "tank": {
-            "dry_mass": 6543, "offset": 10.0, "length": 24.0, "radius": 2.0,
-            "volume_in3": math.pi * 2.0**2 * 32.0,
+            "dry_mass": 30, "offset": 10.0, "length": 50.0, "radius": 2.5,
+            "volume_in3": math.pi * 2.0**2 * 50.0,
             "initial_ox_mass_lbm": 42.0,
             "liquid_temp_F": 70.0,
         },
@@ -115,8 +115,8 @@ lumina = {
 }
 
 ROCKET_ENGINES = {
-    "blah": (LokiM3464, "solid"),  
-    "morpheus": (sol_ignis, "hybrid"), 
+    "morpheus": (sol_ignis, "hybrid"),  
+    "sol invictus": (sol_ignis, "hybrid"), 
     "morbin' time": (O3400, "solid"),
     "mikeys": (lumina, "liquid")
 }
