@@ -308,7 +308,7 @@ class Helper:
                 return f"Could not check {ctx.cdx.name} against {ctx.ork.name}. See the lines above. Nothing was typed into RASAero."
             if any("was corrected" in line for line in said):
                 # the helper cannot change what RASAero has in memory: only a person can open the file again
-                return (f"Nothing was typed into RASAero: {ctx.cdx.name} did not match the OpenRocket file, so it was corrected "
+                return (f"Nothing was typed into RASAero: {ctx.cdx.name} did not match the OpenRocket file or the rough camouflage paint finish, so it was corrected "
                         f"(the lines above say what changed). RASAero still has the old version open. In RASAero use File, Open "
                         f"and open {ctx.cdx.name} again (do not save the old one over it), click back on this page and press "
                         "Create again.")
@@ -330,6 +330,7 @@ class Helper:
         if ctx.cdx and ctx.cdx.exists() and min(p.stat().st_mtime for p in files.values()) < ctx.cdx.stat().st_mtime - 60:
             self._say(f"Warning: some RASAero files are older than {ctx.cdx.name}. If the rocket changed since then, run step 3 again.")
         old = ctx.csv.read_bytes() if ctx.csv.exists() else None
+        ctx.csv.parent.mkdir(parents=True, exist_ok=True)
         temp = ctx.csv.with_name(ctx.csv.name + ".tmp")
         self._say("Turning the RASAero files into the CSV")
         code = self._step([ctx.python, "-m", "flight_sim.whatif.ras_csv", "--in", ctx.alpha_dir, "--out", temp])
