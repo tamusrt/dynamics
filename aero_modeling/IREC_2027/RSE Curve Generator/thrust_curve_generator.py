@@ -867,7 +867,7 @@ def build_eng_text():
 
 RSE_OUTPUT_DIR = (
     r"C:\Users\nagah\Desktop\SRT_GitHub"
-    r"\dynamics\aero_modeling\IREC_2027\Thrust Curves"
+    r"\dynamics\aero_modeling\IREC_2027\2027_Thrust_Curves"
 )
 
 
