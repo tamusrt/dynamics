@@ -93,10 +93,10 @@
   <LaunchSite>
     <Altitude>2950</Altitude>
     <Pressure>29.83</Pressure>
-    <RodAngle>4</RodAngle>
+    <RodAngle>8</RodAngle>
     <RodLength>32.8</RodLength>
-    <Temperature>97</Temperature>
-    <WindSpeed>9</WindSpeed>
+    <Temperature>76</Temperature>
+    <WindSpeed>18</WindSpeed>
   </LaunchSite>
   <Recovery>
     <Altitude1>0</Altitude1>
