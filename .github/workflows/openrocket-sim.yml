@@ -367,6 +367,7 @@ jobs:
         run: |
           python tools/whatif/tests/test_build_site.py
           python tools/whatif/tests/test_local_helper.py
+          python tools/whatif/tests/test_fix_cdx.py
           python tools/whatif/tests/test_site_status.py
       # The same click-through as above, on a made-up History site (no OpenRocket needed), so every
       # push to any branch checks the History page, its tabs and the Jarvis lines in a real browser.
