@@ -16,9 +16,9 @@ What it checks, in order:
   Jarvis's apogee is not wildly far from OpenRocket's, and the units picked in the page reach it;
 * the Vision tab opens, has its canvas, and the 3D scene is drawn (not blank);
 * the EDITH tab (EDITH is the team's Monte Carlo simulation; its page is built only for some flight_sim branches): hidden
-  while there is no EDITH page, and when there is one the tab opens it with its chances, alerts, charts over time and
-  picture of every flight path, the units picked in the page reach it, the summary card is on the Predictions page, and
-  Vision can show the apogee and landing spread of the simulated flights and the landing circles;
+  while there is no EDITH page, and when there is one the tab opens it with its verdict, IREC rules, charts over time
+  and picture of every flight path, the units picked in the page reach it, the Predictions page has nothing of EDITH's
+  (EDITH's results are only on its own page), and Vision can show the apogee and landing spread of the simulated flights and the landing circles;
 * the big red Error bar at the top is there when the site's ``build_status.json`` says something broke, and when a tab
   cannot be loaded (a 404, a page that was not built);
 * no tab throws a script error or loads a file that is missing.
@@ -332,16 +332,16 @@ def check_edith(b: Browser, require: bool, deep: bool) -> str:
         bands = frame.evaluate("document.querySelectorAll('#series path').length")
         assert bands >= 5, f"the {chart} chart has only {bands} lines and bands"
     verdict = frame.evaluate("document.getElementById('verdict').innerText")
-    alerts = frame.evaluate("document.querySelectorAll('#alerts > *').length")
-    assert alerts >= 1, "the alerts list is empty"
+    assert "IREC" in verdict and "Apogee" in verdict, f"the verdict reads {verdict[:80]!r}"
+    alerts = frame.evaluate("document.querySelectorAll('#alerts > .aline').length")  # red only; often none
     checks = frame.evaluate("document.querySelectorAll('#checks tr').length")
-    assert checks > 5, f"the table of checks has only {checks} rows"
+    assert checks >= 2, f"the IREC rules have only {checks} rows"
     page_text = frame.evaluate("document.body.innerText")
     assert "Monte Carlo" in page_text, "the page does not say that EDITH is the Monte Carlo simulation"
     assert "assumed" in page_text.lower(), "the page does not say that the conditions are assumed"
     assert not frame.evaluate("document.querySelector('header') && getComputedStyle(document.querySelector('header')).display !== 'none'"), "the page's own header shows inside the History page"
     b.shot("edith")
-    return f"{alerts} alerts, {checks} checks, three charts, {paths} paths; {verdict.strip()[:50]!r}"
+    return f"{alerts} red alerts, {checks - 1} rule rows, three charts, {paths} paths; {verdict.strip()[:50]!r}"
 
 
 def check_units_reach_edith(b: Browser) -> str:
@@ -356,19 +356,17 @@ def check_units_reach_edith(b: Browser) -> str:
     return "metric and imperial both arrive"
 
 
-def check_jarvis_edith_card(b: Browser) -> str:
-    if not (b.site / EDITH_PAGE).is_file() or not (b.site / "predictions" / "index.html").is_file():
-        return "skipped: EDITH or Predictions not built"
+def check_jarvis_has_no_edith(b: Browser) -> str:
+    """EDITH's results are only on its own page: the Predictions page has no card, alerts or IREC table of it."""
+    if not (b.site / "predictions" / "index.html").is_file():
+        return "skipped: Predictions not built"
     b.page.click("#tab-predictions")
     frame = b.frame("/predictions/index.html")
-    # the frame may be reloading after a units change, so the card can be missing for a moment
-    frame.wait_for_function("(c => !!c && !c.hidden)(document.getElementById('edithcard'))", timeout=20000)
-    text = frame.evaluate("document.getElementById('edithcard').innerText")
-    assert "EDITH" in text and "chance" in text, f"the EDITH summary card reads {text[:80]!r}"
-    frame.click("#edithlink")
-    b.page.wait_for_function("location.hash.includes('tab=edith')", timeout=10000)
-    b.frame("/predictions/edith/index.html")
-    return "card shows and its link opens the EDITH tab"
+    frame.wait_for_function("document.querySelectorAll('#climb tr').length > 1", timeout=20000)
+    left = frame.evaluate("['edithcard', 'irec'].filter(id => document.getElementById(id))")
+    assert not left, f"the Predictions page still has {left}"
+    assert "EDITH" not in frame.evaluate("document.body.innerText"), "the Predictions page mentions EDITH"
+    return "no EDITH card, alerts or IREC table"
 
 
 def check_vision_spread(b: Browser) -> str:
@@ -458,7 +456,7 @@ def run(site: Path, args: argparse.Namespace) -> int:
         report.check("Vision tab draws the 3D scene", "vision", lambda: check_vision(b, require))
         report.check("EDITH tab shows only with its page, and opens it", "edith", lambda: check_edith(b, require_edith, deep))
         report.check("units chosen in the page reach the EDITH tab", "edith", lambda: check_units_reach_edith(b))
-        report.check("EDITH summary card on the Predictions page", "edith", lambda: check_jarvis_edith_card(b))
+        report.check("No EDITH on the Predictions page", "predictions", lambda: check_jarvis_has_no_edith(b))
         report.check("Vision shows EDITH's apogee and landing spread, and the landing circles", "edith", lambda: check_vision_spread(b))
         report.check("back on History, the address follows", "history", lambda: check_back_to_history(b))
         for area, what in (("history", "History"), ("predictions", "Predictions"), ("vision", "Vision"), ("edith", "EDITH")):

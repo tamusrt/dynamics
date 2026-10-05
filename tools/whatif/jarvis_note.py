@@ -4,8 +4,9 @@
         --flightsim "Vision@abc1234" --out jarvis_note.md
 
 Reads the predictions page the build just made (site/predictions/index.html) and writes a few
-lines: a link to VISION, Jarvis's apogee in every saved condition (next to OpenRocket's), and
-warnings when the stability margin falls below 1.0 caliber, when the RASAero table does not match
+lines: a link to VISION, Jarvis's apogee in every saved condition (next to OpenRocket's, and
+RASAero II's where it was run for that condition), and warnings when the apogee is outside 21,000 to
+39,000 ft above the pad (the flight would be disqualified), when the stability margin falls below 1.0 caliber, when the RASAero table does not match
 the rocket (run Update CSV), or when the History tab flies a different motor file. (Jarvis takes
 the motor masses from the .ork, so the starting mass always matches OpenRocket's saved runs.)
 Writes jarvis_note.md (the commit comment) and jarvis_note.json (the Discord message, for
@@ -23,6 +24,7 @@ FT = 0.3048
 IN = 0.0254
 LB = 0.45359237
 MIN_MARGIN = 1.0  # calibers, the team minimum
+APOGEE_FT = (21000.0, 39000.0)  # apogee above the pad outside this range: disqualified
 # the shape the RASAero table was made for, against the .ork: (key, name, is a count)
 GEOM = [
     ("finCount", "fin count", True), ("finRoot", "fin root chord", False), ("finTip", "fin tip chord", False),
@@ -97,6 +99,11 @@ def note(data: dict, live_url: str, flightsim: str, picture: bool = False, stamp
     low = {sim: run["marginLo"] for sim, run in six.items() if run.get("marginLo") is not None and run["marginLo"] < MIN_MARGIN}
     diffs, motor = rasaero_diffs(data), motor_problem(data)
     short, warn = [], []
+    out = {sim: run["apogee"] / FT for sim, run in six.items() if not APOGEE_FT[0] <= run["apogee"] / FT <= APOGEE_FT[1]}
+    if out:
+        short.append("🛑 **Apogee outside 21,000–39,000 ft** (" + ", ".join(out) + ")")
+        warn.append("🛑 **Apogee outside 21,000 to 39,000 ft above the pad** (the flight would be disqualified): "
+                    + ", ".join(f"{sim} {ft:,.0f} ft" for sim, ft in out.items()) + ".")
     if low:
         worst = min(low, key=low.get)
         short.append(f"⚠️ **Stability {low[worst]:.2f} cal** ({worst})")
@@ -112,11 +119,15 @@ def note(data: dict, live_url: str, flightsim: str, picture: bool = False, stamp
     apogees = "Apogee: " + " · ".join(f"{sim} **{run['apogee'] / FT:,.0f}**" for sim, run in six.items()) + " ft"
     head = [f"**JARVIS simulation** · {name} · **[▶ Open VISION]({vision})**", alerts, apogees]
     details = [""]
+    ras = {r["sim"]: r for r in ((data.get("rasaero") or {}).get("runs") or []) if r.get("sim")}
     for sim, run in six.items():
         o = (ors.get(sim) or {}).get("m", {}).get("apogee")
         vs = f" · OpenRocket {o / FT:,.0f} ft ({(run['apogee'] / o - 1) * 100:+.1f}%)" if o else ""
+        if sim in ras:
+            r = ras[sim]["apogee"]
+            vs += f" · RASAero II {r / FT:,.0f} ft ({(run['apogee'] / r - 1) * 100:+.1f}%)"
         details.append(f"- {sim}: apogee {run['apogee'] / FT:,.0f} ft, Mach {run['machMax']:.2f}{vs}")
-    details += [""] + (warn or ["✅ Stability above 1.0 cal, RASAero table matches the rocket, same motor as OpenRocket."])
+    details += [""] + (warn or ["✅ Apogee within 21,000–39,000 ft, stability above 1.0 cal, RASAero table matches the rocket, same motor as OpenRocket."])
     details.append(f"[JARVIS predictions]({live}/#tab=predictions) · [VISION]({vision})"
                    + (f" · flight_sim `{flightsim}`" if flightsim else ""))
     image = f"{live}/predictions/vision.png" + (f"?v={stamp}" if stamp else "")
