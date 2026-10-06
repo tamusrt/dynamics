@@ -155,11 +155,12 @@ cover.
 
 ## Jarvis on the History tab
 
-The History tab shows Jarvis as a **dashed line** next to each OpenRocket line. These points come from a faster,
+The History tab can show Jarvis as a **dashed line** next to each OpenRocket line (off by default). These points come from a faster,
 simplified version of Jarvis, run on every committed version of the design with the RASAero table as it was at that
 commit and today's motor, so the line reflects design changes only. It should follow OpenRocket's trend; it is not
 expected to match every number. The **OpenRocket** and **Jarvis** buttons above the chart show or hide each
 set of lines, so you can look at OpenRocket only, Jarvis only, or both (the choice is kept in the page link).
+OpenRocket is on and Jarvis is off when the page opens; click **Jarvis** to add the dashed lines.
 
 The results are written to `site/jarvis_by_commit.json` by `flight_sim.whatif.commits`. If this step fails, the History
 tab still works without the dashed lines.
