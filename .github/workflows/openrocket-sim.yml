@@ -16,6 +16,7 @@ on:
       - "aero_modeling/**/*.json"     # whatif_config.json, sim_config.json and any EDITH site settings file
       - "tools/whatif/**"
       - "tools/openrocket/or_ci.py"
+      - "tools/openrocket/site_icons/**"   # the site's favicon
       - "tools/openrocket/tests/**"
       - ".github/workflows/openrocket-sim.yml"
   # flight_sim tells this repository when the branch the site is built from changes (its notify-dynamics.yml),
