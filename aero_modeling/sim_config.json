@@ -26,7 +26,7 @@
   },
   "files": {
     "IREC_2027/OR/2027_OR.ork": {
-      "default_motor": "IREC_2027/2027_Thrust_Curves/2027_v1.rse"
+      "default_motor": "IREC_2027/2027_Thrust_Curves/2027_v1.eng"
     },
     "IREC_2027/OR/Invictus_ReferenceOR.ork": {
       "default_motors": {

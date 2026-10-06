@@ -49,7 +49,7 @@ This folder builds the JARVIS predictions and VISION tabs. The pages are also av
 | RASAero table | `IREC_2027/JARVIS/ignis_2027_aero.csv` | Drag, lift and center of pressure |
 | RASAero design | `IREC_2027/RASA/rasaero.CDX1` | The shape the RASAero table was made for |
 | RASAero results | `IREC_2027/RASA/rasaero_results.json` | RASAero II's own apogee, top speed and time to apogee, to compare with |
-| Motor | `default_motor` in `sim_config.json`, otherwise the newest `.eng` or `.rse` in `IREC_2027/Thrust Curves/` | Thrust curve (the motor masses come from the `.ork`, so the starting mass matches OpenRocket) |
+| Motor | `motor` in `whatif_config.json` if set; otherwise, with `motor_mode` `pinned` (the default), `default_motor` in `sim_config.json` (the History tab's motor), or the newest curve in `motor_dir` if that file is gone (with a warning); with `motor_mode` `newest`, the curve in `motor_dir` whose contents changed last | Thrust curve (the motor masses come from the `.ork`, so the starting mass matches OpenRocket) |
 
 Paths are relative to `aero_modeling/` and are set in `aero_modeling/whatif_config.json`.
 

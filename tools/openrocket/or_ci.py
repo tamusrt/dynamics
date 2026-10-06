@@ -1264,9 +1264,25 @@ def cmd_history(args):
         cache_dir.mkdir(parents=True, exist_ok=True)
     cache_salt = f"s{cfg.seed}-w{int(cfg.deterministic_wind)}-m3"  # bump the suffix when metrics change
 
+    def _strings(value):  # every string in a config entry (motor paths sit at different depths)
+        if isinstance(value, str):
+            yield value
+        elif isinstance(value, dict):
+            for item in value.values():
+                yield from _strings(item)
+        elif isinstance(value, list):
+            for item in value:
+                yield from _strings(item)
+
     def salt_for(f):  # the file's config entry (motors, variants) changes the results too
         import hashlib
-        entry = json.dumps(cfg.file_cfg(rel_posix(root / f, cfg.dir)), sort_keys=True)
+        fcfg = cfg.file_cfg(rel_posix(root / f, cfg.dir))
+        entry = json.dumps(fcfg, sort_keys=True)
+        # and so does the CONTENT of the motor files it names: a new curve under the same name must not reuse old runs
+        for text in sorted(set(_strings(fcfg))):
+            motor = cfg.dir / text
+            if text.lower().endswith((".eng", ".rse")) and motor.is_file():
+                entry += f"\n{text} {_hash_file(motor)}"
         return cache_salt + "-" + hashlib.sha1(entry.encode()).hexdigest()[:8]
 
     # plan: (file, version entry, blob) for every version; look up the cache first
@@ -1282,8 +1298,9 @@ def cmd_history(args):
             if not versions or versions[-1]["blob"] != wt_blob:
                 versions.append({"sha": None, "short": "working", "time": int(time.time()), "author": "",
                                  "message": "(uncommitted working tree)", "path": f, "blob": wt_blob})
-        # flight plots on the site need the full time series of the newest two versions
-        for v in (versions[-2:] if args.site else []):
+        # flight plots on the site need the full time series of the newest two versions. Kept on the run without
+        # --site too, so the site step that follows finds them in the cache instead of simulating that version again
+        for v in versions[-2:]:
             want_series.add((f, v["blob"]))
         for v in versions:
             key = (f, v["blob"])
@@ -1433,6 +1450,10 @@ SITE_HTML = r"""<!doctype html>
   body { margin:0; display:flex; flex-direction:column; overflow:hidden; background:var(--bg); color:var(--fg); font:14px/1.45 -apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif; }
   .bigerror { flex:none; background:var(--errbg); color:#fff; padding:14px 20px 16px; border-bottom:4px solid var(--errline); }
   .bigerror[hidden] { display:none; }
+  .skipnote { flex:none; display:flex; gap:12px; align-items:flex-start; background:#fff4d6; color:#3d2e00; border-bottom:2px solid #d29922; padding:8px 16px; font-size:14px; }
+  .skipnote[hidden] { display:none; }
+  .skipnote .sn-text { flex:1; } .skipnote a { color:inherit; font-weight:600; }
+  .skipnote button { flex:none; border:0; background:transparent; color:inherit; font-size:20px; line-height:1; cursor:pointer; padding:0 4px; }
   .bigerror .be-title { font-size:30px; font-weight:800; letter-spacing:.03em; text-transform:uppercase; margin-right:14px; }
   .bigerror .be-sub { font-size:17px; opacity:.95; }
   .bigerror ul { margin:8px 0 6px 22px; padding:0; } .bigerror li { font-size:18px; font-weight:600; margin:4px 0; }
@@ -1533,6 +1554,10 @@ SITE_HTML = r"""<!doctype html>
   <div><span class="be-title">Error</span><span class="be-sub" id="be-sub"></span></div>
   <ul id="be-list"></ul>
   <a id="be-link" target="_blank" rel="noopener" hidden>See what went wrong in the build</a>
+</div>
+<div class="skipnote" id="skipnote" role="status" hidden>
+  <div class="sn-text" id="sn-text"></div>
+  <button type="button" id="sn-close" aria-label="Hide this note" title="Hide this note">&times;</button>
 </div>
 <header>
   <h1>Rocket performance</h1>
@@ -2181,6 +2206,24 @@ function loadBuildStatus() {
   if (typeof fetch !== 'function') return;
   try { fetch('build_status.json', { cache: 'no-store' }).then(r => r.ok ? r.json() : null).then(setBuildStatus).catch(() => {}); } catch (e) { /* no status file: nothing to report */ }
 }
+// ---- the amber note: this push's design change was too small to fly the Predictions, VISION and EDITH again ----
+// (predictions_skipped.json, written by tools/whatif/build_site.py). The x hides it for this push in this browser.
+function showSkipNote(s) {
+  const box = document.getElementById('skipnote');
+  if (!s || !Array.isArray(s.rockets) || !s.rockets.length) { box.hidden = true; return; }
+  const key = 'srt.skipnote.' + (s.commit || '');
+  try { if (localStorage.getItem(key)) return; } catch (e) { /* no storage: always shown */ }
+  const text = document.getElementById('sn-text'); text.textContent = '';
+  text.appendChild(document.createTextNode(s.rockets.map(r => r.text).join(' ') + ' '));
+  if (s.rerun_url) { const a = document.createElement('a'); a.href = s.rerun_url; a.target = '_blank'; a.rel = 'noopener';
+    a.textContent = 'Re-run them anyway (Run workflow, tick "rebuild")'; text.appendChild(a); }
+  box.hidden = false;
+  document.getElementById('sn-close').onclick = () => { box.hidden = true; try { localStorage.setItem(key, '1'); } catch (e) { /* not kept */ } };
+}
+function loadSkipNote() {
+  if (typeof fetch !== 'function') return;
+  try { fetch('predictions_skipped.json', { cache: 'no-store' }).then(r => r.ok ? r.json() : null).then(showSkipNote).catch(() => {}); } catch (e) { /* none */ }
+}
 function frameMissing(tab) {
   const holder = document.getElementById('view-' + tab); holder.innerHTML = ''; delete frames[tab];
   const d = document.createElement('p'); d.className = 'framemsg'; d.textContent = FRAMES_MISSING[tab]; holder.appendChild(d);
@@ -2233,7 +2276,7 @@ function showEdithTab() {
   if (typeof fetch !== 'function') return;
   try { fetch(FRAMES.edith, { method: 'HEAD' }).then(r => { if (r.ok) show(); }).catch(() => {}); } catch (e) { /* no network: no EDITH tab */ }
 }
-readHash(); buildNav(); update(); loadJarvis(); loadBuildStatus(); showEdithTab();
+readHash(); buildNav(); update(); loadJarvis(); loadBuildStatus(); loadSkipNote(); showEdithTab();
 window.addEventListener('hashchange', () => { readHash(); update(); });
 </script>
 </body>

@@ -28,6 +28,7 @@ import argparse
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import threading
@@ -44,6 +45,7 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 import aero_meta  # noqa: E402  (same folder; only the standard library)
 
+NOT_PUBLISHED = "Not published:"
 USE_SUFFIXES = {"ork": (".ork",), "motor": (".eng", ".rse"), "rasaero": (".cdx1",), "aero": (".csv",)}
 ALPHA_COUNT = 31
 DEFAULT_PORT = 8765
@@ -187,8 +189,11 @@ class Helper:
         found = {}
         for n in range(ALPHA_COUNT):
             path = self.ctx.alpha_dir / f"alpha{n}.txt"
-            if path.is_file() and path.stat().st_size > 0:
-                found[n] = path
+            try:
+                if path.is_file() and path.stat().st_size > 0:
+                    found[n] = path
+            except OSError:  # moved or removed this very moment (the page asks while a sweep starts or fails)
+                continue
         return found
 
     def folders(self) -> dict:
@@ -218,7 +223,12 @@ class Helper:
     def status(self) -> dict:
         """Everything the page shows."""
         files = self.alpha_files()
-        times = [p.stat().st_mtime for p in files.values()]
+        times = []
+        for p in files.values():
+            try:
+                times.append(p.stat().st_mtime)
+            except OSError:
+                pass
         csv, cdx = self.ctx.csv, self.ctx.cdx
         index = self.ctx.site / self.ctx.page_url.strip("/") / "index.html"
         publish = [f"git add {self._rel(csv)}"]
@@ -277,7 +287,11 @@ class Helper:
             if self.busy:
                 return 409, {"ok": False, "message": "Still busy: wait for the current step to finish."}
             self.busy = "use-file"
+            self.cancel_event = threading.Event()  # an earlier Cancel must not stop these git commands
         try:
+            if self._git("ls-files", "--error-unmatch", "--", self._rel(target)) != 0:
+                return 400, {"ok": False, "message": f"{path!r} is not committed to git, so the site could not use it. "
+                                                      "Commit and push the file first."}
             config = json.loads(ctx.config.read_text(encoding="utf-8"))
             config["rockets"][ctx.key][setting] = target.relative_to(base).as_posix()
             ctx.config.write_text(json.dumps(config, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
@@ -324,12 +338,12 @@ class Helper:
     def _step(self, cmd: list) -> int:
         return self.runner(cmd, self._say, self.cancel_event)
 
-    def _collect(self, cmd: list, said: list) -> int:
+    def _collect(self, cmd: list, said: list, cancellable: bool = True) -> int:
         """Run a step, showing its lines and also keeping them in ``said``."""
         def line(text: str) -> None:
             said.append(text)
             self._say(text)
-        return self.runner(cmd, line, self.cancel_event)
+        return self.runner(cmd, line, self.cancel_event if cancellable else threading.Event())
 
     def _sweep(self) -> str | None:
         ctx = self.ctx
@@ -346,11 +360,39 @@ class Helper:
                         f"(the lines above say what changed). RASAero still has the old version open. In RASAero use File, Open "
                         f"and open {ctx.cdx.name} again (do not save the old one over it), click back on this page and press "
                         "Create again.")
-        for stale in self.alpha_files().values():  # files of an older run must not pass for this run's
-            try:
-                stale.unlink()
-            except OSError:
-                return f"Could not remove the old RASAero file {stale.name}. Close anything that has it open and try again."
+        # The files of an older run must not pass for this run's, but they are only put aside, not deleted: if the sweep
+        # fails or is cancelled they come back, and the last good set is still there for Update CSV.
+        aside = ctx.alpha_dir / "_previous_run"
+        shutil.rmtree(aside, ignore_errors=True)
+        moved: list[str] = []
+        try:
+            for stale in self.alpha_files().values():
+                aside.mkdir(exist_ok=True)
+                shutil.move(str(stale), str(aside / stale.name))
+                moved.append(stale.name)
+        except OSError:
+            self._bring_back(aside)
+            return "Could not move the old RASAero files aside. Close anything that has them open and try again."
+        problem = self._run_sweep()
+        if problem is None:
+            shutil.rmtree(aside, ignore_errors=True)
+        elif moved:
+            self._bring_back(aside)
+            problem += " The RASAero files from your last good run were put back."
+        return problem
+
+    def _bring_back(self, aside: Path) -> None:
+        """Replace whatever is in the RASAero folder with the files that were put aside (the last good set)."""
+        if not aside.is_dir():
+            return
+        for part in self.alpha_files().values():
+            part.unlink(missing_ok=True)
+        for kept in aside.iterdir():
+            shutil.move(str(kept), str(self.ctx.alpha_dir / kept.name))
+        shutil.rmtree(aside, ignore_errors=True)
+
+    def _run_sweep(self) -> str | None:
+        ctx = self.ctx
         expect = ["--expect", ctx.cdx.name] if ctx.cdx is not None else []
         code = self._step([ctx.python, "-u", HERE / "rasaero_sweep.py", "--out", ctx.alpha_dir, "--window", ctx.window, "--countdown", "5", *expect])
         if code != 0:
@@ -394,30 +436,46 @@ class Helper:
             else:
                 meta_file.unlink(missing_ok=True)
             return "The rebuild failed, so the old CSV was put back. See the lines above."
-        return self._publish() if self.auto_publish else None
+        if not self.auto_publish:
+            return None
+        problem = self._publish()
+        if problem and problem.startswith(NOT_PUBLISHED):  # the new CSV is not going to GitHub: leave the folder as it was
+            if old is not None:
+                ctx.csv.write_bytes(old)
+            else:
+                ctx.csv.unlink(missing_ok=True)
+            if old_meta is not None:
+                meta_file.write_bytes(old_meta)
+            else:
+                meta_file.unlink(missing_ok=True)
+            problem += " The CSV on this computer was put back as it was, so git pull will not stop on it."
+        return problem
 
     def _git(self, *args: str) -> int:
-        return self._step(["git", *args])
+        """A git command. Cancel does not stop it: a commit or a push cut off half way is worse than one that finishes."""
+        return self.runner(["git", *args], self._say, threading.Event())
 
     def _remote_changed_csv(self) -> bool:
         """True when GitHub's copy of the CSV was changed by someone else after this copy branched from it."""
         said: list[str] = []
-        if self._collect(["git", "fetch", "--quiet"], said) != 0:
+        if self._collect(["git", "fetch", "--quiet"], said, cancellable=False) != 0:
             return False  # offline or no remote: the push itself will say so
         base: list[str] = []
-        if self._collect(["git", "merge-base", "HEAD", "@{u}"], base) != 0 or not base:
+        if self._collect(["git", "merge-base", "HEAD", "@{u}"], base, cancellable=False) != 0 or not base:
             return False  # no upstream branch to compare with
         return self._git("diff", "--quiet", base[0].strip(), "@{u}", "--", self._rel(self.ctx.csv)) == 1
 
     def _publish(self) -> str | None:
         """Commit the CSV and the .CDX1 (nothing else) and push them, so the site rebuilds for everyone."""
         ctx = self.ctx
+        if self.cancel_event.is_set():  # Cancel was pressed while the page was rebuilding: nothing is committed
+            return "Cancelled."
         paths = [self._rel(ctx.csv)] + ([self._rel(ctx.cdx)] if ctx.cdx is not None and ctx.cdx.exists() else [])
         meta = aero_meta.meta_path(ctx.csv)
         if meta.exists():
             paths.append(self._rel(meta))
         if self._remote_changed_csv():
-            return (f"Not published: the CSV ({ctx.csv.name}) has changed on GitHub since your copy was last updated. "
+            return (f"{NOT_PUBLISHED} the CSV ({ctx.csv.name}) has changed on GitHub since your copy was last updated. "
                     "Wait a little and check whether someone else has already updated it. If they have, run: git pull, and see "
                     "whether you still need to press Update CSV. If nobody has, run git pull, then press Update CSV again.")
         self._say("Publishing: committing " + " and ".join(paths) + " and pushing to GitHub")
@@ -434,7 +492,7 @@ class Helper:
                     return ("The CSV is updated and committed on this computer, but it could not be pushed. "
                             "In a terminal in the dynamics folder run: git pull, then git push.")
         said: list[str] = []
-        self._collect(["git", "rev-parse", "--short", "HEAD"], said)
+        self._collect(["git", "rev-parse", "--short", "HEAD"], said, cancellable=False)
         commit = next((line.strip() for line in said if line.strip()), "")
         self.published = {"commit": commit, "time": iso(datetime.now(timezone.utc).timestamp())}
         self._say(f"Published (commit {commit}). The site rebuilds by itself; the helper stops in a few seconds.")

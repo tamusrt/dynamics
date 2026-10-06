@@ -38,6 +38,7 @@ import argparse
 import functools
 import http.server
 import json
+import os
 import re
 import socketserver
 import sys
@@ -49,7 +50,7 @@ from urllib.parse import quote
 HERE = Path(__file__).resolve().parent
 OPENROCKET_TESTS = HERE.parents[1] / "openrocket" / "tests"
 # Files that may be missing without it being a problem (the page copes with each).
-MAY_BE_MISSING = ("/api/status", "jarvis_by_commit.json", "build_status.json", "favicon.ico", "files_used.json")
+MAY_BE_MISSING = ("/api/status", "jarvis_by_commit.json", "build_status.json", "favicon.ico", "files_used.json", "predictions_skipped.json")
 BROWSER_ARGS = ["--no-sandbox", "--use-gl=swiftshader", "--enable-unsafe-swiftshader"]
 TABS = ("history", "flight", "changelog", "predictions", "vision")  # EDITH's tab is separate: it shows only when its page exists
 EDITH_PAGE = "predictions/edith/index.html"
@@ -79,6 +80,17 @@ class Report:
     def write(self, path: Path) -> None:
         path.write_text(json.dumps({"failed": self.failed, "skipped": self.skipped}, indent=1), encoding="utf-8")
 
+
+
+def launch_browser(chromium, args):
+    """The Chrome already installed on the computer (GitHub's runners have one, so nothing has to be downloaded or
+    installed), or Playwright's own Chromium when there is none. SRT_BROWSER=bundled always uses Playwright's."""
+    if os.environ.get("SRT_BROWSER", "") != "bundled":
+        try:
+            return chromium.launch(channel="chrome", args=args)
+        except Exception:  # noqa: BLE001  (no Chrome here, or one Playwright cannot drive)
+            pass
+    return chromium.launch(args=args)
 
 def serve(folder: Path) -> tuple[socketserver.TCPServer, int]:
     """Serve the site on a free local port, quietly, in a background thread."""
@@ -450,7 +462,7 @@ def run(site: Path, args: argparse.Namespace) -> int:
     report = Report()
     print(f"browser test: {site}")
     with sync_playwright() as p:
-        browser = p.chromium.launch(args=BROWSER_ARGS)
+        browser = launch_browser(p.chromium, BROWSER_ARGS)
         page = browser.new_page(viewport={"width": 1400, "height": 900}, color_scheme="dark")
         if args.plotly:  # for a computer that cannot reach the internet: the same library from a file
             page.route("https://cdn.plot.ly/**", lambda r: r.fulfill(body=Path(args.plotly).read_bytes(), content_type="application/javascript"))

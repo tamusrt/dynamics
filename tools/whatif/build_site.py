@@ -117,13 +117,17 @@ def _resolve_files(repo: Repo, base: Path, spec: dict, notes: resolve.Notes) -> 
     return found
 
 
-def _changed_in_last_commit(repo: Repo, path: Path) -> bool:
-    """True when the newest commit changed this file (False without git or history)."""
-    done = git(repo.root, "diff", "--name-only", "HEAD~1", "HEAD", "--", repo.rel(path))
-    return bool(done is not None and done.returncode == 0 and isinstance(done.stdout, str) and done.stdout.strip())
+def _changed_in_last_commit(repo: Repo, path: Path, since: str = "") -> bool:
+    """True when this push changed the file: everything after ``since`` (the commit the push started from, so a push of
+    several commits is covered), or just the newest commit without it. False without git or history."""
+    for start in ([since] if since.strip("0 ") and not since.startswith("-") else []) + ["HEAD~1"]:  # an all-zero id means "a new branch"
+        done = git(repo.root, "diff", "--name-only", start, "HEAD", "--", repo.rel(path))
+        if done is not None and done.returncode == 0 and isinstance(done.stdout, str):
+            return bool(done.stdout.strip())
+    return False
 
 
-def files_used(repo, base, key, spec, mode, found, motor, note, history_file, notes) -> dict:
+def files_used(repo, base, key, spec, mode, found, motor, note, history_file, notes, since: str = "") -> dict:
     """What files_used.json says: the files the page was built from, how each was found, and what to mention."""
     def rel(path: Path) -> str:
         return resolve.config_value(base, path)
@@ -152,9 +156,16 @@ def files_used(repo, base, key, spec, mode, found, motor, note, history_file, no
                   "path": rel(motor.path), "how": note or motor.how, "auto": motor.auto,
                   "changed": resolve.changed_date(repo, motor.path), "candidates": others("motor", motor.path)})
     table: dict = {}
-    if "aero" in found and _changed_in_last_commit(repo, found["aero"].path):
+    if "aero" in found and _changed_in_last_commit(repo, found["aero"].path, since):
         notes.add("warn", f"The aero table {found['aero'].path.name} was changed by the latest push. Merging is turned off for it, "
                           "so if two people updated it, check that the version on main is the one you meant.")
+    if "rasaero_results" in found and "ork" in found:  # RASAero's own results are typed in by hand: say when they are older
+        typed = resolve.content_time(repo, found["rasaero_results"].path)
+        design = resolve.content_time(repo, found["ork"].path)
+        if typed and design and typed < design:
+            notes.add("warn", f"RASAero II's own results ({found['rasaero_results'].path.name}) were saved before the latest change "
+                              f"to the design ({found['ork'].path.name}, {resolve.changed_date(repo, found['ork'].path)}), so the "
+                              "RASAero II numbers may be for an older rocket. Fly it in RASAero II again and update that file.")
     if "aero" in found:
         table = aero_meta.check(found["aero"].path, found["rasaero"].path if "rasaero" in found else None, found["ork"].path)
         for reason in table["stale"]:
@@ -179,7 +190,7 @@ def write_notes(builds: list[dict], target: Path) -> None:
         target.unlink()
 
 
-def plan(config_path: Path, site: Path, edith: bool = False, edith_cache: Path | None = None) -> list[dict]:
+def plan(config_path: Path, site: Path, edith: bool = False, edith_cache: Path | None = None, since: str = "") -> list[dict]:
     """The builds the config asks for: where each goes and the commands that make it.
 
     With ``edith`` each build also has the command that runs EDITH on the page it makes. A rocket's own
@@ -272,11 +283,11 @@ def plan(config_path: Path, site: Path, edith: bool = False, edith_cache: Path |
             accepted = [str(a).strip() for a in spec.get("edith_accepted", []) if str(a).strip()]
             if accepted:  # IREC recommendations the team accepts: greyed on the EDITH page, not a reason to rerun it
                 edith_cmd += ["--accepted", ",".join(accepted)]
-        used = files_used(repo, base, key, spec, mode, found, motor, note, history_file, notes)
+        used = files_used(repo, base, key, spec, mode, found, motor, note, history_file, notes, since)
         builds.append({
             "key": key, "out": out, "cmd": cmd, "by_commit": by_commit, "motor": paths["motor"], "note": note,
             "edith": edith_cmd, "edith_timeout_s": minutes * 60 * 1.5 + EDITH_GRACE_S, "files_used": used,
-            "ork_path": paths["ork"],
+            "ork_path": paths["ork"], "ork_rel": repo.rel(paths["ork"]),
         })  # fmt: skip
     return builds
 
@@ -350,13 +361,10 @@ def _history_id(site: Path, ork_name: str) -> str:
     return hashlib.sha1("\n".join(part).encode()).hexdigest() if part else ""
 
 
-def cache_name(build: dict, site: Path) -> str | None:
-    """The cache entry of one rocket's page and flight: ``<.ork blob id>-<salt>``, or None when it cannot be told.
-
-    As in or_ci.py, the entry is named by the git blob id of the design and a salt: CACHE_SALT and a short hash of
-    everything else the page and flight are made from (the options they are built with, the blob ids of the aero
-    table, motor and RASAero files, this design's History data and the installed flight_sim code).
-    """
+def cache_parts(build: dict, site: Path) -> dict | None:
+    """What one rocket's cache entry is made from: the design's blob id (``ork``), this design's History data
+    (``history``) and everything else (``rest``: the options, the blob ids of the aero table, motor and RASAero files,
+    and the installed flight_sim code). None when it cannot be told."""
     package = _flight_sim_dir()
     ork = build.get("ork_path")
     if package is None or not package.is_dir() or ork is None or not ork.is_file():
@@ -365,9 +373,84 @@ def cache_name(build: dict, site: Path) -> str | None:
     for cmd in (build["cmd"], build["by_commit"] or []):
         for arg in cmd[1:]:  # not the Python executable's path
             path = Path(arg)
-            options.append(_hash_file(path) if path.is_file() else arg)
-    entry = json.dumps({"options": options, "history": _history_id(site, ork.name), "flight_sim": _flight_sim_id(package)})
-    return f"{_hash_file(ork)}-{CACHE_SALT}-{hashlib.sha1(entry.encode()).hexdigest()[:8]}"
+            if arg == str(ork):
+                options.append("<ork>")  # the design is ``ork`` below, so ``rest`` can be compared on its own
+            else:
+                options.append(_hash_file(path) if path.is_file() else arg)
+    rest = hashlib.sha1(json.dumps({"options": options, "flight_sim": _flight_sim_id(package)}).encode()).hexdigest()
+    return {"ork": _hash_file(ork), "history": _history_id(site, ork.name), "rest": rest}
+
+
+def cache_name(build: dict, site: Path) -> str | None:
+    """The cache entry of one rocket's page and flight: ``<.ork blob id>-<salt>``, or None when it cannot be told.
+
+    As in or_ci.py, the entry is named by the git blob id of the design and a salt: CACHE_SALT and a short hash of
+    everything else the page and flight are made from (the options they are built with, the blob ids of the aero
+    table, motor and RASAero files, this design's History data and the installed flight_sim code).
+    """
+    parts = cache_parts(build, site)
+    if parts is None:
+        return None
+    entry = json.dumps({"history": parts["history"], "rest": parts["rest"]})
+    return f"{parts['ork']}-{CACHE_SALT}-{hashlib.sha1(entry.encode()).hexdigest()[:8]}"
+
+
+# ---- small design changes: keep the last pages instead of flying everything again ----
+# A push that changes the design so little that OpenRocket's results hardly move (a mass of a few grams, a renamed
+# part) does not fly the Predictions page, VISION and EDITH again: the last ones are kept and the site says so, with a
+# link to run the workflow again with "rebuild" ticked. The limits are ``small_change`` in whatif_config.json.
+SMALL_CHANGE = {"apogee_m": 1.0, "stability_cal": 0.02, "max_mach": 0.005, "velocity_off_rod_m_s": 0.1}
+_STABILITY = ("stability_off_rod_cal", "min_stability_cal", "max_stability_cal")
+INPUTS_FILE = ".inputs.json"  # in each cache entry: what it was made from, and OpenRocket's results for that design
+
+
+def or_metrics(results: dict | None, ork_rel: str) -> dict[str, dict] | None:
+    """OpenRocket's numbers for this design after the push, by simulation (from or_ci.py compare's results.json)."""
+    if not results:
+        return None
+    out = {}
+    for rec in results.get("after") or []:
+        if rec.get("file") == ork_rel and rec.get("status") == "OK" and isinstance(rec.get("metrics"), dict):
+            out[str(rec.get("sim_name"))] = rec["metrics"]
+    return out or None
+
+
+def small_change(kept: dict | None, now: dict | None, limits: dict) -> str | None:
+    """Why the change is small enough to keep the last pages (a sentence), or None when it is not (or cannot be told)."""
+    if not kept or not now or set(kept) != set(now):
+        return None
+    worst = {"apogee": 0.0, "stability": 0.0, "mach": 0.0, "rail": 0.0}
+
+    def gap(a: dict, b: dict, key: str) -> float | None:
+        x, y = a.get(key), b.get(key)
+        if not isinstance(x, (int, float)) or not isinstance(y, (int, float)) or x != x or y != y:
+            return None  # NaN or missing: cannot be judged
+        return abs(float(x) - float(y))
+
+    for sim, after in now.items():
+        before = kept[sim]
+        checks = [("apogee", gap(before, after, "apogee"), limits["apogee_m"]),
+                  ("mach", gap(before, after, "max_mach"), limits["max_mach"]),
+                  ("rail", gap(before, after, "velocity_off_rod"), limits["velocity_off_rod_m_s"])]
+        checks += [("stability", gap(before, after, k), limits["stability_cal"]) for k in _STABILITY]
+        for name, value, limit in checks:
+            if value is None or value > limit:
+                return None
+            worst[name] = max(worst[name], value)
+    return (f"OpenRocket's apogee moved by at most {worst['apogee']:.2f} m and its stability by at most "
+            f"{worst['stability']:.3f} cal")
+
+
+def find_reusable(cache: Path, parts: dict) -> tuple[str, dict] | None:
+    """A kept entry made from the same everything except the design (and its History data): (name, its inputs)."""
+    for entry in cache.iterdir() if cache.is_dir() else []:
+        try:
+            info = json.loads((entry / INPUTS_FILE).read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if (entry / ".complete").is_file() and info.get("rest") == parts["rest"]:
+            return entry.name, info
+    return None
 
 
 def _nested_outs(build: dict, builds: list[dict]) -> set[Path]:
@@ -381,11 +464,11 @@ def restore_cached(build: dict, cache: Path, name: str) -> bool:
     kept = cache / name
     if not (kept / ".complete").is_file():
         return False
-    shutil.copytree(kept, build["out"], dirs_exist_ok=True, ignore=shutil.ignore_patterns(".complete"))
+    shutil.copytree(kept, build["out"], dirs_exist_ok=True, ignore=shutil.ignore_patterns(".complete", INPUTS_FILE))
     return True
 
 
-def keep_result(build: dict, builds: list[dict], cache: Path, name: str) -> None:
+def keep_result(build: dict, builds: list[dict], cache: Path, name: str, inputs: dict | None = None) -> None:
     """Keep this rocket's page and flight under its cache entry (EDITH and the other rockets keep their own)."""
     skip = _nested_outs(build, builds)
     out = build["out"].resolve()
@@ -398,6 +481,8 @@ def keep_result(build: dict, builds: list[dict], cache: Path, name: str) -> None
     try:
         shutil.rmtree(target, ignore_errors=True)
         shutil.copytree(build["out"], target, ignore=ignore)
+        if inputs is not None:  # what it was made from, so a later push with only a small design change can reuse it
+            (target / INPUTS_FILE).write_text(json.dumps(inputs), encoding="utf-8")
         (target / ".complete").write_text("", encoding="utf-8")
     except OSError as error:  # a full disk or the like: the next run simply flies it again
         print(f"  (could not keep the result for {build['key']}: {error})", flush=True)
@@ -441,14 +526,31 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--notes", default=None, help="write one line per auto-fix or warning to this file")
     parser.add_argument("--edith-cache", default=None, help="folder that keeps EDITH's result between builds")
     parser.add_argument("--cache", default=None, help="folder that keeps each rocket's page and flight between builds")
+    parser.add_argument("--since", default="", help="the commit this push started from (to notice a changed aero table in any of its commits)")
+    parser.add_argument("--or-results", default=None,
+                        help="or_ci.py compare's results.json: a design change too small to move OpenRocket's results keeps the last pages")
+    parser.add_argument("--rebuild", action="store_true", help="fly every rocket again, however small the change")
+    parser.add_argument("--commit", default="", help="this push's commit (for the note that the pages were kept)")
+    parser.add_argument("--rerun-url", default="", help="where to run the workflow again (for that note)")
     args = parser.parse_args(argv)
-    builds = plan(Path(args.config), Path(args.site), args.edith, Path(args.edith_cache) if args.edith_cache else None)
+    config = json.loads(Path(args.config).read_text(encoding="utf-8"))
+    limits = {**SMALL_CHANGE, **{k: float(v) for k, v in (config.get("small_change") or {}).items() if k in SMALL_CHANGE}}
+    results = None
+    if args.or_results and Path(args.or_results).is_file():
+        try:
+            results = json.loads(Path(args.or_results).read_text(encoding="utf-8"))
+        except ValueError:
+            results = None
+    skipped: list[dict] = []
+    builds = plan(Path(args.config), Path(args.site), args.edith, Path(args.edith_cache) if args.edith_cache else None, args.since)
     if args.notes:
         write_notes(builds, Path(args.notes))
     cache = Path(args.cache).resolve() if args.cache else None
     names: dict[str, str | None] = {}
+    parts: dict[str, dict | None] = {}
     if cache and not args.dry_run:  # look up the cache first, as or_ci.py does
         cache.mkdir(parents=True, exist_ok=True)
+        parts = {b["key"]: cache_parts(b, Path(args.site)) for b in builds}
         names = {b["key"]: cache_name(b, Path(args.site)) for b in builds}
         hits = sum(1 for n in names.values() if n and (cache / n / ".complete").is_file())
         print(f"Predictions: {len(builds)} rocket(s); {len(builds) - hits} to fly, {hits} from cache", flush=True)
@@ -464,8 +566,26 @@ def main(argv: list[str] | None = None) -> int:
                 print("  " + " ".join(build["edith"]))
             continue
         name = names.get(build["key"])
+        part = parts.get(build["key"])
+        now = or_metrics(results, build.get("ork_rel", "")) if part else None
+        reuse = None
+        if name and not (cache / name / ".complete").is_file() and part and not args.rebuild:
+            found = find_reusable(cache, part)
+            why = small_change(found[1].get("or"), now, limits) if found else None
+            if found and why:
+                reuse = found[0]
+                skipped.append({"rocket": build["key"], "kept": reuse, "text": (
+                    f"{build['ork_path'].name} changed, but {why}, "
+                    "so the JARVIS predictions, VISION and EDITH were not flown again: they show the previous version of the design.")})
         if name and restore_cached(build, cache, name):
             print(f"  from cache ({name})", flush=True)
+        elif reuse and restore_cached(build, cache, reuse):
+            print(f"  small design change: kept the last pages ({reuse}); {skipped[-1]['text']}", flush=True)
+            names[build["key"]] = reuse  # so prune_cache keeps it for the next push
+            if build["by_commit"] and subprocess.run(build["by_commit"], check=False).returncode:  # cheap: keep it current
+                print(f"  (no Jarvis line by commit for {build['key']})", flush=True)
+            if build["edith"]:
+                build["edith"] = build["edith"] + ["--reuse-kept"]
         else:
             subprocess.run(build["cmd"], check=True)
             by_commit_ok = True
@@ -474,12 +594,23 @@ def main(argv: list[str] | None = None) -> int:
                     by_commit_ok = False
                     print(f"  (no Jarvis line by commit for {build['key']})", flush=True)
             if name and by_commit_ok:  # before EDITH, which keeps its own result
-                keep_result(build, builds, cache, name)
+                keep_result(build, builds, cache, name, {**(part or {}), "or": now})
         write_files_used(build)
         if build["edith"]:  # last: it only adds to the pages above, and may fail without hurting them
             run_edith(build)
     if cache and not args.dry_run:
         prune_cache(cache, {n for n in names.values() if n})
+    note = Path(args.site) / "predictions_skipped.json"
+    if skipped and args.notes:  # and in the commit comment
+        if not Path(args.notes).is_file():
+            Path(args.notes).write_text("Build notes:\n", encoding="utf-8")
+        with Path(args.notes).open("a", encoding="utf-8") as out:
+            out.write("".join(f"- {r['rocket']}: {r['text']} Run the workflow with \"rebuild\" ticked to fly them again.\n" for r in skipped))
+    if skipped:
+        note.write_text(json.dumps({"commit": args.commit, "rerun_url": args.rerun_url, "rockets": skipped}, indent=1),
+                        encoding="utf-8")
+    else:
+        note.unlink(missing_ok=True)
     merged = merge_by_commit(builds, Path(args.site))
     if merged:
         print(f"Jarvis by commit for the History tab: {merged}", flush=True)

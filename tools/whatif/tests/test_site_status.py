@@ -320,6 +320,94 @@ def test_the_whole_predictions_tree_is_put_back_from_the_live_site():
             server.shutdown()
 
 
+def test_the_real_error_is_quoted_not_the_exit_status_line():
+    with tempfile.TemporaryDirectory() as tmp:
+        log = Path(tmp) / "build_log.txt"
+        log.write_text(
+            "building\nrocket: these files are missing: /r/a_aero.csv (git has no record of it moving).\n"
+            "Traceback (most recent call last):\n  File \"build_site.py\", line 340, in main\n"
+            "    subprocess.run(build[\"cmd\"], check=True)\n  File \"subprocess.py\", line 577, in run\n"
+            "    raise CalledProcessError(retcode, process.args)\n"
+            "subprocess.CalledProcessError: Command '['python', '-m', 'x']' returned non-zero exit status 1.\n", encoding="utf-8")
+        said = site_status.build_detail(str(log))
+        assert said.startswith("rocket: these files are missing"), said
+        log.write_text("Traceback (most recent call last):\n  File \"a.py\", line 1\n    boom()\nValueError: bad motor\n", encoding="utf-8")
+        assert site_status.build_detail(str(log)) == "ValueError: bad motor"
+
+
+def _serve(live: Path):
+    import functools
+    import http.server
+    import threading
+
+    handler = functools.partial(http.server.SimpleHTTPRequestHandler, directory=str(live))
+    handler.log_message = lambda *a, **k: None
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server, f"http://127.0.0.1:{server.server_address[1]}"
+
+
+def test_when_only_edith_broke_the_new_predictions_and_vision_stay():
+    with tempfile.TemporaryDirectory() as tmp:
+        live, site = Path(tmp) / "live", Path(tmp) / "site"
+        (live / "predictions" / "edith").mkdir(parents=True)
+        (live / "predictions" / "viewer").mkdir(parents=True)
+        (live / "predictions" / "index.html").write_text("<html><body>old page</body></html>")
+        (live / "predictions" / "viewer" / "index.html").write_text("<html><body>old viewer</body></html>")
+        (live / "predictions" / "edith" / "index.html").write_text("<html><body>old edith</body></html>")
+        (live / "predictions" / "edith" / "my data.json").write_text('{"old": 1}')  # a name that needs quoting in an address
+        site_status.write_manifest(live)
+        (site / "predictions" / "viewer").mkdir(parents=True)
+        (site / "predictions" / "edith").mkdir(parents=True)
+        (site / "predictions" / "index.html").write_text("<html><body>NEW page</body></html>")
+        (site / "predictions" / "viewer" / "index.html").write_text("<html><body>NEW viewer</body></html>")
+        (site / "predictions" / "edith" / "half.json").write_text("{}")  # what a half-made EDITH left
+        server, url = _serve(live)
+        try:
+            config = {"default": "R", "rockets": {"R": {}}}
+            shown = site_status.restore_tree(site, config, url, {"edith": "it broke"}, site_status.in_edith_folder)
+            assert shown and shown["edith"][0] == "last_good"
+            assert "NEW page" in (site / "predictions" / "index.html").read_text()
+            assert "NEW viewer" in (site / "predictions" / "viewer" / "index.html").read_text()
+            assert "old edith" in (site / "predictions" / "edith" / "index.html").read_text()
+            assert (site / "predictions" / "edith" / "my data.json").read_text() == '{"old": 1}'
+            assert not (site / "predictions" / "edith" / "half.json").exists()
+        finally:
+            server.shutdown()
+
+
+def test_the_manifest_can_be_written_on_its_own_and_lists_vision_png():
+    with tempfile.TemporaryDirectory() as tmp:
+        site = Path(tmp) / "site"
+        (site / "predictions").mkdir(parents=True)
+        (site / "predictions" / "vision.png").write_bytes(b"png")
+        assert site_status.main(["--site", str(site), "--manifest-only"]) == 0
+        assert "vision.png" in json.loads((site / "predictions_manifest.json").read_text())["files"]
+
+
+def test_the_jarvis_note_does_not_report_a_rolled_back_page_as_new():
+    import jarvis_note
+
+    with tempfile.TemporaryDirectory() as tmp:
+        site = Path(tmp) / "site"
+        (site / "predictions").mkdir(parents=True)
+        (site / "build_status.json").write_text(json.dumps({"ok": False, "problems": [
+            {"area": "vision", "message": "Vision did not load", "shown": "last_good"}]}))
+        out = Path(tmp) / "note.md"
+        old = sys.argv
+        sys.argv = ["jarvis_note.py", "--site", str(site), "--live-url", "https://x.test/d", "--out", str(out)]
+        try:
+            jarvis_note.main()
+        finally:
+            sys.argv = old
+        text = out.read_text(encoding="utf-8")
+        assert "last good" in text and "Vision did not load" in text and "No new apogees" in text
+        assert json.loads(out.with_suffix(".json").read_text(encoding="utf-8"))["warnings"] == 1
+        (site / "build_status.json").write_text(json.dumps({"ok": False, "problems": [
+            {"area": "edith", "message": "EDITH did not finish", "shown": "last_good"}]}))
+        assert jarvis_note.rolled_back(site) is None, "an EDITH problem does not roll the JARVIS page back"
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):

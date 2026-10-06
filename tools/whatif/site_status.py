@@ -34,7 +34,9 @@ import shutil
 import sys
 import tempfile
 import urllib.error
+import urllib.parse
 import urllib.request
+from collections.abc import Callable
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from pathlib import Path
@@ -74,18 +76,33 @@ def page_files(config: dict, area: str) -> list[str]:
 def build_detail(path: str) -> str:
     """The last thing the build said before it failed (its own error message), or '' when there is none.
 
-    ``path`` is a copy of the build's output. The last line that is not part of a traceback's frames is the
-    message: for a missing file it says which file, for a setting it says which one.
+    ``path`` is a copy of the build's output. Python's tracebacks are cut out (their code lines are not a message, and
+    the last line of the build's own traceback is only "returned non-zero exit status": the real error is what the
+    step it started printed before that), so what is left ends with the message: for a missing file it says which
+    file, for a setting it says which one.
     """
     try:
         text = Path(path).read_text(encoding="utf-8", errors="replace") if path else ""
     except OSError:
         return ""
-    for line in reversed(re.sub(r"\x1b\[[0-9;]*m", "", text).splitlines()):
-        line = line.strip()
-        if line and not line.startswith(("Traceback", "File ", "^", "...")) and not line.endswith("Error: "):
-            return line if len(line) <= 300 else line[:297] + "..."
-    return ""
+    said, in_traceback = [], False
+    for raw in re.sub(r"\x1b\[[0-9;]*m", "", text).splitlines():
+        line = raw.strip()
+        if raw.startswith("Traceback"):
+            in_traceback = True
+        elif in_traceback and raw[:1] in (" ", "\t"):
+            continue  # a frame of the traceback and its line of code
+        elif in_traceback:  # the exception itself: the last line of the traceback
+            in_traceback = False
+            if "CalledProcessError" in line or "returned non-zero exit status" in line or line.startswith("During handling"):
+                continue
+            said.append(line)
+        elif line and not line.startswith(("^", "...", "The above exception")) and not line.endswith("Error: "):
+            said.append(line)
+    if not said:
+        return ""
+    line = said[-1]
+    return line if len(line) <= 300 else line[:297] + "..."
 
 
 def problems_found(
@@ -206,10 +223,15 @@ def write_manifest(site: Path) -> None:
     (site / MANIFEST).write_text(json.dumps({"files": names}, indent=1), encoding="utf-8")
 
 
-def restore_tree(site: Path, config: dict, live_url: str, area_messages: dict[str, str]) -> dict[str, tuple[str, str]] | None:
+def restore_tree(site: Path, config: dict, live_url: str, area_messages: dict[str, str],
+                 only: Callable[[str], bool] | None = None) -> dict[str, tuple[str, str]] | None:
     """Put back ALL of predictions/ from the live site (pages, Vision, EDITH, data and pictures) so nothing from the
     broken build is left half there. None when the live site has no list of its files (the first build after this
-    was added) or any file cannot be had: nothing is changed then, and the caller restores the pages one by one."""
+    was added) or any file cannot be had: nothing is changed then, and the caller restores the pages one by one.
+
+    ``only`` limits it to the files it accepts (a path inside predictions/): only those are taken from the live site
+    and only the new build's files of that kind are removed, so the rest of the new build stays. Used when just EDITH
+    broke, so a good new Predictions page and Vision are not rolled back with it."""
     if not live_url:
         return None
     base = live_url.rstrip("/")
@@ -218,20 +240,26 @@ def restore_tree(site: Path, config: dict, live_url: str, area_messages: dict[st
             names = [n for n in json.loads(reply.read())["files"] if isinstance(n, str) and ".." not in n.split("/")]
     except (urllib.error.URLError, OSError, ValueError, KeyError, TypeError):
         return None
+    if only is not None:
+        names = [n for n in names if only(n)]
     if not names:
         return None
     with tempfile.TemporaryDirectory() as scratch:
         for name in names:
             target = Path(scratch) / name
             target.parent.mkdir(parents=True, exist_ok=True)
-            try:
-                with urllib.request.urlopen(f"{base}/predictions/{name}", timeout=120) as reply:
+            try:  # file names may hold spaces or other characters that need quoting in an address
+                with urllib.request.urlopen(f"{base}/predictions/{urllib.parse.quote(name, safe='/')}", timeout=120) as reply:
                     target.write_bytes(reply.read())
-            except (urllib.error.URLError, OSError):
+            except (urllib.error.URLError, OSError, ValueError):
                 return None
         root = site / "predictions"
-        shutil.rmtree(root, ignore_errors=True)
-        shutil.copytree(scratch, root)
+        if only is None:
+            shutil.rmtree(root, ignore_errors=True)
+        elif root.is_dir():
+            for old in [p for p in root.rglob("*") if p.is_file() and only(p.relative_to(root).as_posix())]:
+                old.unlink()
+        shutil.copytree(scratch, root, dirs_exist_ok=True)
     shown: dict[str, tuple[str, str]] = {}
     for area, message in area_messages.items():
         label = {"vision": "Vision", EDITH: "EDITH"}.get(area, "Predictions")
@@ -247,6 +275,11 @@ def restore_tree(site: Path, config: dict, live_url: str, area_messages: dict[st
             target.write_text(with_banner(text, note, since), encoding="utf-8")
         shown[area] = ("last_good" if since else "none", since)
     return shown
+
+
+def in_edith_folder(name: str) -> bool:
+    """True for a file under an EDITH folder of predictions/ (predictions/edith/ or <rocket>/edith/)."""
+    return "edith" in name.split("/")[:-1]
 
 
 def write_report(site: Path, status: dict, summary: Path | None) -> None:
@@ -282,7 +315,8 @@ def run(args: argparse.Namespace) -> int:
     shown: dict[str, tuple[str, str]] = {}
     messages = {a: next((p["message"] for p in found if p["area"] in (a, "build")), "") for a in sorted(areas)}
     if messages:  # the whole predictions/ tree goes back, not only the broken page
-        shown = restore_tree(site, config, args.live_url, messages) or {}
+        # when only EDITH broke, the new Predictions page and Vision are fine and stay: only EDITH's files go back
+        shown = restore_tree(site, config, args.live_url, messages, in_edith_folder if set(messages) == {EDITH} else None) or {}
     for area in sorted(areas):
         if area not in shown:
             shown[area] = restore(site, config, args.live_url, area, messages[area])
@@ -310,7 +344,9 @@ def run(args: argparse.Namespace) -> int:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--site", required=True)
-    parser.add_argument("--config", required=True, help="aero_modeling/whatif_config.json (for the rockets' places)")
+    parser.add_argument("--manifest-only", action="store_true",
+                        help="only write the list of the site's files (the last step before publishing, after vision.png exists)")
+    parser.add_argument("--config", default="", help="aero_modeling/whatif_config.json (for the rockets' places)")
     parser.add_argument("--live-url", default="", help="where the site is live now, to take the last good pages from")
     parser.add_argument("--flightsim", default="success", help="outcome of the flight_sim checkout")
     parser.add_argument("--predictions", default="success", help="outcome of the Predictions build")
@@ -321,7 +357,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--commit", default=os.environ.get("GITHUB_SHA", ""))
     parser.add_argument("--run-url", default="")
     parser.add_argument("--summary", default=os.environ.get("GITHUB_STEP_SUMMARY", ""))
-    return run(parser.parse_args(argv))
+    args = parser.parse_args(argv)
+    if args.manifest_only:
+        write_manifest(Path(args.site))
+        return 0
+    if not args.config:
+        parser.error("--config is required")
+    return run(args)
 
 
 if __name__ == "__main__":
