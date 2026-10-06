@@ -9,7 +9,7 @@
     "rasaero: the RASAero .CDX1 the CSV was made from; the page corrects for any difference from the .ork.",
     "rasaero_results: RASAero II's own flight results (apogee, top speed, time to apogee), shown next to Jarvis for the matching launch condition.",
     "alpha_dir: where RASAero's alpha0.txt ... alpha30.txt go before they become the CSV (not committed).",
-    "motor_dir: folder of the propulsion model's thrust curves; the newest .eng/.rse in it (by last commit) is used, with its propellant and total mass. 'motor' names one file instead.",
+    "motor_dir: folder of the propulsion model's thrust curves. With motor_mode 'pinned' (the default) the History tab's motor (default_motor in sim_config.json) is flown, or the newest curve in the folder if that file is gone (with a warning); with 'newest', the curve whose contents changed last. Jarvis takes the motor masses from the .ork. 'motor' names one file instead (it then overrides motor_mode).",
     "sim: the saved OpenRocket simulation whose launch conditions are the page's default.",
     "helper: settings of the local helper. rasaero_window is text the RASAero window title contains.",
     "edith_accepted: IREC recommendations the team has looked at and accepted, by check id (stability_static_max, stability_dynamic_max, rail_exit_recommended, drogue_rate, main_altitude); the EDITH page shows them greyed. Changing it does not rerun EDITH.",

@@ -141,6 +141,67 @@ def test_a_missing_history_motor_is_a_warning_not_an_error():
         assert "history-motor-missing" in _codes(found, "warn"), found
 
 
+def test_two_curves_with_one_name_and_a_mass_column_out_of_step_are_warned():
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        _repo(root)
+        folder = root / "aero_modeling/R/Curves"
+        (folder / "other.eng").write_text(ENG, encoding="utf-8")  # a second curve that calls itself "M" too
+        # the same thrust, but a mass that falls evenly in time while the thrust is front-loaded
+        rows = [(0, 0, 10000), (0.1, 100, 9000), (0.5, 200, 5000), (1.0, 100, 2000), (1.5, 0, 0)]  # grams, as in an .rse
+        data = "".join(f'<eng-data t="{t}" f="{f}" m="{m}"/>' for t, f, m in rows)
+        text = (RSE.split("<data>")[0].replace("<engine Itot", '<engine auto-calc-mass="0" Itot')
+                + "<data>" + data + "</data></engine></engine-list></engine-database>")
+        (folder / "m.rse").write_text(text, encoding="utf-8")
+        _git(root, "add", ".")
+        _git(root, "commit", "-q", "-m", "edit")
+        warned = _codes(_run(root), "warn")
+        assert {"motor-same-name", "motor-mass-column"} <= warned, _run(root)
+
+
+def test_a_mass_column_that_follows_the_thrust_is_not_warned():
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        _repo(root)
+        folder = root / "aero_modeling/R/Curves"
+        rows = [(0, 0, 10000), (0.1, 100, 9879), (0.5, 200, 8424), (1.0, 100, 6606), (1.5, 0, 6000)]  # grams, as in an .rse
+        data = "".join(f'<eng-data t="{t}" f="{f}" m="{m}"/>' for t, f, m in rows)
+        text = (RSE.split("<data>")[0].replace("<engine Itot", '<engine auto-calc-mass="0" Itot')
+                + "<data>" + data + "</data></engine></engine-list></engine-database>")
+        (folder / "m.rse").write_text(text, encoding="utf-8")
+        _git(root, "add", ".")
+        _git(root, "commit", "-q", "-m", "edit")
+        assert "motor-mass-column" not in _codes(_run(root), "warn"), _run(root)
+
+
+def test_a_motor_with_no_points_is_an_error_not_a_crash():
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        _repo(root)
+        folder = root / "aero_modeling/R/Curves"
+        (folder / "m.rse").write_text('<engine-database><engine-list><engine Itot="200" code="M"><data></data></engine></engine-list></engine-database>', encoding="utf-8")
+        _git(root, "add", ".")
+        _git(root, "commit", "-q", "-m", "edit")
+        assert "motor-bad" in _codes(_run(root)), _run(root)
+
+
+def test_the_doctor_checks_the_motor_the_build_flies_when_the_history_motor_is_gone():
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        _repo(root)
+        folder = root / "aero_modeling/R/Curves"
+        (folder / "OLD").mkdir()
+        (folder / "OLD/z.eng").write_text(ENG, encoding="utf-8")  # an old curve is never "the newest motor"
+        (folder / "OLD/z.eng").write_text(ENG.replace("1000", "1001"), encoding="utf-8")
+        sim = root / "aero_modeling/sim_config.json"
+        sim.write_text(sim.read_text(encoding="utf-8").replace("m.rse", "gone.rse"), encoding="utf-8")
+        _git(root, "add", ".")
+        _git(root, "commit", "-q", "-m", "edit")
+        spec = json.loads((root / "aero_modeling/whatif_config.json").read_text(encoding="utf-8"))["rockets"]["A"]
+        path, _ = doctor.flown_motor(doctor.Repo(root), root / "aero_modeling", spec)
+        assert path is not None and path.parent.name == "Curves", path
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_"):

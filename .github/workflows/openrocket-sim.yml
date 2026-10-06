@@ -33,12 +33,19 @@ on:
         description: "Simulate every configured .ork, not just changed ones"
         type: boolean
         default: false
+      rebuild:
+        description: "Fly the JARVIS predictions, VISION and EDITH again even if the design change was too small to need it"
+        type: boolean
+        default: false
 
 permissions:
   contents: read    # each job below asks for more only when it needs it
 
+# Only one run per branch goes at a time; a run that is waiting is replaced by a newer one. A rebuild asked for by
+# flight_sim for some other branch only skips the job below, so it gets a group of its own: otherwise it would
+# take the place of (and cancel) a real build of main that is waiting.
 concurrency:
-  group: openrocket-sim-${{ github.ref }}
+  group: ${{ (github.event_name == 'repository_dispatch' && (github.event.client_payload.ref || 'main') != (vars.FLIGHT_SIM_REF || 'main')) && format('skipped-{0}', github.run_id) || format('openrocket-sim-{0}', github.ref) }}
   cancel-in-progress: false
 
 jobs:
@@ -250,11 +257,15 @@ jobs:
         continue-on-error: true          # a predictions-page problem must never block the history site
         env:
           EDITH: ${{ steps.edith.outputs.enabled == 'true' && '--edith --edith-cache .edith_cache' || '' }}
+          SINCE: ${{ github.event.before || inputs.base }}   # where this push started, to see every commit of it
+          REBUILD: ${{ inputs.rebuild == true && '--rebuild' || '' }}
+          RERUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/workflows/openrocket-sim.yml
         run: |
           set -o pipefail
           {
             pip install ./flight_sim_src
-            python tools/whatif/build_site.py --config aero_modeling/whatif_config.json --site site --notes build_notes.md --cache .predictions_cache $EDITH
+            python tools/whatif/build_site.py --config aero_modeling/whatif_config.json --site site --notes build_notes.md --cache .predictions_cache --since "$SINCE" \
+              --or-results or_ci_results/results.json --commit "${{ github.sha }}" --rerun-url "$RERUN_URL" $REBUILD $EDITH
           } 2>&1 | tee build_log.txt     # the last line it printed goes into the red bar and the commit comment
 
       # ---- Real-browser check of the built site, before it goes live ----
@@ -273,7 +284,13 @@ jobs:
         if: always() && github.ref == 'refs/heads/main' && hashFiles('site/index.html') != ''
         run: |
           pip install playwright
-          python -m playwright install --with-deps chromium || { sleep 20; python -m playwright install --with-deps chromium; }
+          # GitHub's runners already have Chrome: use it if Playwright can drive it (saves the download and the
+          # system packages, about a minute); otherwise install Playwright's own Chromium as before
+          if python -c "from playwright.sync_api import sync_playwright as s; p = s().start(); p.chromium.launch(channel='chrome').close(); p.stop()"; then
+            echo "Using the Chrome already on the runner"
+          else
+            python -m playwright install --with-deps chromium || { sleep 20; python -m playwright install --with-deps chromium; }
+          fi
 
       - name: Click through the built site in a real browser (main only)
         id: browser
@@ -318,6 +335,12 @@ jobs:
           if [ -f site/predictions/vision.png ]; then pic="--picture"; fi
           fs="${{ vars.FLIGHT_SIM_REF || 'main' }}@$(git -C flight_sim_src rev-parse --short HEAD)"
           python tools/whatif/jarvis_note.py --site site --live-url "$LIVE_URL" --flightsim "$fs" --out jarvis_note.md $pic --stamp "${GITHUB_SHA::7}"
+
+      # The list of what the site holds under predictions/ is written last, so it includes vision.png. The next build
+      # reads it from the live site to put the whole folder back if that build breaks.
+      - name: List the site's files for the next restore (main only)
+        if: always() && github.ref == 'refs/heads/main' && hashFiles('site/index.html') != ''
+        run: python tools/whatif/site_status.py --site site --manifest-only
 
       - name: Keep the pictures the browser test took
         if: always() && hashFiles('browser_test_pictures/*.png') != ''
@@ -421,7 +444,13 @@ jobs:
       - name: Install the browser for the click-through
         run: |
           pip install playwright
-          python -m playwright install --with-deps chromium || { sleep 20; python -m playwright install --with-deps chromium; }
+          # GitHub's runners already have Chrome: use it if Playwright can drive it (saves the download and the
+          # system packages, about a minute); otherwise install Playwright's own Chromium as before
+          if python -c "from playwright.sync_api import sync_playwright as s; p = s().start(); p.chromium.launch(channel='chrome').close(); p.stop()"; then
+            echo "Using the Chrome already on the runner"
+          else
+            python -m playwright install --with-deps chromium || { sleep 20; python -m playwright install --with-deps chromium; }
+          fi
       - name: Click through a made-up site in a real browser
         run: python tools/whatif/tests/browser_test.py --synthetic --shots browser_test_pictures
       - name: Keep the pictures the browser test took

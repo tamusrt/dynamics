@@ -188,8 +188,8 @@ def test_jarvis_flies_the_motor_the_history_tab_flies():
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
         build = build_site.plan(_motor_config(root), root / "site")[0]
-        assert _flown(build["cmd"]) == "h.rse" and build["note"] == "same as the History tab"
-        assert build["cmd"][build["cmd"].index("--motor-note") + 1] == "same as the History tab"
+        assert _flown(build["cmd"]) == "h.rse" and build["note"] == "pinned: the History tab's motor"
+        assert build["cmd"][build["cmd"].index("--motor-note") + 1] == "pinned: the History tab's motor"
 
 
 def test_without_a_usable_history_motor_the_newest_is_flown():
@@ -335,7 +335,7 @@ def test_rasaero_results_are_passed_on_when_named():
             raise AssertionError("a missing results file must stop the build")
 
 
-def _cached_runs(root: Path, path: Path, package: Path, edith: bool = False) -> list[str]:
+def _cached_runs(root: Path, path: Path, package: Path, edith: bool = False, extra: tuple = ()) -> list[str]:
     """Run main with --cache, with a stand-in for flight_sim that writes a page into --out; returns what was flown."""
     calls: list[str] = []
     real, real_dir = subprocess.run, build_site._flight_sim_dir
@@ -358,7 +358,7 @@ def _cached_runs(root: Path, path: Path, package: Path, edith: bool = False) -> 
     subprocess.run, build_site._flight_sim_dir = fake, lambda: package
     try:
         args = ["--config", str(path), "--site", str(root / "site"), "--cache", str(root / "cache")]
-        assert build_site.main(args + (["--edith"] if edith else [])) == 0
+        assert build_site.main(args + (["--edith"] if edith else []) + list(extra)) == 0
     finally:
         subprocess.run, build_site._flight_sim_dir = real, real_dir
     return calls
@@ -437,6 +437,63 @@ def test_without_flight_sim_installed_nothing_is_kept():
         assert _cached_runs(root, path, root / "missing") == ["flight_sim.whatif.build"]
         assert _cached_runs(root, path, root / "missing") == ["flight_sim.whatif.build"]
 
+
+def test_a_changed_aero_table_is_noticed_in_any_commit_of_the_push():
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+
+        def git(*args):
+            subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", *args], cwd=root, check=True, capture_output=True)
+
+        git("init", "-q")
+        (root / "a_aero.csv").write_text("1")
+        (root / "other.txt").write_text("1")
+        git("add", ".")
+        git("commit", "-q", "-m", "start")
+        start = subprocess.run(["git", "rev-parse", "HEAD"], cwd=root, capture_output=True, text=True).stdout.strip()
+        (root / "a_aero.csv").write_text("2")
+        git("commit", "-qam", "table")
+        (root / "other.txt").write_text("2")
+        git("commit", "-qam", "something else")  # the newest commit leaves the table alone
+        repo = build_site.Repo(root)
+        table = root / "a_aero.csv"
+        assert not build_site._changed_in_last_commit(repo, table)
+        assert build_site._changed_in_last_commit(repo, table, start)
+        assert not build_site._changed_in_last_commit(repo, table, "0" * 40), "a new branch falls back to the newest commit"
+        assert not build_site._changed_in_last_commit(repo, table, "--output=x")
+
+def test_a_design_change_too_small_to_move_openrocket_keeps_the_last_pages():
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        path = _config(root, {"R": {"ork": "a.ork", "aero": "a.csv", "motor": "a.eng"}}, "R")
+        package = root / "flight_sim"
+        package.mkdir()
+        results = root / "results.json"
+        note = root / "site" / "predictions_skipped.json"
+
+        def openrocket(apogee: float, stability: float = 2.5) -> tuple:
+            metrics = {"apogee": apogee, "max_mach": 1.5, "velocity_off_rod": 35.0, "stability_off_rod_cal": stability,
+                       "min_stability_cal": stability, "max_stability_cal": 6.0}
+            results.write_text(json.dumps({"after": [{"file": "a.ork", "sim_name": "avg", "status": "OK", "metrics": metrics}]}))
+            return ("--or-results", str(results), "--commit", "abc1234", "--rerun-url", "https://example.test/run")
+
+        assert _cached_runs(root, path, package, extra=openrocket(9000.0)) == ["flight_sim.whatif.build"]
+        (root / "a.ork").write_text("y")  # a small change to the design
+        shutil.rmtree(root / "site")
+        assert _cached_runs(root, path, package, extra=openrocket(9000.6)) == [], "0.6 m: the last pages are kept"
+        assert (root / "site" / "predictions" / "index.html").read_text() == "page x", "the previous version's page"
+        kept = json.loads(note.read_text())
+        assert kept["commit"] == "abc1234" and "0.60 m" in kept["rockets"][0]["text"]
+        (root / "a.ork").write_text("z")  # the change adds up against the version that was flown, not the last push
+        shutil.rmtree(root / "site")
+        assert _cached_runs(root, path, package, extra=openrocket(9001.5)) == ["flight_sim.whatif.build"], "1.5 m in all: flown"
+        assert not note.exists()
+        (root / "a.ork").write_text("w")
+        assert _cached_runs(root, path, package, extra=openrocket(9001.5, 2.6)) == ["flight_sim.whatif.build"], "stability moved"
+        (root / "a.ork").write_text("v")
+        assert _cached_runs(root, path, package, extra=openrocket(9001.5, 2.6) + ("--rebuild",)) == ["flight_sim.whatif.build"]
+        (root / "a.ork").write_text("u")
+        assert _cached_runs(root, path, package) == ["flight_sim.whatif.build"], "no OpenRocket results: flown"
 
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
