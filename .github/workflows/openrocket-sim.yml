@@ -231,6 +231,18 @@ jobs:
           restore-keys: |
             edith-
 
+      # Each rocket's predictions page and Vision flights, keyed like the history cache above: by the git blob id of
+      # the design and a salt (the aero table, motor, RASAero files, this design's History data, the flight_sim code).
+      # A push that changes none of them (a page or workflow fix, another folder) reuses them instead of flying again.
+      - name: Restore the predictions cache (main only)
+        if: always() && github.ref == 'refs/heads/main' && steps.flightsim.outcome == 'success'
+        uses: actions/cache@v6
+        with:
+          path: .predictions_cache
+          key: predictions-${{ github.sha }}
+          restore-keys: |
+            predictions-
+
       - name: Build the predictions page (main only)
         id: predictions
         if: always() && github.ref == 'refs/heads/main' && steps.flightsim.outcome == 'success'
@@ -241,7 +253,7 @@ jobs:
           set -o pipefail
           {
             pip install ./flight_sim_src
-            python tools/whatif/build_site.py --config aero_modeling/whatif_config.json --site site --notes build_notes.md $EDITH
+            python tools/whatif/build_site.py --config aero_modeling/whatif_config.json --site site --notes build_notes.md --cache .predictions_cache $EDITH
           } 2>&1 | tee build_log.txt     # the last line it printed goes into the red bar and the commit comment
 
       # ---- Real-browser check of the built site, before it goes live ----

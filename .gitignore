@@ -21,3 +21,5 @@ node_modules/
 
 # RASAero alpha files the helper makes before they become the aero CSV (tools/whatif/README.md)
 aero_modeling/**/JARVIS/alpha/
+.edith_cache/
+.predictions_cache/

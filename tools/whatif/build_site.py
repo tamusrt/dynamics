@@ -12,12 +12,20 @@ With ``--edith`` each rocket is then flown many times by EDITH (the team's Monte
 flight_sim). It adds its own page at ``predictions/edith/`` and the
 cloud of flights in Vision. It takes minutes, so its result is kept in ``--edith-cache`` until something it
 depends on changes, and whatever goes wrong with it leaves the pages built before it exactly as they were.
+
+The page and flight take minutes too, so with ``--cache`` each rocket's result is kept the way or_ci.py keeps the History
+tab's simulations: under the git blob id of the design and a salt (CACHE_SALT and a hash of the other inputs: the aero
+table, motor and RASAero files, the options, this design's History data and the flight_sim code), and reused while
+none of them change.
 """
 
 from __future__ import annotations
 
 import argparse
+import hashlib
+import importlib.util
 import json
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -268,6 +276,7 @@ def plan(config_path: Path, site: Path, edith: bool = False, edith_cache: Path |
         builds.append({
             "key": key, "out": out, "cmd": cmd, "by_commit": by_commit, "motor": paths["motor"], "note": note,
             "edith": edith_cmd, "edith_timeout_s": minutes * 60 * 1.5 + EDITH_GRACE_S, "files_used": used,
+            "ork_path": paths["ork"],
         })  # fmt: skip
     return builds
 
@@ -294,6 +303,113 @@ def merge_by_commit(builds: list[dict], site: Path) -> Path | None:
     target = site / "jarvis_by_commit.json"
     target.write_text(json.dumps({"designs": designs}, separators=(",", ":")), encoding="utf-8")
     return target
+
+
+CACHE_SALT = "p1"  # bump when the page or the flight change in a way their inputs do not show (as or_ci.py's cache_salt)
+
+
+def _hash_file(path: Path) -> str:
+    """Git's blob id of a file's content (as or_ci.py's _hash_file)."""
+    digest = hashlib.sha1(b"blob %d\0" % path.stat().st_size)
+    digest.update(path.read_bytes())
+    return digest.hexdigest()
+
+
+def _flight_sim_dir() -> Path | None:
+    """Where the installed flight_sim package is, or None if it is not installed."""
+    try:
+        spec = importlib.util.find_spec("flight_sim")
+    except (ImportError, ValueError):
+        return None
+    places = list(spec.submodule_search_locations or []) if spec else []
+    return Path(places[0]) if places else None
+
+
+def _flight_sim_id(package: Path) -> str:
+    """One id for the flight_sim code: the blob ids of all its files, hashed together."""
+    files = sorted(p for p in package.rglob("*") if p.is_file() and "__pycache__" not in p.parts)
+    entry = "\n".join(f"{p.relative_to(package).as_posix()} {_hash_file(p)}" for p in files)
+    return hashlib.sha1(entry.encode()).hexdigest()
+
+
+def _history_id(site: Path, ork_name: str) -> str:
+    """One id for this design's rows and flight files in the History site (the rest of data.json, such as its time, is left out)."""
+    try:
+        data = json.loads((site / "data.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return ""
+    part = []
+    for design, sims in sorted((data.get("designs") or {}).items()):
+        if Path(design).name != ork_name:
+            continue
+        part.append(json.dumps([design, sims], sort_keys=True))
+        for sim in sorted(sims):
+            script = (data.get("flights") or {}).get(f"{design}|{sim}")
+            if script and (site / script).is_file():
+                part.append(_hash_file(site / script))
+    return hashlib.sha1("\n".join(part).encode()).hexdigest() if part else ""
+
+
+def cache_name(build: dict, site: Path) -> str | None:
+    """The cache entry of one rocket's page and flight: ``<.ork blob id>-<salt>``, or None when it cannot be told.
+
+    As in or_ci.py, the entry is named by the git blob id of the design and a salt: CACHE_SALT and a short hash of
+    everything else the page and flight are made from (the options they are built with, the blob ids of the aero
+    table, motor and RASAero files, this design's History data and the installed flight_sim code).
+    """
+    package = _flight_sim_dir()
+    ork = build.get("ork_path")
+    if package is None or not package.is_dir() or ork is None or not ork.is_file():
+        return None
+    options = []
+    for cmd in (build["cmd"], build["by_commit"] or []):
+        for arg in cmd[1:]:  # not the Python executable's path
+            path = Path(arg)
+            options.append(_hash_file(path) if path.is_file() else arg)
+    entry = json.dumps({"options": options, "history": _history_id(site, ork.name), "flight_sim": _flight_sim_id(package)})
+    return f"{_hash_file(ork)}-{CACHE_SALT}-{hashlib.sha1(entry.encode()).hexdigest()[:8]}"
+
+
+def _nested_outs(build: dict, builds: list[dict]) -> set[Path]:
+    """Other rockets' folders inside this one's (the default rocket's folder holds the others)."""
+    out = build["out"].resolve()
+    return {b["out"].resolve() for b in builds if b is not build and out in b["out"].resolve().parents}
+
+
+def restore_cached(build: dict, cache: Path, name: str) -> bool:
+    """Put the kept page and flight of this cache entry in place. True if there was one."""
+    kept = cache / name
+    if not (kept / ".complete").is_file():
+        return False
+    shutil.copytree(kept, build["out"], dirs_exist_ok=True, ignore=shutil.ignore_patterns(".complete"))
+    return True
+
+
+def keep_result(build: dict, builds: list[dict], cache: Path, name: str) -> None:
+    """Keep this rocket's page and flight under its cache entry (EDITH and the other rockets keep their own)."""
+    skip = _nested_outs(build, builds)
+    out = build["out"].resolve()
+
+    def ignore(where: str, names: list[str]) -> set[str]:
+        here = Path(where).resolve()
+        return {n for n in names if (here / n) in skip or (here == out and n == "edith")}
+
+    target = cache / name
+    try:
+        shutil.rmtree(target, ignore_errors=True)
+        shutil.copytree(build["out"], target, ignore=ignore)
+        (target / ".complete").write_text("", encoding="utf-8")
+    except OSError as error:  # a full disk or the like: the next run simply flies it again
+        print(f"  (could not keep the result for {build['key']}: {error})", flush=True)
+        shutil.rmtree(target, ignore_errors=True)
+
+
+def prune_cache(cache: Path, used: set[str]) -> None:
+    """Drop the entries this run did not use. Unlike or_ci.py's small JSON files, an entry holds whole pages
+    and 3D flights (megabytes), so only the current ones are kept."""
+    for entry in cache.iterdir() if cache.is_dir() else []:
+        if entry.is_dir() and entry.name not in used:
+            shutil.rmtree(entry, ignore_errors=True)
 
 
 def run_edith(build: dict) -> bool:
@@ -324,10 +440,18 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--edith", action="store_true", help="also run EDITH (the Monte Carlo simulation) on each rocket")
     parser.add_argument("--notes", default=None, help="write one line per auto-fix or warning to this file")
     parser.add_argument("--edith-cache", default=None, help="folder that keeps EDITH's result between builds")
+    parser.add_argument("--cache", default=None, help="folder that keeps each rocket's page and flight between builds")
     args = parser.parse_args(argv)
     builds = plan(Path(args.config), Path(args.site), args.edith, Path(args.edith_cache) if args.edith_cache else None)
     if args.notes:
         write_notes(builds, Path(args.notes))
+    cache = Path(args.cache).resolve() if args.cache else None
+    names: dict[str, str | None] = {}
+    if cache and not args.dry_run:  # look up the cache first, as or_ci.py does
+        cache.mkdir(parents=True, exist_ok=True)
+        names = {b["key"]: cache_name(b, Path(args.site)) for b in builds}
+        hits = sum(1 for n in names.values() if n and (cache / n / ".complete").is_file())
+        print(f"Predictions: {len(builds)} rocket(s); {len(builds) - hits} to fly, {hits} from cache", flush=True)
     for build in builds:
         for notice in build["files_used"]["notices"]:
             print(f"  [{notice['level']}] {notice['text']}", flush=True)
@@ -339,13 +463,23 @@ def main(argv: list[str] | None = None) -> int:
             if build["edith"]:
                 print("  " + " ".join(build["edith"]))
             continue
-        subprocess.run(build["cmd"], check=True)
+        name = names.get(build["key"])
+        if name and restore_cached(build, cache, name):
+            print(f"  from cache ({name})", flush=True)
+        else:
+            subprocess.run(build["cmd"], check=True)
+            by_commit_ok = True
+            if build["by_commit"]:  # a problem here must not stop the page, only the extra History line
+                if subprocess.run(build["by_commit"], check=False).returncode:
+                    by_commit_ok = False
+                    print(f"  (no Jarvis line by commit for {build['key']})", flush=True)
+            if name and by_commit_ok:  # before EDITH, which keeps its own result
+                keep_result(build, builds, cache, name)
         write_files_used(build)
-        if build["by_commit"]:  # a problem here must not stop the page, only the extra History line
-            if subprocess.run(build["by_commit"], check=False).returncode:
-                print(f"  (no Jarvis line by commit for {build['key']})", flush=True)
         if build["edith"]:  # last: it only adds to the pages above, and may fail without hurting them
             run_edith(build)
+    if cache and not args.dry_run:
+        prune_cache(cache, {n for n in names.values() if n})
     merged = merge_by_commit(builds, Path(args.site))
     if merged:
         print(f"Jarvis by commit for the History tab: {merged}", flush=True)

@@ -2,6 +2,7 @@
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -332,6 +333,109 @@ def test_rasaero_results_are_passed_on_when_named():
             assert "results.json" in str(stop), "a missing results file is named"
         else:
             raise AssertionError("a missing results file must stop the build")
+
+
+def _cached_runs(root: Path, path: Path, package: Path, edith: bool = False) -> list[str]:
+    """Run main with --cache, with a stand-in for flight_sim that writes a page into --out; returns what was flown."""
+    calls: list[str] = []
+    real, real_dir = subprocess.run, build_site._flight_sim_dir
+
+    def fake(cmd, **kw):
+        if cmd[0] == "git":
+            return real(cmd, **kw)
+        calls.append(cmd[2])
+        out = Path(cmd[cmd.index("--out") + 1])
+        if cmd[2] == "flight_sim.whatif.build":
+            out.mkdir(parents=True, exist_ok=True)
+            (out / "index.html").write_text("page " + Path(cmd[cmd.index("--ork") + 1]).read_text())
+            (out / "viewer").mkdir(exist_ok=True)
+            (out / "viewer" / "index.html").write_text("flight")
+        elif cmd[2] == "flight_sim.whatif.edith_site":
+            (out / "edith").mkdir(parents=True, exist_ok=True)
+            (out / "edith" / "index.html").write_text("edith")
+        return subprocess.CompletedProcess(cmd, 0)
+
+    subprocess.run, build_site._flight_sim_dir = fake, lambda: package
+    try:
+        args = ["--config", str(path), "--site", str(root / "site"), "--cache", str(root / "cache")]
+        assert build_site.main(args + (["--edith"] if edith else [])) == 0
+    finally:
+        subprocess.run, build_site._flight_sim_dir = real, real_dir
+    return calls
+
+
+def test_the_page_is_reused_while_nothing_it_is_made_from_changes():
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        path = _config(root, {"R": {"ork": "a.ork", "aero": "a.csv", "motor": "a.eng"}}, "R")
+        package = root / "flight_sim"
+        package.mkdir()
+        (package / "build.py").write_text("v1")
+        page = root / "site" / "predictions" / "index.html"
+        assert _cached_runs(root, path, package) == ["flight_sim.whatif.build"], "the first run flies"
+        shutil.rmtree(root / "site")  # every CI run starts with an empty site
+        assert _cached_runs(root, path, package) == [], "nothing changed: nothing is flown"
+        assert page.read_text() == "page x" and (page.parent / "viewer" / "index.html").is_file(), "the kept page is put back"
+        assert (page.parent / "files_used.json").is_file(), "files_used.json is still written"
+        (root / "a.ork").write_text("y")  # the design changed
+        shutil.rmtree(root / "site")
+        assert _cached_runs(root, path, package) == ["flight_sim.whatif.build"]
+        assert page.read_text() == "page y"
+        (package / "build.py").write_text("v2")  # the simulator changed
+        assert _cached_runs(root, path, package) == ["flight_sim.whatif.build"]
+        assert _cached_runs(root, path, package) == []
+        entries = [e.name for e in (root / "cache").iterdir()]
+        assert len(entries) == 1, "only the entries in use are kept"
+        blob = subprocess.run(["git", "hash-object", str(root / "a.ork")], capture_output=True, text=True, check=True).stdout.strip()
+        assert entries[0].startswith(f"{blob}-{build_site.CACHE_SALT}-"), "named like or_ci.py's: <.ork blob id>-<salt>"
+
+
+def test_the_history_data_of_the_design_is_part_of_the_key_but_not_the_rest():
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        path = _config(root, {"R": {"ork": "OR/a.ork", "aero": "a.csv", "motor": "a.eng"}}, "R")
+        package = root / "flight_sim"
+        package.mkdir()
+        site = root / "site"
+        site.mkdir()
+
+        def history(generated: str, rows: list, other: list) -> None:
+            data = {"generated": generated, "designs": {"OR/a.ork": {"avg": rows}, "OR/b.ork": {"avg": other}}, "flights": {}}
+            (site / "data.json").write_text(json.dumps(data))
+
+        history("monday", [{"sha": "1"}], [])
+        assert _cached_runs(root, path, package) == ["flight_sim.whatif.build", "flight_sim.whatif.commits"]
+        history("tuesday", [{"sha": "1"}], [{"sha": "9"}])  # a new build time, another design changed
+        assert _cached_runs(root, path, package) == [], "only this design's History data matters"
+        history("tuesday", [{"sha": "1"}, {"sha": "2"}], [{"sha": "9"}])  # a new version of this design
+        assert _cached_runs(root, path, package) == ["flight_sim.whatif.build", "flight_sim.whatif.commits"]
+
+
+def test_edith_and_the_other_rockets_are_not_kept_with_the_default_rockets_page():
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        path = _config(root, {"R": {"ork": "a.ork", "aero": "a.csv", "motor": "a.eng"},
+                              "Other": {"ork": "b.ork", "aero": "b.csv", "motor": "b.eng"}}, "R")
+        package = root / "flight_sim"
+        package.mkdir()
+        assert _cached_runs(root, path, package, edith=True).count("flight_sim.whatif.edith_site") == 2
+        entries = list((root / "cache").iterdir())
+        assert len(entries) == 2, "one entry per rocket"
+        for kept in entries:
+            assert (kept / "index.html").is_file()
+            assert not (kept / "other").exists(), "the other rocket is kept in its own entry"
+            assert not (kept / "edith").exists(), "EDITH keeps its own result"
+        shutil.rmtree(root / "site")
+        assert _cached_runs(root, path, package, edith=True) == ["flight_sim.whatif.edith_site"] * 2, "EDITH still runs (its own cache decides)"
+        assert (root / "site" / "predictions" / "other" / "index.html").read_text() == "page x"
+
+
+def test_without_flight_sim_installed_nothing_is_kept():
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        path = _config(root, {"R": {"ork": "a.ork", "aero": "a.csv", "motor": "a.eng"}}, "R")
+        assert _cached_runs(root, path, root / "missing") == ["flight_sim.whatif.build"]
+        assert _cached_runs(root, path, root / "missing") == ["flight_sim.whatif.build"]
 
 
 if __name__ == "__main__":
