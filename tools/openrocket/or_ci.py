@@ -1559,7 +1559,7 @@ SITE_HTML = r"""<!doctype html>
     <div class="chartbox"><div id="hplot" style="position:absolute;inset:10px"></div><div class="empty" id="empty" hidden>Select simulations in the list.</div></div>
     <div id="latest"></div>
     <p class="legend" id="jarvisnote" hidden></p>
-    <p class="legend">Each point is one committed version of a design, simulated in OpenRocket. <b>Absolute</b> shows the value for each version; <b>Δ line</b> shows the change from the previous version; <b>Δ bars</b> shows the same change as one bar per commit (green: increase, red: decrease). Hover over a point for the commit, author and message, and click it to open the commit on GitHub. Drag to zoom and double-click to reset. Select several simulations on the left to compare them. The page address updates as you select, so you can share a view by copying the link. Simulations run in OpenRocket 24.12 with wind turbulence off and a fixed random seed, so results are repeatable.</p>
+    <p class="legend">Each point is one committed version of a design, simulated in OpenRocket. <b>Absolute</b> shows the value for each version; <b>Δ line</b> shows the change from the previous version; <b>Δ bars</b> shows the same change as one bar per commit (green: increase, red: decrease). Hover over a point for the commit, author and message, and click it to open the commit on GitHub. Drag to zoom and double-click to reset. When Jarvis has numbers for the selected simulations, the <b>OpenRocket</b> and <b>Jarvis</b> buttons above the chart show or hide each one's lines. Select several simulations on the left to compare them. The page address updates as you select, so you can share a view by copying the link. Simulations run in OpenRocket 24.12 with wind turbulence off and a fixed random seed, so results are repeatable.</p>
    </section>
    <section id="view-predictions" hidden></section>
    <section id="view-vision" hidden></section>
@@ -1582,7 +1582,7 @@ const ALL = [];  // {id, file, sim, rows}
 for (const [file, sims] of Object.entries(DATA.designs)) for (const [sim, rows] of Object.entries(sims)) ALL.push({ id: `${file}|${sim}`, file, sim, rows });
 const VIEWS = [['abs', 'Absolute'], ['dline', 'Δ line'], ['dbar', 'Δ bars']];
 const state = { metric: DATA.metrics[0].key, view: 'abs', sel: new Set(), units: DATA.default_units || 'metric', stab: DATA.default_stability || 'cal',
-                tab: 'history', fx: 'altitude', fys: [{ key: 'stability', side: 'l' }], fapo: true, fprev: false, jarvis: true };   // fys: Y variables in order, side l|r
+                tab: 'history', fx: 'altitude', fys: [{ key: 'stability', side: 'l' }], fapo: true, fprev: false, jarvis: true, openrocket: true };   // fys: Y variables in order, side l|r
 const FVARS = DATA.flight_vars || {};
 const FRAMES = { predictions: 'predictions/index.html', vision: 'predictions/viewer/index.html', edith: 'predictions/edith/index.html' };   // pages shown inside this one
 // EDITH (the many-flight simulation) is only built for the EDITH branch of flight_sim, so its tab stays hidden until its page is there (see showEdithTab)
@@ -1617,6 +1617,7 @@ function readHash() {
   if (p.has('apo')) state.fapo = p.get('apo') !== '0';
   state.fprev = p.get('prev') === '1';
   state.jarvis = p.get('jarvis') !== '0';
+  state.openrocket = p.get('or') !== '0';
   applyStab();
   const s = p.get('sel');
   // names may contain '%' ("Seymour_10 [85%]"); a link re-encoded by a chat app must not crash the page
@@ -1628,7 +1629,7 @@ function writeHash() {
   const p = new URLSearchParams();
   p.set('tab', state.tab); p.set('units', state.units); p.set('stab', state.stab);
   if (state.tab === 'flight') { p.set('fx', state.fx); p.set('fy', fysText(state.fys)); p.set('apo', state.fapo ? '1' : '0'); if (state.fprev) p.set('prev', '1'); }
-  else if (!FRAMES[state.tab]) { p.set('metric', state.metric); p.set('view', state.view); if (!state.jarvis) p.set('jarvis', '0'); }
+  else if (!FRAMES[state.tab]) { p.set('metric', state.metric); p.set('view', state.view); if (!state.jarvis) p.set('jarvis', '0'); if (!state.openrocket) p.set('or', '0'); }
   p.set('sel', [...state.sel].map(encodeURIComponent).join(','));
   history.replaceState(null, '', '#' + p.toString());
 }
@@ -1691,8 +1692,11 @@ function buildMetrics() {
   for (const [key, text] of VIEWS) { const b = document.createElement('button'); b.textContent = text; b.className = key === state.view ? 'on' : '';
     b.title = key === 'abs' ? 'Value of each version over commit date' : key === 'dline' ? 'Change from the previous version over commit date' : 'Change from the previous version, one bar per commit (green up, red down)';
     b.onclick = () => { state.view = key; update(); }; mrow.appendChild(b); }
-  if (jarvisShown()) {
-    const j = document.createElement('button'); j.textContent = 'Jarvis'; j.className = state.jarvis ? 'on' : ''; j.id = 'jarvis-toggle'; j.style.marginLeft = '10px';
+  if (jarvisShown()) {   // which simulator's lines are drawn: OpenRocket, Jarvis or both
+    const lab2 = document.createElement('span'); lab2.className = 'toggle'; lab2.textContent = 'show'; lab2.style.marginLeft = '10px'; mrow.appendChild(lab2);
+    const o = document.createElement('button'); o.textContent = 'OpenRocket'; o.className = state.openrocket ? 'on' : ''; o.id = 'openrocket-toggle';
+    o.title = 'Show OpenRocket\'s result for every version as a solid line'; o.onclick = () => { state.openrocket = !state.openrocket; update(); }; mrow.appendChild(o);
+    const j = document.createElement('button'); j.textContent = 'Jarvis'; j.className = state.jarvis ? 'on' : ''; j.id = 'jarvis-toggle';
     j.title = 'Show Jarvis\'s fast estimate for every version as a dashed line'; j.onclick = () => { state.jarvis = !state.jarvis; update(); }; mrow.appendChild(j);
   }
 }
@@ -1730,6 +1734,8 @@ function loadJarvis() {
 }
 function jarvisOf(a) { const d = JARVIS && JARVIS.designs[a.file]; return d && d.sims && d.sims[a.sim] || null; }
 const jarvisShown = () => state.view !== 'dbar' && ALL.some(a => state.sel.has(a.id) && jarvisOf(a));
+// OpenRocket's lines can only be hidden while the toggle is on screen (Jarvis has lines to show), so they never vanish without a button to bring them back
+const openrocketShown = () => state.openrocket || !jarvisShown();
 function jarvisSeries(a, key) {   // Jarvis's number for each version it was flown on, in display units, with OpenRocket's alongside
   const by = jarvisOf(a); if (!by) return [];
   const f = specOf(key).factor, orv = new Map(seriesOf(a, key).map(p => [p.r.sha, p.v]));
@@ -1775,10 +1781,10 @@ function drawBars(spec, unit) {
 function draw() {
   const spec = specOf(state.metric), unit = spec.unit ? ' ' + spec.unit : '';
   if (state.view === 'dbar') return drawBars(spec, unit);
-  const delta = state.view === 'dline', tol = Math.pow(10, -spec.dec) / 2, traces = [];
+  const delta = state.view === 'dline', tol = Math.pow(10, -spec.dec) / 2, traces = [], showOr = openrocketShown();
   for (const a of ALL) {
     if (!state.sel.has(a.id)) continue;
-    const pts = seriesOf(a, state.metric), col = colorOf.get(a.id);
+    const pts = showOr ? seriesOf(a, state.metric) : [], col = colorOf.get(a.id);
     if (pts.length) traces.push({ type: 'scatter', mode: 'lines+markers', name: simLabel(a),
                   x: pts.map(p => new Date(p.r.t * 1000).toISOString()), y: pts.map(p => delta ? (p.d ?? 0) : p.v), customdata: pts.map(p => ({ sha: p.r.sha })),
                   line: { color: col, width: 2 }, marker: { size: 9, color: pts.map(p => dirColor(p.d, tol)), line: { color: col, width: 1.5 } },
@@ -1794,7 +1800,8 @@ function draw() {
                                    + (p.d != null ? `<br>\u0394 vs previous Jarvis: ${p.d >= 0 ? '+' : ''}${fmt(p.d, spec.dec)}${unit}` : '')
                                    + `<br>${p.r.message}<extra></extra>`) });
   }
-  empty.hidden = traces.length > 0; empty.textContent = 'Select simulations in the list.';
+  empty.hidden = traces.length > 0;
+  empty.textContent = state.sel.size && !showOr && !state.jarvis ? 'OpenRocket and Jarvis are both hidden: turn one back on above the chart.' : 'Select simulations in the list.';
   if (!traces.length) { Plotly.purge(hplot); return; }
   const layout = baseLayout('commit date', (delta ? '\u0394 ' : '') + spec.label + (spec.unit ? ` (${spec.unit})` : ''));
   layout.xaxis.type = 'date'; layout.showlegend = traces.length > 1;

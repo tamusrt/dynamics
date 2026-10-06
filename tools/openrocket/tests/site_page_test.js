@@ -323,6 +323,24 @@ test('the toggle hides the dashed lines and the choice travels in the URL', () =
   P.setJarvis(jarvisFor(A, 1.1));
   assert.strictEqual(P.state.jarvis, false); assert.strictEqual(last().traces.length, 1);
 });
+test('the OpenRocket toggle hides the solid lines, leaving Jarvis, and the choice travels in the URL', () => {
+  run({ tab: 'history', metric: 'apogee', view: 'abs', sel: enc([A]) });
+  P.setJarvis(jarvisFor(A, 1.1));
+  const btn = id => els.metrics.children.find(b => b.id === id);
+  assert(btn('openrocket-toggle') && btn('openrocket-toggle').className === 'on'); assert(!/(^|&)or=/.test(hash), hash);
+  btn('openrocket-toggle').onclick();
+  assert.strictEqual(last().traces.length, 1); assert(last().traces[0].name.endsWith('(Jarvis)'), last().traces[0].name);
+  assert(/(^|&)or=0/.test(hash), hash); assert.strictEqual(btn('openrocket-toggle').className, '');
+  btn('jarvis-toggle').onclick();   // both off: an empty chart that says how to get the lines back
+  assert.strictEqual(els.empty.hidden, false); assert(els.empty.textContent.includes('both hidden'), els.empty.textContent);
+  run({ tab: 'history', metric: 'apogee', view: 'abs', or: '0', sel: enc([A]) });
+  assert.strictEqual(P.state.openrocket, false);
+  assert.strictEqual(last().traces.length, 1, 'without Jarvis numbers there is no toggle, so OpenRocket stays on');
+  P.setJarvis(jarvisFor(A, 1.1));
+  assert.strictEqual(last().traces.length, 1); assert(last().traces[0].name.endsWith('(Jarvis)'));
+  P.state.view = 'dbar'; P.update();   // no Jarvis in the bars, so OpenRocket's bars are always drawn
+  assert(last().traces.length === 1 && last().traces[0].type === 'bar');
+});
 test('Jarvis is left out of the bars, and for designs it has no numbers for', () => {
   run({ tab: 'history', metric: 'apogee', view: 'dbar', sel: enc([A]) });
   P.setJarvis(jarvisFor(A, 1.1));
