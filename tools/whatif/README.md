@@ -238,12 +238,24 @@ Add an entry under `rockets` in `aero_modeling/whatif_config.json` with `ork`, `
 `rasaero`, `rasaero_results`, `sim` and `alpha_dir` are optional (`alpha_dir` is needed for Update CSV). The `default` rocket is at
 `/predictions/`; others are at `/predictions/<key in lowercase>/`.
 
+## How long a build takes, and the cache
+
+Flying the predictions page and Vision's flights takes about 3–5 minutes, and EDITH about 7 more. Both are kept between
+runs, so a push that does not change what they are made from skips them. The page and flight are kept in
+`.predictions_cache` the way the History tab keeps its OpenRocket runs in `.or_ci_cache`: one entry per rocket, named
+`<git blob id of the .ork>-<salt>`. The salt is `CACHE_SALT` in `build_site.py` and a hash of everything else they are
+made from (the aero table, motor and RASAero files, the build options, this design's History data and the `flight_sim`
+code). Change any of these and the rocket is flown again. The log says `Predictions: 1 rocket(s); 0 to fly, 1 from cache`.
+Bump `CACHE_SALT` when the page changes in a way none of its inputs show. The page's "generated" time is then the time it
+was last flown.
+
 ## Building locally
 
 ```
 pip install -e <path to flight_sim>
 python tools/whatif/build_site.py --config aero_modeling/whatif_config.json --site site
 python tools/whatif/build_site.py --config aero_modeling/whatif_config.json --site site --edith --edith-cache .edith_cache   # with EDITH (needs the EDITH branch of flight_sim)
+python tools/whatif/build_site.py --config aero_modeling/whatif_config.json --site site --cache .predictions_cache   # reuse pages whose inputs have not changed
 python tools/whatif/tests/test_build_site.py
 python tools/whatif/tests/test_local_helper.py
 python tools/whatif/tests/test_site_status.py
