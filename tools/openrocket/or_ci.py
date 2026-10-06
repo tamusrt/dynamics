@@ -1410,12 +1410,18 @@ def _guess_repo_url(root: Path):
     return f"https://github.com/{m.group(1)}" if m else ""
 
 
+SITE_ICONS = Path(__file__).resolve().parent / "site_icons"   # favicon.ico, the PNG icons and site.webmanifest
 SITE_HTML = r"""<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>OpenRocket performance history</title>
+<link rel="icon" href="favicon.ico" sizes="any">
+<link rel="icon" type="image/png" sizes="32x32" href="favicon-32x32.png">
+<link rel="icon" type="image/png" sizes="16x16" href="favicon-16x16.png">
+<link rel="apple-touch-icon" sizes="180x180" href="apple-touch-icon.png">
+<link rel="manifest" href="site.webmanifest">
 <script src="https://cdn.plot.ly/plotly-basic-2.35.2.min.js" charset="utf-8"></script>
 <style>
   :root { color-scheme: light dark; --bg:#fff; --fg:#1f2328; --muted:#59636e; --card:#f6f8fa; --line:#d0d7de;
@@ -2295,6 +2301,9 @@ def write_site(series: dict, site_dir: Path, units: str, repo_url: str, files_ve
     (site_dir / "index.html").write_text(SITE_HTML.replace("__DATA__", data), encoding="utf-8")
     (site_dir / "data.json").write_text(json.dumps(payload, indent=1), encoding="utf-8")
     (site_dir / ".nojekyll").write_text("", encoding="utf-8")
+    for icon in SITE_ICONS.iterdir():   # the browser-tab icon and the home-screen icons the page links to
+        if icon.is_file():
+            shutil.copyfile(icon, site_dir / icon.name)
     print(f"Wrote site to {site_dir / 'index.html'}")
 
 

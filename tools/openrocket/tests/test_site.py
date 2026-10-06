@@ -121,6 +121,12 @@ def main() -> int:
         rows_b = data["designs"][FILE_B]["Simulation 1"]
         assert [r["ok"] for r in rows_b] == [True, False], "a failed version must be marked not ok"
         assert len(data["changelog"][FILE_A]) == 2
+        page = (site / "index.html").read_text(encoding="utf-8")
+        for icon in ("favicon.ico", "favicon-32x32.png", "favicon-16x16.png", "apple-touch-icon.png", "site.webmanifest"):
+            assert (site / icon).is_file() and f'href="{icon}"' in page, f"{icon} is linked and next to the page"
+        manifest = json.loads((site / "site.webmanifest").read_text(encoding="utf-8"))
+        for entry in manifest["icons"]:  # relative: the site is served from /<repo>/, not the domain root
+            assert not entry["src"].startswith("/") and (site / entry["src"]).is_file(), entry
         print(f"write_site: ok ({len(data['flights'])} flight files, {len(data['flight_vars'])} variables)")
         node = shutil.which("node")
         if not node:
