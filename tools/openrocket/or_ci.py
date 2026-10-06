@@ -1559,7 +1559,7 @@ SITE_HTML = r"""<!doctype html>
     <div class="chartbox"><div id="hplot" style="position:absolute;inset:10px"></div><div class="empty" id="empty" hidden>Select simulations in the list.</div></div>
     <div id="latest"></div>
     <p class="legend" id="jarvisnote" hidden></p>
-    <p class="legend">Each point is one committed version of a design, simulated in OpenRocket. <b>Absolute</b> shows the value for each version; <b>Δ line</b> shows the change from the previous version; <b>Δ bars</b> shows the same change as one bar per commit (green: increase, red: decrease). Hover over a point for the commit, author and message, and click it to open the commit on GitHub. Drag to zoom and double-click to reset. When Jarvis has numbers for the selected simulations, the <b>OpenRocket</b> and <b>Jarvis</b> buttons above the chart show or hide each one's lines. Select several simulations on the left to compare them. The page address updates as you select, so you can share a view by copying the link. Simulations run in OpenRocket 24.12 with wind turbulence off and a fixed random seed, so results are repeatable.</p>
+    <p class="legend">Each point is one committed version of a design, simulated in OpenRocket. <b>Absolute</b> shows the value for each version; <b>Δ line</b> shows the change from the previous version; <b>Δ bars</b> shows the same change as one bar per commit (green: increase, red: decrease). Hover over a point for the commit, author and message, and click it to open the commit on GitHub. Drag to zoom and double-click to reset. When Jarvis has numbers for the selected simulations, the <b>OpenRocket</b> and <b>Jarvis</b> buttons above the chart show or hide each one's lines. Jarvis is off until you turn it on. Select several simulations on the left to compare them. The page address updates as you select, so you can share a view by copying the link. Simulations run in OpenRocket 24.12 with wind turbulence off and a fixed random seed, so results are repeatable.</p>
    </section>
    <section id="view-predictions" hidden></section>
    <section id="view-vision" hidden></section>
@@ -1581,8 +1581,9 @@ if (DATA.repo) { const a = document.createElement('a'); a.href = DATA.repo; a.te
 const ALL = [];  // {id, file, sim, rows}
 for (const [file, sims] of Object.entries(DATA.designs)) for (const [sim, rows] of Object.entries(sims)) ALL.push({ id: `${file}|${sim}`, file, sim, rows });
 const VIEWS = [['abs', 'Absolute'], ['dline', 'Δ line'], ['dbar', 'Δ bars']];
-const state = { metric: DATA.metrics[0].key, view: 'abs', sel: new Set(), units: DATA.default_units || 'metric', stab: DATA.default_stability || 'cal',
-                tab: 'history', fx: 'altitude', fys: [{ key: 'stability', side: 'l' }], fapo: true, fprev: false, jarvis: true, openrocket: true };   // fys: Y variables in order, side l|r
+const DEFAULTS = () => ({ metric: DATA.metrics[0].key, view: 'abs', units: DATA.default_units || 'metric', stab: DATA.default_stability || 'cal',
+                          fx: 'altitude', fys: [{ key: 'stability', side: 'l' }], fapo: true });   // fys: Y variables in order, side l|r
+const state = Object.assign(DEFAULTS(), { sel: new Set(), tab: 'history', fprev: false, jarvis: false, openrocket: true });   // Jarvis's lines are off until asked for
 const FVARS = DATA.flight_vars || {};
 const FRAMES = { predictions: 'predictions/index.html', vision: 'predictions/viewer/index.html', edith: 'predictions/edith/index.html' };   // pages shown inside this one
 // EDITH (the many-flight simulation) is only built for the EDITH branch of flight_sim, so its tab stays hidden until its page is there (see showEdithTab)
@@ -1605,8 +1606,28 @@ function visibleMetrics() { return DATA.metrics.filter(m => !m.stab || m.stab ==
 // metric spec in the current unit system: {key, label, unit, dec, factor}
 function specOf(key) { const m = DATA.metrics.find(x => x.key === key); const u = (m.units && m.units[state.units]) || m.units.metric; return { key: m.key, label: m.label, unit: u.unit, dec: u.dec, factor: u.factor }; }
 function val(r, key) { const v = r.m[key]; return v == null ? null : v * specOf(key).factor; }
+// Short links: each simulation travels in the URL as a short code (the start of a hash of 'file|sim') instead of its
+// full name, and settings left at their defaults are not written. Old links with full names still open.
+function simCode(id) {   // FNV-1a, 32 bits, as 7 base-36 characters
+  let h = 0x811c9dc5; for (let i = 0; i < id.length; i++) { h ^= id.charCodeAt(i); h = Math.imul(h, 0x01000193) >>> 0; }
+  return h.toString(36).padStart(7, '0');
+}
+const CODES = new Map(ALL.map(a => [a.id, simCode(a.id)]));
+// the shortest code length (from 3) at which every simulation has its own code; a reader matches by prefix, so a link
+// written with shorter codes keeps working after the length grows
+const CODE_LEN = (() => { for (let n = 3; n < 7; n++) if (new Set([...CODES.values()].map(c => c.slice(0, n))).size === CODES.size) return n; return 7; })();
+function selFromToken(t) {   // a short code, or a full 'file|sim' (encoded once or twice, from older links)
+  const safeDecode = x => { try { return decodeURIComponent(x); } catch (e) { return x; } };   // names may contain '%' ("Seymour_10 [85%]")
+  for (const c of [t, safeDecode(t), safeDecode(safeDecode(t))]) if (CODES.has(c)) return c;
+  const hit = /^[0-9a-z]{3,7}$/.test(t) ? ALL.filter(a => CODES.get(a.id).startsWith(t)) : [];
+  return hit.length === 1 ? hit[0].id : null;
+}
+const defaultSel = () => { const first = ALL[0] && ALL[0].file; return ALL.filter(a => a.file === first).map(a => a.id); };
+function defaultMetric() { const m = DATA.metrics[0]; return m.stab && m.stab !== state.stab && m.pair ? m.pair : m.key; }
+const defaultFys = () => fysText([{ key: stabKey('stability'), side: 'l' }]);
 function readHash() {
   const p = new URLSearchParams(location.hash.slice(1));
+  Object.assign(state, DEFAULTS());   // a setting missing from the link is at its default
   if (p.get('metric') && DATA.metrics.some(m => m.key === p.get('metric'))) state.metric = p.get('metric');
   state.view = VIEWS.some(v => v[0] === p.get('view')) ? p.get('view') : (p.get('delta') === '1' ? 'dline' : 'abs');
   if (p.get('units') === 'metric' || p.get('units') === 'imperial') state.units = p.get('units');
@@ -1616,22 +1637,30 @@ function readHash() {
   if (p.has('fy')) { const fys = parseFys(p.get('fy')); if (FVARS[p.get('fy2')]) fys.push({ key: p.get('fy2'), side: 'r' }); state.fys = fys; }   // fy2: old links
   if (p.has('apo')) state.fapo = p.get('apo') !== '0';
   state.fprev = p.get('prev') === '1';
-  state.jarvis = p.get('jarvis') !== '0';
+  state.jarvis = p.get('jarvis') === '1';
   state.openrocket = p.get('or') !== '0';
   applyStab();
   const s = p.get('sel');
-  // names may contain '%' ("Seymour_10 [85%]"); a link re-encoded by a chat app must not crash the page
-  const safeDecode = x => { try { return decodeURIComponent(x); } catch (e) { return x; } };
-  if (s) { const ids = s.split(','); state.sel = new Set(ids.map(safeDecode).concat(ids).filter(id => ALL.some(a => a.id === id))); }
-  if (!state.sel.size) { const first = ALL[0] && ALL[0].file; ALL.filter(a => a.file === first).forEach(a => state.sel.add(a.id)); }
+  state.sel = new Set(s ? s.split(',').map(selFromToken).filter(Boolean) : []);
+  if (!state.sel.size) defaultSel().forEach(id => state.sel.add(id));
 }
 function writeHash() {
-  const p = new URLSearchParams();
-  p.set('tab', state.tab); p.set('units', state.units); p.set('stab', state.stab);
-  if (state.tab === 'flight') { p.set('fx', state.fx); p.set('fy', fysText(state.fys)); p.set('apo', state.fapo ? '1' : '0'); if (state.fprev) p.set('prev', '1'); }
-  else if (!FRAMES[state.tab]) { p.set('metric', state.metric); p.set('view', state.view); if (!state.jarvis) p.set('jarvis', '0'); if (!state.openrocket) p.set('or', '0'); }
-  p.set('sel', [...state.sel].map(encodeURIComponent).join(','));
-  history.replaceState(null, '', '#' + p.toString());
+  const p = new URLSearchParams(), d = DEFAULTS();
+  p.set('tab', state.tab);
+  if (state.units !== d.units) p.set('units', state.units);
+  if (state.stab !== d.stab) p.set('stab', state.stab);
+  if (state.tab === 'flight') {
+    if (state.fx !== d.fx) p.set('fx', state.fx);
+    if (fysText(state.fys) !== defaultFys()) p.set('fy', fysText(state.fys));
+    if (!state.fapo) p.set('apo', '0'); if (state.fprev) p.set('prev', '1');
+  } else if (!FRAMES[state.tab]) {
+    if (state.metric !== defaultMetric()) p.set('metric', state.metric);
+    if (state.view !== d.view) p.set('view', state.view);
+    if (state.jarvis) p.set('jarvis', '1'); if (!state.openrocket) p.set('or', '0');
+  }
+  const sel = [...state.sel], def = defaultSel();   // the default selection (the first design) is not written
+  if (sel.length && !(sel.length === def.length && def.every(id => state.sel.has(id)))) p.set('sel', sel.map(id => CODES.get(id).slice(0, CODE_LEN)).join(','));
+  history.replaceState(null, '', '#' + p.toString().replace(/%2C/g, ','));
 }
 const colorOf = new Map();
 function assignColors() { colorOf.clear(); let i = 0; for (const a of ALL) if (state.sel.has(a.id)) colorOf.set(a.id, PALETTE[i++ % PALETTE.length]); }
