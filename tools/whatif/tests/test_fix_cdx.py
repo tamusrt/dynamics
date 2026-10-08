@@ -25,6 +25,7 @@ CDX = """﻿<RASAeroDocument>
       <SweepDistance>3.937</SweepDistance><Thickness>0.1181</Thickness><Location>0</Location></Fin>
     </BodyTube>
     <Surface>{surface}</Surface>
+    <ModifiedBarrowman>False</ModifiedBarrowman>
   </RocketDesign>
   <LaunchSite></LaunchSite>
 </RASAeroDocument>"""
@@ -76,6 +77,14 @@ def test_a_file_without_a_surface_element_is_not_given_one():
         cdx.write_bytes(cdx.read_bytes().replace(b"<Surface>x</Surface>", b""))
         assert not any(line.startswith("surface") for line in fix_cdx.fix(ork, cdx))
         assert b"<Surface>" not in cdx.read_bytes()
+
+
+def test_rogers_modified_barrowman_is_turned_on():
+    with tempfile.TemporaryDirectory() as tmp:
+        ork, cdx = _files(Path(tmp), "Rough Camouflage Paint")
+        assert "Rogers Modified Barrowman: False -> True" in fix_cdx.fix(ork, cdx)
+        assert b"<ModifiedBarrowman>True</ModifiedBarrowman>" in cdx.read_bytes()
+        assert fix_cdx.fix(ork, cdx) == []
 
 
 if __name__ == "__main__":
