@@ -31,7 +31,8 @@
       "motor_dir": "IREC_2027/2027_Thrust_Curves",
       "sim": "average",
       "alpha_dir": "IREC_2027/JARVIS/alpha",
-      "edith_accepted": []
+      "edith_accepted": [],
+      "motor": "IREC_2027/2027_Thrust_Curves/2027_v1.rse"
     }
   }
 }
