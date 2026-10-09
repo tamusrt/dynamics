@@ -49,12 +49,20 @@ def _build_site():
     return build_site
 
 
+def _resolve():
+    """resolve.py (imported late: it uses this module too)."""
+    import resolve
+
+    return resolve
+
+
 ERROR, WARN = "error", "warn"
 MOTOR_SUFFIXES = (".eng", ".rse")
 SIZE_WARN_BYTES = 25 * 1024 * 1024  # GitHub warns at 50 MB and refuses at 100 MB
 SIZE_ERROR_BYTES = 95 * 1024 * 1024
 REPO_WARN_MB = 500
 PAIR_TOLERANCE = 0.02  # a motor's .eng and .rse should give the same burn time and total impulse to within this
+MASS_TOLERANCE = 0.05  # an .rse's mass column may differ from "propellant leaves in step with the impulse" by this share of the propellant
 BAD_NAME = re.compile(r"[#%?&+;'\"]")
 HOOK_MARK = "# installed by tools/whatif/doctor.py"
 
@@ -367,7 +375,9 @@ def read_motor(path: Path) -> tuple[list[tuple[float, float]], float | None]:
 
 def motor_numbers(points: list[tuple[float, float]]) -> tuple[float, float, float]:
     """Burn time (s), total impulse (N s) and peak thrust (N); the thrust is taken to start from zero."""
-    curve = [(0.0, 0.0)] + points if points and points[0][0] > 0 else points
+    if not points:  # a motor file with no thrust points at all: nothing burns
+        return 0.0, 0.0, 0.0
+    curve = [(0.0, 0.0)] + points if points[0][0] > 0 else points
     impulse = sum((b[0] - a[0]) * (a[1] + b[1]) / 2 for a, b in zip(curve, curve[1:]))
     return curve[-1][0], impulse, max(f for _, f in curve)
 
@@ -410,7 +420,7 @@ def check_pair(path: Path, rel: str, findings: list[Finding]) -> None:
     try:
         a = motor_numbers(read_motor(path)[0])
         b = motor_numbers(read_motor(other)[0])
-    except (OSError, ValueError, TypeError, ElementTree.ParseError):
+    except (OSError, ValueError, TypeError, IndexError, ElementTree.ParseError):
         return
     for name, x, y in (("burn time", a[0], b[0]), ("total impulse", a[1], b[1])):
         if y and abs(x / y - 1) > PAIR_TOLERANCE:
@@ -420,6 +430,76 @@ def check_pair(path: Path, rel: str, findings: list[Finding]) -> None:
                 "The History tab and the Predictions page may read different ones. Make both with the generator in one go.",
             ))
             return
+
+
+def read_designation(path: Path) -> str:
+    """The name a motor file gives itself (what OpenRocket lists it as), or '' when it has none."""
+    try:
+        if path.suffix.lower() == ".rse":
+            root = ElementTree.parse(path).getroot()
+            return next((e.get("code") or "" for e in root.iter("engine")), "").strip()
+        for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+            line = line.strip()
+            if line and not line.startswith(";"):
+                return line.split()[0]  # the first line that is not a comment names the motor
+    except (OSError, ValueError, ElementTree.ParseError):
+        pass
+    return ""
+
+
+def check_designations(path: Path, rel: str, findings: list[Finding]) -> None:
+    """Two different motors in one folder should not share a name: OpenRocket treats the name as the motor's identity."""
+    mine = read_designation(path)
+    if not mine or not path.parent.is_dir():
+        return
+    clash = sorted({other.stem for other in path.parent.iterdir()
+                    if other.suffix.lower() in MOTOR_SUFFIXES and other.stem != path.stem
+                    and read_designation(other) == mine})
+    if clash:
+        findings.append(finding(
+            WARN, "motor-same-name", rel,
+            f"{path.stem} and {', '.join(clash)} are different motor curves but both call themselves '{mine}'. "
+            "OpenRocket treats motors with the same name as one motor, so it can load the wrong curve.",
+            "Give each curve its own name inside the file (the 'code' line of the .rse, the first line of the .eng).",
+        ))
+
+
+def check_mass_column(path: Path, rel: str, findings: list[Finding]) -> None:
+    """An .rse that lists its own mass is flown with it. If that mass does not fall in step with the thrust, the
+    result differs from the .eng (and from Jarvis), which burn propellant in proportion to the impulse delivered."""
+    if path.suffix.lower() != ".rse":
+        return
+    try:
+        root = ElementTree.parse(path).getroot()
+        engine = next(iter(root.iter("engine")), None)
+        if engine is None or engine.get("auto-calc-mass", "1") != "0":
+            return  # OpenRocket works the mass out itself
+        rows = [(float(e.get("t")), float(e.get("f")), float(e.get("m"))) for e in root.iter("eng-data")]
+    except (OSError, ValueError, TypeError, ElementTree.ParseError):
+        return
+    if len(rows) < 3 or any(b[0] <= a[0] for a, b in zip(rows, rows[1:])):
+        return
+    burned = rows[0][2] - rows[-1][2]
+    total = 0.0
+    impulse = [0.0]
+    for a, b in zip(rows, rows[1:]):
+        total += (b[0] - a[0]) * (a[1] + b[1]) / 2
+        impulse.append(total)
+    if burned <= 0 or total <= 0:
+        return
+    worst, at = 0.0, 0.0
+    for row, done in zip(rows, impulse):
+        gap = abs((rows[0][2] - row[2]) / burned - done / total)
+        if gap > worst:
+            worst, at = gap, row[0]
+    if worst > MASS_TOLERANCE:
+        findings.append(finding(
+            WARN, "motor-mass-column", rel,
+            f"{path.name} lists its own mass for every moment, and that mass does not fall in step with the thrust "
+            f"(by up to {worst * burned / 1000:.1f} kg at {at:.1f} s). OpenRocket flies the listed mass, so it predicts a "
+            f"different apogee than the same curve as an .eng file does, and than Jarvis does.",
+            "Ask whoever makes the curve which mass profile is right. The .eng gives the thrust-proportional one, so it matches Jarvis.",
+        ))
 
 
 # ---------------------------------------------------------------------------------------------- the checks
@@ -448,23 +528,20 @@ def check_sim_config(repo: Repo, sim_path: Path, sim: dict, needed: set[str], fi
                 check_path(repo, Needs("motor file", label, sim_path.parent, value, needed=important), findings)
 
 
-def flown_motor(config_dir: Path, spec: dict) -> tuple[Path | None, str]:
-    """The motor file the Predictions page flies for a rocket and how it is chosen (as build_site does)."""
-    if "motor" in spec:
-        return config_dir / spec["motor"], "named in the config"
-    folder = config_dir / spec.get("motor_dir", "")
-    same = _build_site().history_motor_file(config_dir, spec)
-    if same is not None and same.suffix.lower() in MOTOR_SUFFIXES and same.is_file():
-        return same, "same as the History tab"
-    if folder.is_dir():
-        try:
-            return _build_site().newest_thrust_curve(folder)[0], "newest in the folder"
-        except SystemExit:
-            return None, "none found"
-    return None, "none found"
+def flown_motor(repo: Repo, config_dir: Path, spec: dict, defaults: dict | None = None) -> tuple[Path | None, str]:
+    """The motor file the Predictions page flies for a rocket and how it is chosen: the very same choice build_site makes
+    (resolve.resolve_motor), so the doctor checks the file the build will fly."""
+    resolve = _resolve()
+    defaults = defaults or {}
+    mode = str(spec.get("motor_mode", defaults.get("motor_mode", "pinned"))).lower()
+    ignore = tuple(defaults.get("motor_ignore", resolve.DEFAULT_IGNORE))
+    history = _build_site().history_motor_file(config_dir, spec)
+    found, how = resolve.resolve_motor(repo, config_dir, spec, mode, history, resolve.Notes(), ignore)
+    return (found.path, how or "named in the config") if found is not None else (None, "none found")
 
 
-def check_rocket(repo: Repo, config_path: Path, sim_path: Path, key: str, spec: dict, findings: list[Finding]) -> set[str]:
+def check_rocket(repo: Repo, config_path: Path, sim_path: Path, key: str, spec: dict, findings: list[Finding],
+                 defaults: dict | None = None) -> set[str]:
     """Check one rocket of whatif_config.json. Returns the repository paths of its design."""
     label = repo.rel(config_path)
     base = config_path.parent
@@ -490,7 +567,7 @@ def check_rocket(repo: Repo, config_path: Path, sim_path: Path, key: str, spec: 
         check_path(repo, Needs(f"EDITH site settings of {key}", label, base, spec["edith_site"]), findings)
     if ork_path is not None:
         check_ork(ork_path, repo.rel(ork_path), spec.get("sim"), findings)
-    motor, how = flown_motor(base, spec)
+    motor, how = flown_motor(repo, base, spec, defaults)
     if "motor_dir" in spec and "motor" not in spec:
         hist = _build_site().history_motor_file(base, spec)
         if hist is None:
@@ -512,6 +589,10 @@ def check_rocket(repo: Repo, config_path: Path, sim_path: Path, key: str, spec: 
         check_name(mrel, findings)
         check_motor(motor, mrel, findings)
         check_pair(motor, mrel, findings)
+        check_designations(motor, mrel, findings)
+        for same in (motor, *(motor.with_suffix(x) for x in MOTOR_SUFFIXES if x != motor.suffix.lower())):
+            if same.is_file():
+                check_mass_column(same, repo.rel(same), findings)
     return {repo.rel(base / spec["ork"])} if "ork" in spec else set()
 
 
@@ -566,7 +647,7 @@ def run_checks(root: Path, config_path: Path, sim_path: Path) -> tuple[list[Find
                                     f"The default rocket '{default}' is not one of the rockets: " + ", ".join(rockets) + ".",
                                     "Change 'default' to one of them."))
         for key, spec in rockets.items():
-            needed |= check_rocket(repo, config_path, sim_path, key, spec, findings)
+            needed |= check_rocket(repo, config_path, sim_path, key, spec, findings, config)
     if sim is not None:
         check_sim_config(repo, sim_path, sim, needed, findings)
     check_repository(repo, findings)

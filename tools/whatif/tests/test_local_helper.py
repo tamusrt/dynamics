@@ -321,14 +321,61 @@ def test_a_csv_changed_on_github_is_never_overwritten(rig):
 
 
 @with_rig()
-def test_old_rasaero_files_are_removed_before_a_new_sweep(rig):
+def test_old_rasaero_files_do_not_pass_for_a_new_sweep_but_come_back_if_it_fails(rig):
     alpha = rig.repo / "aero_modeling/R/RASA/alpha"
     alpha.mkdir(parents=True, exist_ok=True)
     (alpha / "alpha30.txt").write_text("from an older run")
     rig.sweep_writes = 3
     rig.post("sweep")
     st = rig.wait_idle()
-    assert not (alpha / "alpha30.txt").exists() and "only 3 of 31" in st["error"]
+    assert "only 3 of 31" in st["error"] and "put back" in st["error"]
+    assert (alpha / "alpha30.txt").read_text() == "from an older run"  # the last good set is back
+    assert not (alpha / "alpha0.txt").exists() and not (alpha / "_previous_run").exists()
+
+
+@with_rig()
+def test_old_rasaero_files_are_gone_once_a_new_sweep_has_worked(rig):
+    alpha = rig.repo / "aero_modeling/R/RASA/alpha"
+    alpha.mkdir(parents=True, exist_ok=True)
+    (alpha / "alpha5.txt").write_text("from an older run")
+    rig.post("sweep")
+    assert rig.wait_idle()["error"] is None
+    assert (alpha / "alpha5.txt").read_text() == "x" and not (alpha / "_previous_run").exists()
+
+
+@with_rig(publish=True)
+def test_a_csv_that_is_not_published_is_put_back(rig):
+    rig.remote_check, rig.remote_changed = True, True
+    rig.post("sweep")
+    rig.wait_idle()
+    rig.post("update")
+    st = rig.wait_idle()
+    assert "Not published" in st["error"] and "put back" in st["error"]
+    assert (rig.repo / "aero_modeling/R/RASA/a.csv").read_text() == "old csv"
+    assert not (rig.repo / "aero_modeling/R/RASA/a.meta.json").exists()
+
+
+@with_rig()
+def test_use_file_refuses_a_file_git_does_not_have_and_an_earlier_cancel_does_not_stop_it(rig):
+    base = rig.repo / "aero_modeling"
+    (base / "R" / "b.ork").write_text("ork")
+    rig.post("cancel")  # a Cancel left over from an earlier job
+    cancelled = []
+    plain = rig.run
+
+    def watching(cmd, on_line, cancel):
+        if cmd[0] == "git":
+            cancelled.append(cancel.is_set())
+        return 1 if cmd[:3] == ["git", "ls-files", "--error-unmatch"] and rig.untracked else plain(cmd, on_line, cancel)
+
+    rig.untracked = True
+    rig.helper.runner = watching
+    status, reply, _ = rig.post("use-file", {"rocket": "R", "setting": "ork", "path": "R/b.ork"})
+    assert status == 400 and "not committed" in reply["message"], reply
+    assert json.loads((base / "whatif_config.json").read_text())["rockets"]["R"]["ork"] == "R/a.ork"
+    rig.untracked = False
+    status, reply, _ = rig.post("use-file", {"rocket": "R", "setting": "ork", "path": "R/b.ork"})
+    assert status == 200 and not any(cancelled), (reply, cancelled)
 
 
 @with_rig()

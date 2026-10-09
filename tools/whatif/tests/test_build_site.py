@@ -2,6 +2,7 @@
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -187,8 +188,8 @@ def test_jarvis_flies_the_motor_the_history_tab_flies():
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
         build = build_site.plan(_motor_config(root), root / "site")[0]
-        assert _flown(build["cmd"]) == "h.rse" and build["note"] == "same as the History tab"
-        assert build["cmd"][build["cmd"].index("--motor-note") + 1] == "same as the History tab"
+        assert _flown(build["cmd"]) == "h.rse" and build["note"] == "pinned: the History tab's motor"
+        assert build["cmd"][build["cmd"].index("--motor-note") + 1] == "pinned: the History tab's motor"
 
 
 def test_without_a_usable_history_motor_the_newest_is_flown():
@@ -333,6 +334,166 @@ def test_rasaero_results_are_passed_on_when_named():
         else:
             raise AssertionError("a missing results file must stop the build")
 
+
+def _cached_runs(root: Path, path: Path, package: Path, edith: bool = False, extra: tuple = ()) -> list[str]:
+    """Run main with --cache, with a stand-in for flight_sim that writes a page into --out; returns what was flown."""
+    calls: list[str] = []
+    real, real_dir = subprocess.run, build_site._flight_sim_dir
+
+    def fake(cmd, **kw):
+        if cmd[0] == "git":
+            return real(cmd, **kw)
+        calls.append(cmd[2])
+        out = Path(cmd[cmd.index("--out") + 1])
+        if cmd[2] == "flight_sim.whatif.build":
+            out.mkdir(parents=True, exist_ok=True)
+            (out / "index.html").write_text("page " + Path(cmd[cmd.index("--ork") + 1]).read_text())
+            (out / "viewer").mkdir(exist_ok=True)
+            (out / "viewer" / "index.html").write_text("flight")
+        elif cmd[2] == "flight_sim.whatif.edith_site":
+            (out / "edith").mkdir(parents=True, exist_ok=True)
+            (out / "edith" / "index.html").write_text("edith")
+        return subprocess.CompletedProcess(cmd, 0)
+
+    subprocess.run, build_site._flight_sim_dir = fake, lambda: package
+    try:
+        args = ["--config", str(path), "--site", str(root / "site"), "--cache", str(root / "cache")]
+        assert build_site.main(args + (["--edith"] if edith else []) + list(extra)) == 0
+    finally:
+        subprocess.run, build_site._flight_sim_dir = real, real_dir
+    return calls
+
+
+def test_the_page_is_reused_while_nothing_it_is_made_from_changes():
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        path = _config(root, {"R": {"ork": "a.ork", "aero": "a.csv", "motor": "a.eng"}}, "R")
+        package = root / "flight_sim"
+        package.mkdir()
+        (package / "build.py").write_text("v1")
+        page = root / "site" / "predictions" / "index.html"
+        assert _cached_runs(root, path, package) == ["flight_sim.whatif.build"], "the first run flies"
+        shutil.rmtree(root / "site")  # every CI run starts with an empty site
+        assert _cached_runs(root, path, package) == [], "nothing changed: nothing is flown"
+        assert page.read_text() == "page x" and (page.parent / "viewer" / "index.html").is_file(), "the kept page is put back"
+        assert (page.parent / "files_used.json").is_file(), "files_used.json is still written"
+        (root / "a.ork").write_text("y")  # the design changed
+        shutil.rmtree(root / "site")
+        assert _cached_runs(root, path, package) == ["flight_sim.whatif.build"]
+        assert page.read_text() == "page y"
+        (package / "build.py").write_text("v2")  # the simulator changed
+        assert _cached_runs(root, path, package) == ["flight_sim.whatif.build"]
+        assert _cached_runs(root, path, package) == []
+        entries = [e.name for e in (root / "cache").iterdir()]
+        assert len(entries) == 1, "only the entries in use are kept"
+        blob = subprocess.run(["git", "hash-object", str(root / "a.ork")], capture_output=True, text=True, check=True).stdout.strip()
+        assert entries[0].startswith(f"{blob}-{build_site.CACHE_SALT}-"), "named like or_ci.py's: <.ork blob id>-<salt>"
+
+
+def test_the_history_data_of_the_design_is_part_of_the_key_but_not_the_rest():
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        path = _config(root, {"R": {"ork": "OR/a.ork", "aero": "a.csv", "motor": "a.eng"}}, "R")
+        package = root / "flight_sim"
+        package.mkdir()
+        site = root / "site"
+        site.mkdir()
+
+        def history(generated: str, rows: list, other: list) -> None:
+            data = {"generated": generated, "designs": {"OR/a.ork": {"avg": rows}, "OR/b.ork": {"avg": other}}, "flights": {}}
+            (site / "data.json").write_text(json.dumps(data))
+
+        history("monday", [{"sha": "1"}], [])
+        assert _cached_runs(root, path, package) == ["flight_sim.whatif.build", "flight_sim.whatif.commits"]
+        history("tuesday", [{"sha": "1"}], [{"sha": "9"}])  # a new build time, another design changed
+        assert _cached_runs(root, path, package) == [], "only this design's History data matters"
+        history("tuesday", [{"sha": "1"}, {"sha": "2"}], [{"sha": "9"}])  # a new version of this design
+        assert _cached_runs(root, path, package) == ["flight_sim.whatif.build", "flight_sim.whatif.commits"]
+
+
+def test_edith_and_the_other_rockets_are_not_kept_with_the_default_rockets_page():
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        path = _config(root, {"R": {"ork": "a.ork", "aero": "a.csv", "motor": "a.eng"},
+                              "Other": {"ork": "b.ork", "aero": "b.csv", "motor": "b.eng"}}, "R")
+        package = root / "flight_sim"
+        package.mkdir()
+        assert _cached_runs(root, path, package, edith=True).count("flight_sim.whatif.edith_site") == 2
+        entries = list((root / "cache").iterdir())
+        assert len(entries) == 2, "one entry per rocket"
+        for kept in entries:
+            assert (kept / "index.html").is_file()
+            assert not (kept / "other").exists(), "the other rocket is kept in its own entry"
+            assert not (kept / "edith").exists(), "EDITH keeps its own result"
+        shutil.rmtree(root / "site")
+        assert _cached_runs(root, path, package, edith=True) == ["flight_sim.whatif.edith_site"] * 2, "EDITH still runs (its own cache decides)"
+        assert (root / "site" / "predictions" / "other" / "index.html").read_text() == "page x"
+
+
+def test_without_flight_sim_installed_nothing_is_kept():
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        path = _config(root, {"R": {"ork": "a.ork", "aero": "a.csv", "motor": "a.eng"}}, "R")
+        assert _cached_runs(root, path, root / "missing") == ["flight_sim.whatif.build"]
+        assert _cached_runs(root, path, root / "missing") == ["flight_sim.whatif.build"]
+
+
+def test_a_changed_aero_table_is_noticed_in_any_commit_of_the_push():
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+
+        def git(*args):
+            subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", *args], cwd=root, check=True, capture_output=True)
+
+        git("init", "-q")
+        (root / "a_aero.csv").write_text("1")
+        (root / "other.txt").write_text("1")
+        git("add", ".")
+        git("commit", "-q", "-m", "start")
+        start = subprocess.run(["git", "rev-parse", "HEAD"], cwd=root, capture_output=True, text=True).stdout.strip()
+        (root / "a_aero.csv").write_text("2")
+        git("commit", "-qam", "table")
+        (root / "other.txt").write_text("2")
+        git("commit", "-qam", "something else")  # the newest commit leaves the table alone
+        repo = build_site.Repo(root)
+        table = root / "a_aero.csv"
+        assert not build_site._changed_in_last_commit(repo, table)
+        assert build_site._changed_in_last_commit(repo, table, start)
+        assert not build_site._changed_in_last_commit(repo, table, "0" * 40), "a new branch falls back to the newest commit"
+        assert not build_site._changed_in_last_commit(repo, table, "--output=x")
+
+def test_a_design_change_too_small_to_move_openrocket_keeps_the_last_pages():
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        path = _config(root, {"R": {"ork": "a.ork", "aero": "a.csv", "motor": "a.eng"}}, "R")
+        package = root / "flight_sim"
+        package.mkdir()
+        results = root / "results.json"
+        note = root / "site" / "predictions_skipped.json"
+
+        def openrocket(apogee: float, stability: float = 2.5) -> tuple:
+            metrics = {"apogee": apogee, "max_mach": 1.5, "velocity_off_rod": 35.0, "stability_off_rod_cal": stability,
+                       "min_stability_cal": stability, "max_stability_cal": 6.0}
+            results.write_text(json.dumps({"after": [{"file": "a.ork", "sim_name": "avg", "status": "OK", "metrics": metrics}]}))
+            return ("--or-results", str(results), "--commit", "abc1234", "--rerun-url", "https://example.test/run")
+
+        assert _cached_runs(root, path, package, extra=openrocket(9000.0)) == ["flight_sim.whatif.build"]
+        (root / "a.ork").write_text("y")  # a small change to the design
+        shutil.rmtree(root / "site")
+        assert _cached_runs(root, path, package, extra=openrocket(9000.6)) == [], "0.6 m: the last pages are kept"
+        assert (root / "site" / "predictions" / "index.html").read_text() == "page x", "the previous version's page"
+        kept = json.loads(note.read_text())
+        assert kept["commit"] == "abc1234" and "0.60 m" in kept["rockets"][0]["text"]
+        (root / "a.ork").write_text("z")  # the change adds up against the version that was flown, not the last push
+        shutil.rmtree(root / "site")
+        assert _cached_runs(root, path, package, extra=openrocket(9001.5)) == ["flight_sim.whatif.build"], "1.5 m in all: flown"
+        assert not note.exists()
+        (root / "a.ork").write_text("w")
+        assert _cached_runs(root, path, package, extra=openrocket(9001.5, 2.6)) == ["flight_sim.whatif.build"], "stability moved"
+        (root / "a.ork").write_text("v")
+        assert _cached_runs(root, path, package, extra=openrocket(9001.5, 2.6) + ("--rebuild",)) == ["flight_sim.whatif.build"]
+        (root / "a.ork").write_text("u")
+        assert _cached_runs(root, path, package) == ["flight_sim.whatif.build"], "no OpenRocket results: flown"
 
 if __name__ == "__main__":
     for name, fn in list(globals().items()):

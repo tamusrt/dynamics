@@ -1264,9 +1264,25 @@ def cmd_history(args):
         cache_dir.mkdir(parents=True, exist_ok=True)
     cache_salt = f"s{cfg.seed}-w{int(cfg.deterministic_wind)}-m3"  # bump the suffix when metrics change
 
+    def _strings(value):  # every string in a config entry (motor paths sit at different depths)
+        if isinstance(value, str):
+            yield value
+        elif isinstance(value, dict):
+            for item in value.values():
+                yield from _strings(item)
+        elif isinstance(value, list):
+            for item in value:
+                yield from _strings(item)
+
     def salt_for(f):  # the file's config entry (motors, variants) changes the results too
         import hashlib
-        entry = json.dumps(cfg.file_cfg(rel_posix(root / f, cfg.dir)), sort_keys=True)
+        fcfg = cfg.file_cfg(rel_posix(root / f, cfg.dir))
+        entry = json.dumps(fcfg, sort_keys=True)
+        # and so does the CONTENT of the motor files it names: a new curve under the same name must not reuse old runs
+        for text in sorted(set(_strings(fcfg))):
+            motor = cfg.dir / text
+            if text.lower().endswith((".eng", ".rse")) and motor.is_file():
+                entry += f"\n{text} {_hash_file(motor)}"
         return cache_salt + "-" + hashlib.sha1(entry.encode()).hexdigest()[:8]
 
     # plan: (file, version entry, blob) for every version; look up the cache first
@@ -1282,8 +1298,9 @@ def cmd_history(args):
             if not versions or versions[-1]["blob"] != wt_blob:
                 versions.append({"sha": None, "short": "working", "time": int(time.time()), "author": "",
                                  "message": "(uncommitted working tree)", "path": f, "blob": wt_blob})
-        # flight plots on the site need the full time series of the newest two versions
-        for v in (versions[-2:] if args.site else []):
+        # flight plots on the site need the full time series of the newest two versions. Kept on the run without
+        # --site too, so the site step that follows finds them in the cache instead of simulating that version again
+        for v in versions[-2:]:
             want_series.add((f, v["blob"]))
         for v in versions:
             key = (f, v["blob"])
@@ -1410,12 +1427,18 @@ def _guess_repo_url(root: Path):
     return f"https://github.com/{m.group(1)}" if m else ""
 
 
+SITE_ICONS = Path(__file__).resolve().parent / "site_icons"   # favicon.ico, the PNG icons and site.webmanifest
 SITE_HTML = r"""<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>OpenRocket performance history</title>
+<link rel="icon" href="favicon.ico" sizes="any">
+<link rel="icon" type="image/png" sizes="32x32" href="favicon-32x32.png">
+<link rel="icon" type="image/png" sizes="16x16" href="favicon-16x16.png">
+<link rel="apple-touch-icon" sizes="180x180" href="apple-touch-icon.png">
+<link rel="manifest" href="site.webmanifest">
 <script src="https://cdn.plot.ly/plotly-basic-2.35.2.min.js" charset="utf-8"></script>
 <style>
   :root { color-scheme: light dark; --bg:#fff; --fg:#1f2328; --muted:#59636e; --card:#f6f8fa; --line:#d0d7de;
@@ -1427,6 +1450,10 @@ SITE_HTML = r"""<!doctype html>
   body { margin:0; display:flex; flex-direction:column; overflow:hidden; background:var(--bg); color:var(--fg); font:14px/1.45 -apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif; }
   .bigerror { flex:none; background:var(--errbg); color:#fff; padding:14px 20px 16px; border-bottom:4px solid var(--errline); }
   .bigerror[hidden] { display:none; }
+  .skipnote { flex:none; display:flex; gap:12px; align-items:flex-start; background:#fff4d6; color:#3d2e00; border-bottom:2px solid #d29922; padding:8px 16px; font-size:14px; }
+  .skipnote[hidden] { display:none; }
+  .skipnote .sn-text { flex:1; } .skipnote a { color:inherit; font-weight:600; }
+  .skipnote button { flex:none; border:0; background:transparent; color:inherit; font-size:20px; line-height:1; cursor:pointer; padding:0 4px; }
   .bigerror .be-title { font-size:30px; font-weight:800; letter-spacing:.03em; text-transform:uppercase; margin-right:14px; }
   .bigerror .be-sub { font-size:17px; opacity:.95; }
   .bigerror ul { margin:8px 0 6px 22px; padding:0; } .bigerror li { font-size:18px; font-weight:600; margin:4px 0; }
@@ -1528,6 +1555,10 @@ SITE_HTML = r"""<!doctype html>
   <ul id="be-list"></ul>
   <a id="be-link" target="_blank" rel="noopener" hidden>See what went wrong in the build</a>
 </div>
+<div class="skipnote" id="skipnote" role="status" hidden>
+  <div class="sn-text" id="sn-text"></div>
+  <button type="button" id="sn-close" aria-label="Hide this note" title="Hide this note">&times;</button>
+</div>
 <header>
   <h1>Rocket performance</h1>
   <div class="tabs"><button id="tab-history">History</button><button id="tab-flight">Flight plots</button><button id="tab-changelog">Changelog</button><button id="tab-predictions">JARVIS predictions</button><button id="tab-vision">VISION</button><button id="tab-edith" hidden>EDITH</button></div>
@@ -1559,7 +1590,7 @@ SITE_HTML = r"""<!doctype html>
     <div class="chartbox"><div id="hplot" style="position:absolute;inset:10px"></div><div class="empty" id="empty" hidden>Select simulations in the list.</div></div>
     <div id="latest"></div>
     <p class="legend" id="jarvisnote" hidden></p>
-    <p class="legend">Each point is one committed version of a design, simulated in OpenRocket. <b>Absolute</b> shows the value for each version; <b>Δ line</b> shows the change from the previous version; <b>Δ bars</b> shows the same change as one bar per commit (green: increase, red: decrease). Hover over a point for the commit, author and message, and click it to open the commit on GitHub. Drag to zoom and double-click to reset. Select several simulations on the left to compare them. The page address updates as you select, so you can share a view by copying the link. Simulations run in OpenRocket 24.12 with wind turbulence off and a fixed random seed, so results are repeatable.</p>
+    <p class="legend">Each point is one committed version of a design, simulated in OpenRocket. <b>Absolute</b> shows the value for each version; <b>Δ line</b> shows the change from the previous version; <b>Δ bars</b> shows the same change as one bar per commit (green: increase, red: decrease). Hover over a point for the commit, author and message, and click it to open the commit on GitHub. Drag to zoom and double-click to reset. When Jarvis has numbers for the selected simulations, the <b>OpenRocket</b> and <b>Jarvis</b> buttons above the chart show or hide each one's lines. Jarvis is off until you turn it on. Select several simulations on the left to compare them. The page address updates as you select, so you can share a view by copying the link. Simulations run in OpenRocket 24.12 with wind turbulence off and a fixed random seed, so results are repeatable.</p>
    </section>
    <section id="view-predictions" hidden></section>
    <section id="view-vision" hidden></section>
@@ -1581,8 +1612,9 @@ if (DATA.repo) { const a = document.createElement('a'); a.href = DATA.repo; a.te
 const ALL = [];  // {id, file, sim, rows}
 for (const [file, sims] of Object.entries(DATA.designs)) for (const [sim, rows] of Object.entries(sims)) ALL.push({ id: `${file}|${sim}`, file, sim, rows });
 const VIEWS = [['abs', 'Absolute'], ['dline', 'Δ line'], ['dbar', 'Δ bars']];
-const state = { metric: DATA.metrics[0].key, view: 'abs', sel: new Set(), units: DATA.default_units || 'metric', stab: DATA.default_stability || 'cal',
-                tab: 'history', fx: 'altitude', fys: [{ key: 'stability', side: 'l' }], fapo: true, fprev: false, jarvis: true };   // fys: Y variables in order, side l|r
+const DEFAULTS = () => ({ metric: DATA.metrics[0].key, view: 'abs', units: DATA.default_units || 'metric', stab: DATA.default_stability || 'cal',
+                          fx: 'altitude', fys: [{ key: 'stability', side: 'l' }], fapo: true });   // fys: Y variables in order, side l|r
+const state = Object.assign(DEFAULTS(), { sel: new Set(), tab: 'history', fprev: false, jarvis: false, openrocket: true });   // Jarvis's lines are off until asked for
 const FVARS = DATA.flight_vars || {};
 const FRAMES = { predictions: 'predictions/index.html', vision: 'predictions/viewer/index.html', edith: 'predictions/edith/index.html' };   // pages shown inside this one
 // EDITH (the many-flight simulation) is only built for the EDITH branch of flight_sim, so its tab stays hidden until its page is there (see showEdithTab)
@@ -1605,8 +1637,28 @@ function visibleMetrics() { return DATA.metrics.filter(m => !m.stab || m.stab ==
 // metric spec in the current unit system: {key, label, unit, dec, factor}
 function specOf(key) { const m = DATA.metrics.find(x => x.key === key); const u = (m.units && m.units[state.units]) || m.units.metric; return { key: m.key, label: m.label, unit: u.unit, dec: u.dec, factor: u.factor }; }
 function val(r, key) { const v = r.m[key]; return v == null ? null : v * specOf(key).factor; }
+// Short links: each simulation travels in the URL as a short code (the start of a hash of 'file|sim') instead of its
+// full name, and settings left at their defaults are not written. Old links with full names still open.
+function simCode(id) {   // FNV-1a, 32 bits, as 7 base-36 characters
+  let h = 0x811c9dc5; for (let i = 0; i < id.length; i++) { h ^= id.charCodeAt(i); h = Math.imul(h, 0x01000193) >>> 0; }
+  return h.toString(36).padStart(7, '0');
+}
+const CODES = new Map(ALL.map(a => [a.id, simCode(a.id)]));
+// the shortest code length (from 3) at which every simulation has its own code; a reader matches by prefix, so a link
+// written with shorter codes keeps working after the length grows
+const CODE_LEN = (() => { for (let n = 3; n < 7; n++) if (new Set([...CODES.values()].map(c => c.slice(0, n))).size === CODES.size) return n; return 7; })();
+function selFromToken(t) {   // a short code, or a full 'file|sim' (encoded once or twice, from older links)
+  const safeDecode = x => { try { return decodeURIComponent(x); } catch (e) { return x; } };   // names may contain '%' ("Seymour_10 [85%]")
+  for (const c of [t, safeDecode(t), safeDecode(safeDecode(t))]) if (CODES.has(c)) return c;
+  const hit = /^[0-9a-z]{3,7}$/.test(t) ? ALL.filter(a => CODES.get(a.id).startsWith(t)) : [];
+  return hit.length === 1 ? hit[0].id : null;
+}
+const defaultSel = () => { const first = ALL[0] && ALL[0].file; return ALL.filter(a => a.file === first).map(a => a.id); };
+function defaultMetric() { const m = DATA.metrics[0]; return m.stab && m.stab !== state.stab && m.pair ? m.pair : m.key; }
+const defaultFys = () => fysText([{ key: stabKey('stability'), side: 'l' }]);
 function readHash() {
   const p = new URLSearchParams(location.hash.slice(1));
+  Object.assign(state, DEFAULTS());   // a setting missing from the link is at its default
   if (p.get('metric') && DATA.metrics.some(m => m.key === p.get('metric'))) state.metric = p.get('metric');
   state.view = VIEWS.some(v => v[0] === p.get('view')) ? p.get('view') : (p.get('delta') === '1' ? 'dline' : 'abs');
   if (p.get('units') === 'metric' || p.get('units') === 'imperial') state.units = p.get('units');
@@ -1616,21 +1668,30 @@ function readHash() {
   if (p.has('fy')) { const fys = parseFys(p.get('fy')); if (FVARS[p.get('fy2')]) fys.push({ key: p.get('fy2'), side: 'r' }); state.fys = fys; }   // fy2: old links
   if (p.has('apo')) state.fapo = p.get('apo') !== '0';
   state.fprev = p.get('prev') === '1';
-  state.jarvis = p.get('jarvis') !== '0';
+  state.jarvis = p.get('jarvis') === '1';
+  state.openrocket = p.get('or') !== '0';
   applyStab();
   const s = p.get('sel');
-  // names may contain '%' ("Seymour_10 [85%]"); a link re-encoded by a chat app must not crash the page
-  const safeDecode = x => { try { return decodeURIComponent(x); } catch (e) { return x; } };
-  if (s) { const ids = s.split(','); state.sel = new Set(ids.map(safeDecode).concat(ids).filter(id => ALL.some(a => a.id === id))); }
-  if (!state.sel.size) { const first = ALL[0] && ALL[0].file; ALL.filter(a => a.file === first).forEach(a => state.sel.add(a.id)); }
+  state.sel = new Set(s ? s.split(',').map(selFromToken).filter(Boolean) : []);
+  if (!state.sel.size) defaultSel().forEach(id => state.sel.add(id));
 }
 function writeHash() {
-  const p = new URLSearchParams();
-  p.set('tab', state.tab); p.set('units', state.units); p.set('stab', state.stab);
-  if (state.tab === 'flight') { p.set('fx', state.fx); p.set('fy', fysText(state.fys)); p.set('apo', state.fapo ? '1' : '0'); if (state.fprev) p.set('prev', '1'); }
-  else if (!FRAMES[state.tab]) { p.set('metric', state.metric); p.set('view', state.view); if (!state.jarvis) p.set('jarvis', '0'); }
-  p.set('sel', [...state.sel].map(encodeURIComponent).join(','));
-  history.replaceState(null, '', '#' + p.toString());
+  const p = new URLSearchParams(), d = DEFAULTS();
+  p.set('tab', state.tab);
+  if (state.units !== d.units) p.set('units', state.units);
+  if (state.stab !== d.stab) p.set('stab', state.stab);
+  if (state.tab === 'flight') {
+    if (state.fx !== d.fx) p.set('fx', state.fx);
+    if (fysText(state.fys) !== defaultFys()) p.set('fy', fysText(state.fys));
+    if (!state.fapo) p.set('apo', '0'); if (state.fprev) p.set('prev', '1');
+  } else if (!FRAMES[state.tab]) {
+    if (state.metric !== defaultMetric()) p.set('metric', state.metric);
+    if (state.view !== d.view) p.set('view', state.view);
+    if (state.jarvis) p.set('jarvis', '1'); if (!state.openrocket) p.set('or', '0');
+  }
+  const sel = [...state.sel], def = defaultSel();   // the default selection (the first design) is not written
+  if (sel.length && !(sel.length === def.length && def.every(id => state.sel.has(id)))) p.set('sel', sel.map(id => CODES.get(id).slice(0, CODE_LEN)).join(','));
+  history.replaceState(null, '', '#' + p.toString().replace(/%2C/g, ','));
 }
 const colorOf = new Map();
 function assignColors() { colorOf.clear(); let i = 0; for (const a of ALL) if (state.sel.has(a.id)) colorOf.set(a.id, PALETTE[i++ % PALETTE.length]); }
@@ -1691,8 +1752,11 @@ function buildMetrics() {
   for (const [key, text] of VIEWS) { const b = document.createElement('button'); b.textContent = text; b.className = key === state.view ? 'on' : '';
     b.title = key === 'abs' ? 'Value of each version over commit date' : key === 'dline' ? 'Change from the previous version over commit date' : 'Change from the previous version, one bar per commit (green up, red down)';
     b.onclick = () => { state.view = key; update(); }; mrow.appendChild(b); }
-  if (jarvisShown()) {
-    const j = document.createElement('button'); j.textContent = 'Jarvis'; j.className = state.jarvis ? 'on' : ''; j.id = 'jarvis-toggle'; j.style.marginLeft = '10px';
+  if (jarvisShown()) {   // which simulator's lines are drawn: OpenRocket, Jarvis or both
+    const lab2 = document.createElement('span'); lab2.className = 'toggle'; lab2.textContent = 'show'; lab2.style.marginLeft = '10px'; mrow.appendChild(lab2);
+    const o = document.createElement('button'); o.textContent = 'OpenRocket'; o.className = state.openrocket ? 'on' : ''; o.id = 'openrocket-toggle';
+    o.title = 'Show OpenRocket\'s result for every version as a solid line'; o.onclick = () => { state.openrocket = !state.openrocket; update(); }; mrow.appendChild(o);
+    const j = document.createElement('button'); j.textContent = 'Jarvis'; j.className = state.jarvis ? 'on' : ''; j.id = 'jarvis-toggle';
     j.title = 'Show Jarvis\'s fast estimate for every version as a dashed line'; j.onclick = () => { state.jarvis = !state.jarvis; update(); }; mrow.appendChild(j);
   }
 }
@@ -1730,6 +1794,8 @@ function loadJarvis() {
 }
 function jarvisOf(a) { const d = JARVIS && JARVIS.designs[a.file]; return d && d.sims && d.sims[a.sim] || null; }
 const jarvisShown = () => state.view !== 'dbar' && ALL.some(a => state.sel.has(a.id) && jarvisOf(a));
+// OpenRocket's lines can only be hidden while the toggle is on screen (Jarvis has lines to show), so they never vanish without a button to bring them back
+const openrocketShown = () => state.openrocket || !jarvisShown();
 function jarvisSeries(a, key) {   // Jarvis's number for each version it was flown on, in display units, with OpenRocket's alongside
   const by = jarvisOf(a); if (!by) return [];
   const f = specOf(key).factor, orv = new Map(seriesOf(a, key).map(p => [p.r.sha, p.v]));
@@ -1775,10 +1841,10 @@ function drawBars(spec, unit) {
 function draw() {
   const spec = specOf(state.metric), unit = spec.unit ? ' ' + spec.unit : '';
   if (state.view === 'dbar') return drawBars(spec, unit);
-  const delta = state.view === 'dline', tol = Math.pow(10, -spec.dec) / 2, traces = [];
+  const delta = state.view === 'dline', tol = Math.pow(10, -spec.dec) / 2, traces = [], showOr = openrocketShown();
   for (const a of ALL) {
     if (!state.sel.has(a.id)) continue;
-    const pts = seriesOf(a, state.metric), col = colorOf.get(a.id);
+    const pts = showOr ? seriesOf(a, state.metric) : [], col = colorOf.get(a.id);
     if (pts.length) traces.push({ type: 'scatter', mode: 'lines+markers', name: simLabel(a),
                   x: pts.map(p => new Date(p.r.t * 1000).toISOString()), y: pts.map(p => delta ? (p.d ?? 0) : p.v), customdata: pts.map(p => ({ sha: p.r.sha })),
                   line: { color: col, width: 2 }, marker: { size: 9, color: pts.map(p => dirColor(p.d, tol)), line: { color: col, width: 1.5 } },
@@ -1794,7 +1860,8 @@ function draw() {
                                    + (p.d != null ? `<br>\u0394 vs previous Jarvis: ${p.d >= 0 ? '+' : ''}${fmt(p.d, spec.dec)}${unit}` : '')
                                    + `<br>${p.r.message}<extra></extra>`) });
   }
-  empty.hidden = traces.length > 0; empty.textContent = 'Select simulations in the list.';
+  empty.hidden = traces.length > 0;
+  empty.textContent = state.sel.size && !showOr && !state.jarvis ? 'OpenRocket and Jarvis are both hidden: turn one back on above the chart.' : 'Select simulations in the list.';
   if (!traces.length) { Plotly.purge(hplot); return; }
   const layout = baseLayout('commit date', (delta ? '\u0394 ' : '') + spec.label + (spec.unit ? ` (${spec.unit})` : ''));
   layout.xaxis.type = 'date'; layout.showlegend = traces.length > 1;
@@ -2139,6 +2206,24 @@ function loadBuildStatus() {
   if (typeof fetch !== 'function') return;
   try { fetch('build_status.json', { cache: 'no-store' }).then(r => r.ok ? r.json() : null).then(setBuildStatus).catch(() => {}); } catch (e) { /* no status file: nothing to report */ }
 }
+// ---- the amber note: this push's design change was too small to fly the Predictions, VISION and EDITH again ----
+// (predictions_skipped.json, written by tools/whatif/build_site.py). The x hides it for this push in this browser.
+function showSkipNote(s) {
+  const box = document.getElementById('skipnote');
+  if (!s || !Array.isArray(s.rockets) || !s.rockets.length) { box.hidden = true; return; }
+  const key = 'srt.skipnote.' + (s.commit || '');
+  try { if (localStorage.getItem(key)) return; } catch (e) { /* no storage: always shown */ }
+  const text = document.getElementById('sn-text'); text.textContent = '';
+  text.appendChild(document.createTextNode(s.rockets.map(r => r.text).join(' ') + ' '));
+  if (s.rerun_url) { const a = document.createElement('a'); a.href = s.rerun_url; a.target = '_blank'; a.rel = 'noopener';
+    a.textContent = 'Re-run them anyway (Run workflow, tick "rebuild")'; text.appendChild(a); }
+  box.hidden = false;
+  document.getElementById('sn-close').onclick = () => { box.hidden = true; try { localStorage.setItem(key, '1'); } catch (e) { /* not kept */ } };
+}
+function loadSkipNote() {
+  if (typeof fetch !== 'function') return;
+  try { fetch('predictions_skipped.json', { cache: 'no-store' }).then(r => r.ok ? r.json() : null).then(showSkipNote).catch(() => {}); } catch (e) { /* none */ }
+}
 function frameMissing(tab) {
   const holder = document.getElementById('view-' + tab); holder.innerHTML = ''; delete frames[tab];
   const d = document.createElement('p'); d.className = 'framemsg'; d.textContent = FRAMES_MISSING[tab]; holder.appendChild(d);
@@ -2191,7 +2276,7 @@ function showEdithTab() {
   if (typeof fetch !== 'function') return;
   try { fetch(FRAMES.edith, { method: 'HEAD' }).then(r => { if (r.ok) show(); }).catch(() => {}); } catch (e) { /* no network: no EDITH tab */ }
 }
-readHash(); buildNav(); update(); loadJarvis(); loadBuildStatus(); showEdithTab();
+readHash(); buildNav(); update(); loadJarvis(); loadBuildStatus(); loadSkipNote(); showEdithTab();
 window.addEventListener('hashchange', () => { readHash(); update(); });
 </script>
 </body>
@@ -2259,6 +2344,9 @@ def write_site(series: dict, site_dir: Path, units: str, repo_url: str, files_ve
     (site_dir / "index.html").write_text(SITE_HTML.replace("__DATA__", data), encoding="utf-8")
     (site_dir / "data.json").write_text(json.dumps(payload, indent=1), encoding="utf-8")
     (site_dir / ".nojekyll").write_text("", encoding="utf-8")
+    for icon in SITE_ICONS.iterdir():   # the browser-tab icon and the home-screen icons the page links to
+        if icon.is_file():
+            shutil.copyfile(icon, site_dir / icon.name)
     print(f"Wrote site to {site_dir / 'index.html'}")
 
 
