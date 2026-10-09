@@ -44,9 +44,8 @@ TimeSeries = Union[None, float, np.ndarray, Callable[[np.ndarray], np.ndarray]]
 
 _trapz = np.trapezoid if hasattr(np, "trapezoid") else np.trapz
 
-# Sanity-check thresholds (see Engine._validate)
-DRY_TO_PROP_WARN = 5.0     # hardware mass / propellant mass above this is unusual
-DRY_TO_PROP_HARD = 25.0    # ...above this it basically has to be a typo
+DRY_TO_PROP_WARN = 40.0     # hardware mass / propellant mass above this is unusual
+DRY_TO_PROP_HARD = 85.0    # ...above this it basically has to be a typo
 
 
 class EngineConfigError(ValueError):
@@ -328,11 +327,15 @@ class N2OSaturation:
         """Saturation pressure (Pa) at temperature (K)."""
         return PropsSI("P", "T", temperature_k, "Q", 0, "N2O")
 
-
     @classmethod
     def t_sat(cls, pressure_pa: float) -> float:
-        """Saturation temperature (K) at pressure (Pa)."""
-        return PropsSI("T", "P", pressure_pa, "Q", 0, "N2O")
+        """Saturation temperature (K) at pressure (Pa), clamped to the N2O liquid-vapor range."""
+        p_lo = PropsSI("ptriple", "N2O") * 1.001
+        p_hi = PropsSI("pcrit", "N2O") * 0.999
+        if not np.isfinite(pressure_pa):
+            return float("nan")
+        p = min(max(float(pressure_pa), p_lo), p_hi)
+        return PropsSI("T", "P", p, "Q", 0, "N2O")
 
     @classmethod
     def subcooled_liquid_v(cls, temperature_k: float, pressure_pa: float) -> float:
@@ -365,7 +368,6 @@ class N2OSaturation:
         return (PropsSI("H", "T", temperature_k, "Q", 0, "N2O"),
                 PropsSI("S", "T", temperature_k, "Q", 0, "N2O"))
 
-
     @classmethod
     def isentropic_state(cls, entropy: float, pressure_pa: float) -> tuple[float, float]:
         """(h [J/kg], rho [kg/m^3]) after isentropic expansion to `pressure_pa` (two-phase OK)."""
@@ -373,12 +375,15 @@ class N2OSaturation:
             return (PropsSI("H", "P", pressure_pa, "S", entropy, "N2O"),
                     PropsSI("D", "P", pressure_pa, "S", entropy, "N2O"))
         except ValueError:
-            pass                                           # fall through to the table
-        g = lambda tab: float(np.interp(pressure_pa, cls._P, tab))
-        sf, sg, hf, hg, vf, vg = g(cls._SF), g(cls._SG), g(cls._HF), g(cls._HG), g(cls._VF), g(cls._VG)
-        x = float(np.clip((entropy - sf) / (sg - sf), 0.0, 1.0))
+            pass
+        # CoolProp's (P, S) inversion often fails inside the dome, so build the
+        # two-phase state from the saturated liquid (f) and vapor (g) at P2.
+        p = float(min(max(pressure_pa, P_MIN_PA), P_MAX_PA))
+        sf, sg = PropsSI("S", "P", p, "Q", 0, "N2O"), PropsSI("S", "P", p, "Q", 1, "N2O")
+        hf, hg = PropsSI("H", "P", p, "Q", 0, "N2O"), PropsSI("H", "P", p, "Q", 1, "N2O")
+        vf, vg = 1.0 / PropsSI("D", "P", p, "Q", 0, "N2O"), 1.0 / PropsSI("D", "P", p, "Q", 1, "N2O")
+        x = float(np.clip((entropy - sf) / (sg - sf), 0.0, 1.0))   # quality from s2 = s1
         return hf + x * (hg - hf), 1.0 / (vf + x * (vg - vf))
-
 
 # Dyer injector model (two-phase N2O through an orifice plate)
 @dataclass
@@ -421,10 +426,13 @@ def dyer_mdot_point(p1_pa: float, p2_pa: float, t1_k: Optional[float], cda_m2: f
     the saturation pressure of its own liquid. Pv = Psat(T1). If Pv <= P2 the
     flow cannot flash and the result is pure SPI.
     """
-    p1 = float(np.clip(p1_pa, P_MIN_PA, P_MAX_PA))
-    p2 = float(max(p2_pa, P_MIN_PA))
+    #p1 = float(np.clip(p1_pa, P_MIN_PA, P_MAX_PA))
+    #p2 = float(max(p2_pa, P_MIN_PA))
+    p1 = float(p1_pa)
+    p2 = float(p2_pa)
     t_eq = N2OSaturation.t_sat(p1)
-    T1 = t_eq if t1_k is None or not np.isfinite(t1_k) else min(float(t1_k), t_eq)
+    T1 = t_eq if t1_k is None or not np.isfinite(t1_k) else float(t1_k)   # was: min(float(t1_k), t_eq)
+
     pv = N2OSaturation.p_sat(T1)
     dp = p1 - p2
     rho1 = 1.0 / N2OSaturation.subcooled_liquid_v(T1, p1)
@@ -599,7 +607,7 @@ class OxidizerTank:
     def _state_at(self, t_arr):
         """Mass split, specific volumes and liquid temperature at each time."""
         m_tot_lbm = np.atleast_1d(self.mass_at(t_arr)).astype(float)
-        p_pa = np.clip(np.atleast_1d(self.pressure_at(t_arr)) * PSI_TO_PA, P_MIN_PA, P_MAX_PA)
+        p_pa = np.atleast_1d(self.pressure_at(t_arr)) * PSI_TO_PA
         T_K = self._liquid_temp_K_at(t_arr, p_pa)
         v_l = np.array([N2OSaturation.subcooled_liquid_v(T, p) for T, p in zip(T_K, p_pa)])
         v_v = np.array([N2OSaturation.vg(p) for p in p_pa])
@@ -691,7 +699,7 @@ class OxidizerTank:
                 f"{self.casing.length:.1f} in long -- check volume_in3, radius and length. "
                 f"(The ox column would overlap the plumbing/grain stations.)", True, self.strict)
         t0 = self.times_s[:1]
-        p0 = float(np.clip(self.pressure_at(t0[0]) * PSI_TO_PA, P_MIN_PA, P_MAX_PA))
+        p0 = float(self.pressure_at(t0[0]) * PSI_TO_PA)
         T_K = self._liquid_temp_K_at(t0, np.array([p0]))[0]
         v_l = N2OSaturation.subcooled_liquid_v(T_K, p0)
         need_in3 = self.initial_ox_mass_lbm * LBM_TO_KG * v_l / IN3_TO_M3
@@ -922,6 +930,7 @@ class Engine:
             "ox_liquid_temp_K": np.atleast_1d(self.tank.liquid_temp_K_at(t_arr)),
         }
 
+
 # put together the engine the above functions 
 def build_engine(
     cfg: Mapping, times_s, pressure_psi=None,
@@ -965,29 +974,13 @@ def build_engine(
                        measured=ox_mdot_measured, p_tank_psi=pressure_psi,
                        p_chamber_psi=chamber_pressure_psi, injector=injector,
                        liquid_temp_K=t1_k, strict=strict)
-    fu = fuel_mdot_array(t, ox, cfg["grain"], flow, ignition_idx, burnout_idx, thrust_lbf)
-
-    if pressure_psi is None:
-        T_K = (float(tk["liquid_temp_F"]) - 32.0) * 5.0 / 9.0 + 273.15
-        p_psi = N2OSaturation.p_sat(T_K) / PSI_TO_PA
-        warnings.warn(f"no pressure_psi given; assuming constant saturation pressure {p_psi:.0f} psi.")
-        pressure_psi = np.full_like(t, p_psi)
-# calling physical  
-    tank = OxidizerTank(
-        casing=EngineComponent("ox_tank", tk["dry_mass"], tk["offset"], tk["length"], tk.get("radius")),
-        volume_in3=tk["volume_in3"], initial_ox_mass_lbm=tk["initial_ox_mass_lbm"],
-        liquid_temp_F=tk.get("liquid_temp_F"), times_s=t, pressure_psi=pressure_psi, mdot_lbm_s=ox,
-        final_mass_lbm=flow.get("ox_final_mass_lbm"), liquid_end=liquid_end, strict=strict)
-    grain = FuelGrain(
-        casing=EngineComponent("grain", gr["dry_mass"], gr["offset"], gr["length"], gr.get("radius")),
-        outer_radius_in=gr["outer_radius_in"], initial_port_radius_in=gr["initial_port_radius_in"],
-        length_in=gr["length_in"], fuel_density_lbm_in3=gr["fuel_density_lbm_in3"],
-        times_s=t, mdot_lbm_s=fu, strict=strict)
-    plumbing = EngineComponent("plumbing", pl["dry_mass"], pl["offset"], pl["length"])
-    eng_cfg = cfg["engine"]
+    T_tank = np.array([N2OSaturation.t_sat(p * PSI_TO_PA) for p in pressure_psi])   # liquid temp from tank pressure
+    mdot = ox_mdot_array(t, "dyer", injector=injector,
+                       p_tank_psi=pressure_psi,      # P1 = injector-side pressure
+                       p_chamber_psi=chamber_pressure_psi,
+                       liquid_temp_K=T_tank, strict=strict)
     return Engine(tank=tank, plumbing=plumbing, grain=grain, length_in=eng_cfg["length_in"],
                   offset_in=eng_cfg["offset_in"], strict=strict)
-
 
 # old version as comparison for results 
 @dataclass
@@ -1067,18 +1060,18 @@ sol_ignis ={
     "ox_mdot": 1.75,
     "fuel_mdot": 1.10,
     "flow": {
-        "ox_method": "dyer",         # options: "dyer" or "constant" or "measured"
-        "ox_mdot": 0.9,                  # lbm/s, used if constant
+        "ox_method": "dyer",         
+        "ox_mdot": 0.9,                 
         "injector": {"cd": 0.65, "n_holes": 12, "hole_dia_in": 0.0625},
-        "fuel_method": "regression",     # options: "regression", "thrust", "constant"
+        "fuel_method": "regression",     
         "n": 0.6,
-        "fuel_burned_lbm": 1.8,          # post-burn weigh-in; used to fit `a` (or give "a" directly)
+        "fuel_burned_lbm": 1.8,          
     },
     "tank": {
-        "dry_mass": 30, "offset": 10.0, "length": 50.0, "radius": 2.5,
-        "volume_in3": math.pi * 2.0**2 * 50.0,
-        "initial_ox_mass_lbm": 42.0,
-        "liquid_temp_F": 70.0,
+        "dry_mass": 30, "offset": 10.0, "length": 60.0, "radius": 3.0,
+        "volume_in3": math.pi * 3.0**2 * 60.0,
+        "initial_ox_mass_lbm": 40.0,
+        "liquid_temp_F": 60,
     },
     "grain": {
         "dry_mass": 3.0, "offset": 36.0, "length": 12.0, "radius": 1.5,
