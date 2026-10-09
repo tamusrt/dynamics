@@ -24,6 +24,17 @@ class _Quiet(http.server.SimpleHTTPRequestHandler):
         pass
 
 
+
+def launch_browser(chromium, args):
+    """The Chrome already installed on the computer (GitHub's runners have one, so nothing has to be downloaded or
+    installed), or Playwright's own Chromium when there is none. SRT_BROWSER=bundled always uses Playwright's."""
+    if os.environ.get("SRT_BROWSER", "") != "bundled":
+        try:
+            return chromium.launch(channel="chrome", args=args)
+        except Exception:  # noqa: BLE001  (no Chrome here, or one Playwright cannot drive)
+            pass
+    return chromium.launch(args=args)
+
 def serve(folder: Path) -> tuple[http.server.ThreadingHTTPServer, int]:
     handler = functools.partial(_Quiet, directory=str(folder))
     server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
@@ -42,7 +53,7 @@ def shoot(site: Path, out: Path, width: int, height: int) -> int:
     errors: list[str] = []
     try:
         with sync_playwright() as p:
-            browser = p.chromium.launch(args=["--use-gl=angle", "--use-angle=swiftshader", "--enable-unsafe-swiftshader", "--ignore-gpu-blocklist"])
+            browser = launch_browser(p.chromium, ["--use-gl=angle", "--use-angle=swiftshader", "--enable-unsafe-swiftshader", "--ignore-gpu-blocklist"])
             page = browser.new_page(viewport={"width": width, "height": height}, device_scale_factor=2)
             local_three = os.environ.get("THREE_JS_PATH")  # only for trying this without internet
             if local_three:

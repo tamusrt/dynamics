@@ -15,6 +15,7 @@ the tube lengths have come out wrong). This rewrites, from the .ork:
   boat tail   length and rear diameter (RASAero takes the front diameter from the body tube)
   surface     always "Rough Camouflage Paint", even when OpenRocket uses a smooth finish (Jarvis takes its drag
               from RASAero, so OpenRocket's finish does not matter to it; rough paint adds skin friction)
+  CP method   Rogers Modified Barrowman on (OpenRocket's export always leaves it off)
 Everything else in the file (launch site, simulations) is kept as it is.
 The old file is kept next to it as <name>.before-fix. Prints one line per value it changed.
 """
@@ -154,6 +155,10 @@ def fix(ork: Path, cdx: Path, dry_run: bool = False) -> list[str]:
     if surface is not None and (surface.text or "").strip() != SURFACE:
         changes.append(f"surface finish: {(surface.text or '').strip() or 'empty'} -> {SURFACE}")
         surface.text = SURFACE
+    barrowman = design.find("ModifiedBarrowman")
+    if barrowman is not None and (barrowman.text or "").strip() != "True":
+        changes.append(f"Rogers Modified Barrowman: {(barrowman.text or '').strip() or 'empty'} -> True")
+        barrowman.text = "True"
     # every part starts where the one before it ends
     station = 0.0
     for part in design:

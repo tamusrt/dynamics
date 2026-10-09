@@ -10,8 +10,8 @@ that stops, a chart that never draws, a tab that opens empty, a 3D scene that st
 What it checks, in order:
 
 * the History tab draws its chart, and has all five tabs;
-* the dashed Jarvis lines are on the chart when ``jarvis_by_commit.json`` is there, and the
-  Jarvis button takes them off and puts them back;
+* the Jarvis button is there when ``jarvis_by_commit.json`` is, the dashed lines are off at first, and the
+  button puts them on and takes them off again;
 * the Predictions tab opens inside the page, with its table, its chart and the weather table,
   Jarvis's apogee is not wildly far from OpenRocket's, and the units picked in the page reach it;
 * the Vision tab opens, has its canvas, and the 3D scene is drawn (not blank);
@@ -38,6 +38,7 @@ import argparse
 import functools
 import http.server
 import json
+import os
 import re
 import socketserver
 import sys
@@ -49,7 +50,7 @@ from urllib.parse import quote
 HERE = Path(__file__).resolve().parent
 OPENROCKET_TESTS = HERE.parents[1] / "openrocket" / "tests"
 # Files that may be missing without it being a problem (the page copes with each).
-MAY_BE_MISSING = ("/api/status", "jarvis_by_commit.json", "build_status.json", "favicon.ico", "files_used.json")
+MAY_BE_MISSING = ("/api/status", "jarvis_by_commit.json", "build_status.json", "favicon.ico", "files_used.json", "predictions_skipped.json")
 BROWSER_ARGS = ["--no-sandbox", "--use-gl=swiftshader", "--enable-unsafe-swiftshader"]
 TABS = ("history", "flight", "changelog", "predictions", "vision")  # EDITH's tab is separate: it shows only when its page exists
 EDITH_PAGE = "predictions/edith/index.html"
@@ -79,6 +80,17 @@ class Report:
     def write(self, path: Path) -> None:
         path.write_text(json.dumps({"failed": self.failed, "skipped": self.skipped}, indent=1), encoding="utf-8")
 
+
+
+def launch_browser(chromium, args):
+    """The Chrome already installed on the computer (GitHub's runners have one, so nothing has to be downloaded or
+    installed), or Playwright's own Chromium when there is none. SRT_BROWSER=bundled always uses Playwright's."""
+    if os.environ.get("SRT_BROWSER", "") != "bundled":
+        try:
+            return chromium.launch(channel="chrome", args=args)
+        except Exception:  # noqa: BLE001  (no Chrome here, or one Playwright cannot drive)
+            pass
+    return chromium.launch(args=args)
 
 def serve(folder: Path) -> tuple[socketserver.TCPServer, int]:
     """Serve the site on a free local port, quietly, in a background thread."""
@@ -234,13 +246,14 @@ def check_jarvis_lines(b: Browser) -> str:
     if not (b.site / "jarvis_by_commit.json").is_file():
         return "skipped: no jarvis_by_commit.json (it is made when the site is built on main)"
     b.page.wait_for_selector("#jarvis-toggle", timeout=20000)
+    assert not any(n.endswith("(Jarvis)") for n, _ in b.hplot_names()), f"Jarvis should be off at first: {b.hplot_names()}"
+    b.page.click("#jarvis-toggle")
+    b.page.wait_for_function("document.getElementById('hplot').data.some(t => (t.name || '').endsWith('(Jarvis)'))", timeout=10000)
     dashed = [n for n, dash in b.hplot_names() if n.endswith("(Jarvis)") and dash == "dash"]
     assert dashed, f"no dashed Jarvis line on the chart: {b.hplot_names()}"
     b.shot("history_jarvis")
     b.page.click("#jarvis-toggle")
     b.page.wait_for_function("!document.getElementById('hplot').data.some(t => (t.name || '').endsWith('(Jarvis)'))", timeout=10000)
-    b.page.click("#jarvis-toggle")
-    b.page.wait_for_function("document.getElementById('hplot').data.some(t => (t.name || '').endsWith('(Jarvis)'))", timeout=10000)
     return f"{len(dashed)} dashed, toggle works"
 
 
@@ -449,7 +462,7 @@ def run(site: Path, args: argparse.Namespace) -> int:
     report = Report()
     print(f"browser test: {site}")
     with sync_playwright() as p:
-        browser = p.chromium.launch(args=BROWSER_ARGS)
+        browser = launch_browser(p.chromium, BROWSER_ARGS)
         page = browser.new_page(viewport={"width": 1400, "height": 900}, color_scheme="dark")
         if args.plotly:  # for a computer that cannot reach the internet: the same library from a file
             page.route("https://cdn.plot.ly/**", lambda r: r.fulfill(body=Path(args.plotly).read_bytes(), content_type="application/javascript"))
@@ -457,7 +470,7 @@ def run(site: Path, args: argparse.Namespace) -> int:
             page.route("https://cdnjs.cloudflare.com/**", lambda r: r.fulfill(body=Path(args.three).read_bytes(), content_type="application/javascript"))
         b = Browser(page, f"http://127.0.0.1:{port}", site, shots)
         report.check("History tab draws its chart and has every tab", "history", lambda: check_history(b))
-        report.check("dashed Jarvis lines, and the button that turns them off", "jarvis", lambda: check_jarvis_lines(b))
+        report.check("dashed Jarvis lines, and the button that turns them on and off", "jarvis", lambda: check_jarvis_lines(b))
         report.check("Predictions tab opens inside the page with its tables and chart", "predictions", lambda: check_predictions(b, require))
         report.check("units chosen in the page reach the Predictions tab", "predictions", lambda: check_units_reach_predictions(b))
         report.check("Vision tab draws the 3D scene", "vision", lambda: check_vision(b, require))

@@ -43,7 +43,7 @@ def _texts(build: dict) -> str:
 def test_a_clean_repository_has_no_notices():
     with tempfile.TemporaryDirectory() as tmp:
         build = _plan(_repo(Path(tmp)))
-        assert build["files_used"]["notices"] == [] and build["note"] == "same as the History tab"
+        assert build["files_used"]["notices"] == [] and build["note"] == "pinned: the History tab's motor"
 
 
 def test_a_renamed_design_and_a_moved_motor_folder_are_followed():

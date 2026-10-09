@@ -173,6 +173,9 @@ def resolve_motor(
 ) -> tuple[Resolution | None, str]:
     """The motor curve to fly, and a short text for the page's motor note. None when there is none at all."""
     if "motor" in spec:  # one motor named in the config beats everything else
+        if mode == "newest":
+            notes.add("warn", f"motor_mode is 'newest', but the config names one motor ('{spec['motor']}'), so that file is "
+                              "flown and newer curves are not. Remove 'motor' from whatif_config.json to fly the newest.")
         found = resolve_file(repo, base, spec["motor"], "motor")
         if found:
             return found, "set in the config" if not found.auto else found.how
@@ -195,7 +198,7 @@ def resolve_motor(
             if wanted.auto:
                 notes.add("warn", f"The History tab's motor was renamed: sim_config.json still says '{history_file.name}', "
                                   f"the file is now '{wanted.path.name}'. Change default_motor there.")
-            return wanted, "same as the History tab" if not wanted.auto else wanted.how
+            return wanted, "pinned: the History tab's motor" if not wanted.auto else wanted.how
         if history_file is not None:
             notes.add("warn", f"The History tab's motor ({history_file.name}) is gone and git has no record of it "
                               "moving, so the newest motor curve in the folder is used instead. That can change the "

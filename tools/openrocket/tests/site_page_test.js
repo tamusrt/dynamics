@@ -202,9 +202,25 @@ test('the URL hash round-trips the whole view', () => {
   run({ tab: 'flight', fx: 'time', fy: 'altitude,mass:r,thrust_force:r', apo: '0', prev: '1', units: 'imperial', stab: 'pct', sel: enc([A]) });
   const p = new URLSearchParams(hash.slice(1));
   assert.strictEqual(p.get('fy'), 'altitude,mass:r,thrust_force:r'); assert.strictEqual(p.get('apo'), '0'); assert.strictEqual(p.get('prev'), '1');
-  assert.strictEqual(p.get('units'), 'imperial'); assert.strictEqual(p.get('stab'), 'pct'); assert.strictEqual(decodeURIComponent(p.get('sel')), A, 'selection is encoded once more inside the hash');
+  const again = hash; run(Object.fromEntries(new URLSearchParams(hash.slice(1)))); assert.strictEqual(hash, again, 'the short link opens the same view');
+  assert.strictEqual(P.state.units, 'imperial'); assert.strictEqual(P.state.stab, 'pct'); assert.deepStrictEqual([...P.state.sel], [A]);
   run({ tab: 'flight', fx: 'time', fy: 'velocity_total', fy2: 'mach_number', apo: '1', sel: enc([A]) });
   assert.deepStrictEqual(P.state.fys, [{ key: 'velocity_total', side: 'l' }, { key: 'mach_number', side: 'r' }], 'old fy2 links still work');
+});
+test('links are short: a code per simulation, defaults left out, old links still open', () => {
+  run({ tab: 'history', sel: enc([A, B]) });   // an old link: full names, encoded
+  assert.deepStrictEqual([...P.state.sel].sort(), [A, B].sort(), 'old links still select their simulations');
+  const p = new URLSearchParams(hash.slice(1)), codes = p.get('sel').split(',');
+  assert.strictEqual(codes.length, 2); assert(codes.every(c => /^[0-9a-z]{3,7}$/.test(c)), p.get('sel'));
+  assert(!/stab=|metric=|view=|%/.test(hash), 'defaults and full names are left out: ' + hash);
+  assert(hash.length < 40, hash);
+  run(Object.fromEntries(p)); assert.deepStrictEqual([...P.state.sel].sort(), [A, B].sort(), 'the short link selects the same simulations');
+  const full = id => { let h = 0x811c9dc5; for (let i = 0; i < id.length; i++) { h ^= id.charCodeAt(i); h = Math.imul(h, 0x01000193) >>> 0; } return h.toString(36).padStart(7, '0'); };
+  run({ tab: 'history', sel: full(A) }); assert.deepStrictEqual([...P.state.sel], [A], 'a longer code (written when more designs existed) still works');
+  run({ tab: 'history', sel: enc([A, A2]) });   // the first design, the default selection, is not written at all
+  if (P.state.sel.size === byFile[files[0]].length) assert(!/sel=/.test(hash), hash);
+  run({ tab: 'history', metric: 'max_mach', view: 'dline', units: 'imperial', sel: enc([B]) });
+  const q = new URLSearchParams(hash.slice(1)); assert.strictEqual(q.get('metric'), 'max_mach'); assert.strictEqual(q.get('view'), 'dline');
 });
 test('presets set X, the Y list and the window; the active one is highlighted', () => {
   run({ tab: 'flight', fx: 'time', fy: 'thrust_force,mass:r', apo: '1', sel: enc([A]) });
@@ -289,7 +305,7 @@ const jarvisFor = (id, scale, only) => {
 };
 const jarvisRows = (id, scale) => rowsOf(id).filter(r => r.sha && r.m.apogee != null);
 test('Jarvis is a dashed line next to OpenRocket, in display units, with OpenRocket in the hover', () => {
-  run({ tab: 'history', metric: 'apogee', view: 'abs', units: 'imperial', sel: enc([A]) });
+  run({ tab: 'history', jarvis: '1', metric: 'apogee', view: 'abs', units: 'imperial', sel: enc([A]) });
   P.setJarvis(jarvisFor(A, 1.1));
   const c = last(), f = specOf('apogee').units.imperial.factor, rows = jarvisRows(A);
   assert.strictEqual(c.traces.length, 2, 'OpenRocket line and Jarvis line');
@@ -301,7 +317,7 @@ test('Jarvis is a dashed line next to OpenRocket, in display units, with OpenRoc
   assert(jT.customdata.every(d => d.sha), 'a Jarvis point opens its commit too');
 });
 test('Jarvis follows the metric and the delta view', () => {
-  run({ tab: 'history', metric: 'apogee', view: 'dline', units: 'metric', sel: enc([A]) });
+  run({ tab: 'history', jarvis: '1', metric: 'apogee', view: 'dline', units: 'metric', sel: enc([A]) });
   P.setJarvis(jarvisFor(A, 0.9));
   const jT = last().traces[1], rows = jarvisRows(A);
   assert.strictEqual(jT.y[0], 0); rows.slice(1).forEach((r, i) => assert(close(jT.y[i + 1], (r.m.apogee - rows[i].m.apogee) * 0.9, 1e-9)));
@@ -310,31 +326,52 @@ test('Jarvis follows the metric and the delta view', () => {
   P.state.view = 'abs'; P.update();
   assert(last().traces[1].y.every(v => close(v, specOf('max_mach').units.metric.factor * 0.5, 1e-9)));
 });
-test('the toggle hides the dashed lines and the choice travels in the URL', () => {
-  run({ tab: 'history', metric: 'apogee', view: 'abs', sel: enc([A]) });
+test('Jarvis is off by default, the toggle shows and hides the dashed lines, the choice travels in the URL', () => {
+  run({ tab: 'history', jarvis: '1', metric: 'apogee', view: 'abs', sel: enc([A]) });
   P.setJarvis(jarvisFor(A, 1.1));
   const btn = () => els.metrics.children.find(b => b.id === 'jarvis-toggle');
   assert(btn() && btn().className === 'on'); assert.strictEqual(els.jarvisnote.hidden, false);
   assert(els.jarvisnote.textContent.includes('Dashed lines are Jarvis') && els.jarvisnote.textContent.includes('IGNIS_2027.rse') && els.jarvisnote.textContent.includes('2 older versions'), els.jarvisnote.textContent);
-  assert(!/jarvis=/.test(hash), hash);
+  assert(/jarvis=1/.test(hash), hash);
   btn().onclick();
-  assert.strictEqual(last().traces.length, 1); assert(/jarvis=0/.test(hash), hash); assert.strictEqual(btn().className, ''); assert.strictEqual(els.jarvisnote.hidden, true);
-  run({ tab: 'history', metric: 'apogee', view: 'abs', jarvis: '0', sel: enc([A]) });
+  assert.strictEqual(last().traces.length, 1); assert(!/jarvis=/.test(hash), hash); assert.strictEqual(btn().className, ''); assert.strictEqual(els.jarvisnote.hidden, true);
+  run({ tab: 'history', metric: 'apogee', view: 'abs', sel: enc([A]) });
   P.setJarvis(jarvisFor(A, 1.1));
-  assert.strictEqual(P.state.jarvis, false); assert.strictEqual(last().traces.length, 1);
+  assert.strictEqual(P.state.jarvis, false, 'Jarvis is off by default'); assert.strictEqual(last().traces.length, 1);
+  assert(els.metrics.children.some(b => b.id === 'jarvis-toggle' && b.className === ''), 'its button is there to turn it on');
+  run({ tab: 'history', metric: 'apogee', view: 'abs', jarvis: '0', sel: enc([A]) });   // old links
+  P.setJarvis(jarvisFor(A, 1.1)); assert.strictEqual(P.state.jarvis, false);
+});
+test('the OpenRocket toggle hides the solid lines, leaving Jarvis, and the choice travels in the URL', () => {
+  run({ tab: 'history', jarvis: '1', metric: 'apogee', view: 'abs', sel: enc([A]) });
+  P.setJarvis(jarvisFor(A, 1.1));
+  const btn = id => els.metrics.children.find(b => b.id === id);
+  assert(btn('openrocket-toggle') && btn('openrocket-toggle').className === 'on'); assert(!/(^|&)or=/.test(hash), hash);
+  btn('openrocket-toggle').onclick();
+  assert.strictEqual(last().traces.length, 1); assert(last().traces[0].name.endsWith('(Jarvis)'), last().traces[0].name);
+  assert(/(^|&)or=0/.test(hash), hash); assert.strictEqual(btn('openrocket-toggle').className, '');
+  btn('jarvis-toggle').onclick();   // both off: an empty chart that says how to get the lines back
+  assert.strictEqual(els.empty.hidden, false); assert(els.empty.textContent.includes('both hidden'), els.empty.textContent);
+  run({ tab: 'history', jarvis: '1', metric: 'apogee', view: 'abs', or: '0', sel: enc([A]) });
+  assert.strictEqual(P.state.openrocket, false);
+  assert.strictEqual(last().traces.length, 1, 'without Jarvis numbers there is no toggle, so OpenRocket stays on');
+  P.setJarvis(jarvisFor(A, 1.1));
+  assert.strictEqual(last().traces.length, 1); assert(last().traces[0].name.endsWith('(Jarvis)'));
+  P.state.view = 'dbar'; P.update();   // no Jarvis in the bars, so OpenRocket's bars are always drawn
+  assert(last().traces.length === 1 && last().traces[0].type === 'bar');
 });
 test('Jarvis is left out of the bars, and for designs it has no numbers for', () => {
-  run({ tab: 'history', metric: 'apogee', view: 'dbar', sel: enc([A]) });
+  run({ tab: 'history', jarvis: '1', metric: 'apogee', view: 'dbar', sel: enc([A]) });
   P.setJarvis(jarvisFor(A, 1.1));
   assert(last().traces.every(t => t.type === 'bar')); assert.strictEqual(last().traces.length, 1);
   assert(!els.metrics.children.some(b => b.id === 'jarvis-toggle') && els.jarvisnote.hidden === true);
-  run({ tab: 'history', metric: 'apogee', view: 'abs', sel: enc([A, B]) });
+  run({ tab: 'history', jarvis: '1', metric: 'apogee', view: 'abs', sel: enc([A, B]) });
   P.setJarvis(jarvisFor(A, 1.1));
   assert.strictEqual(last().traces.length, 3, 'A: OpenRocket and Jarvis, B: OpenRocket only');
   assert.deepStrictEqual(last().traces.filter(t => t.name.includes('Jarvis')).length, 1);
 });
 test('a Jarvis file that is missing, empty or odd changes nothing', () => {
-  run({ tab: 'history', metric: 'apogee', view: 'abs', sel: enc([A]) });
+  run({ tab: 'history', jarvis: '1', metric: 'apogee', view: 'abs', sel: enc([A]) });
   for (const bad of [null, {}, { designs: {} }, { designs: { [A.split('|')[0]]: {} } }, { designs: { [A.split('|')[0]]: { sims: { nothing: {} } } } }]) {
     P.setJarvis(bad); assert.strictEqual(last().traces.length, 1);
     assert(!els.metrics.children.some(b => b.id === 'jarvis-toggle'), 'no toggle without Jarvis numbers');
@@ -342,7 +379,7 @@ test('a Jarvis file that is missing, empty or odd changes nothing', () => {
 });
 test('Jarvis points exist only for the commits it flew', () => {
   const shas = rowsOf(A).filter(r => r.sha && r.m.apogee != null).map(r => r.sha);
-  run({ tab: 'history', metric: 'apogee', view: 'abs', sel: enc([A]) });
+  run({ tab: 'history', jarvis: '1', metric: 'apogee', view: 'abs', sel: enc([A]) });
   P.setJarvis(jarvisFor(A, 1.1, shas.slice(0, 1)));
   const jT = last().traces[1]; assert.strictEqual(jT.y.length, 1); assert.strictEqual(jT.customdata[0].sha, shas[0]);
 });

@@ -8,7 +8,7 @@
 			auto-calc-mass="0"
 			avgThrust="2177.442027"
 			burn-time="17.100000"
-			code="ENGINE-2027-python"
+			code="ENGINE-2027-python-minThrust"
 			delays="0"
 			dia="152.400000"
 			exitDia="73.660000"
@@ -20,7 +20,7 @@
 			propWt="22135.310000"
 			throatDia="38.303200">
 			<comments>
-				ENGINE-2027-python
+				ENGINE-2027-python-minThrust
 			</comments>
 			<data>
 		<eng-data cg="1051.244406" f="0.000000" m="42725.413000" t="0.000000"/>

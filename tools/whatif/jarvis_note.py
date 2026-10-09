@@ -137,6 +137,19 @@ def note(data: dict, live_url: str, flightsim: str, picture: bool = False, stamp
             "warnings": len(warn), "markdown": markdown}
 
 
+def rolled_back(site: Path) -> str | None:
+    """What went wrong when this push's Predictions or Vision were replaced by the last good ones (site_status.py writes
+    build_status.json), else None. The page then holds the OLD flight, so its numbers must not be reported as new."""
+    try:
+        status = json.loads((site / "build_status.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    for problem in status.get("problems", []):
+        if problem.get("area") in ("predictions", "vision", "build") and problem.get("shown") == "last_good":
+            return str(problem.get("message", "")).strip() or "the new Predictions page could not be made"
+    return None
+
+
 def main() -> None:
     p = argparse.ArgumentParser()
     p.add_argument("--site", default="site")
@@ -146,6 +159,18 @@ def main() -> None:
     p.add_argument("--picture", action="store_true", help="the VISION picture was taken (site/predictions/vision.png)")
     p.add_argument("--stamp", default="", help="added to the picture's address so Discord and GitHub fetch the new one")
     a = p.parse_args()
+    why = rolled_back(Path(a.site))
+    if why:  # say so instead of reporting the old page's numbers as this push's
+        live = a.live_url.rstrip("/")
+        text = (f"**JARVIS simulation** · **[Open VISION]({live}/#tab=vision)**\n"
+                f"🛑 **This push's Predictions and VISION could not be made**, so the site still shows the last good ones. {why}\n"
+                f"No new apogees to report.\n")
+        out = Path(a.out)
+        out.write_text(text, encoding="utf-8")
+        out.with_suffix(".json").write_text(json.dumps({
+            "title": "JARVIS simulation", "url": f"{live}/#tab=vision", "warnings": 1,
+            "description": text.split("\n", 1)[1]}, ensure_ascii=False), encoding="utf-8")
+        return
     data = read_data(Path(a.site) / "predictions" / "index.html")
     if data and data.get("sixdof"):
         msg = note(data, a.live_url, a.flightsim, a.picture, a.stamp)
