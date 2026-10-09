@@ -308,33 +308,39 @@ class N2OSaturation:
     and `t_sat(P)` for the equilibrium liquid temperature.
     """
 
+    _P_LO = None
+    _P_HI = None
 
     @classmethod
-    def vf_vg(cls, pressure_pa: float) -> tuple[float, float]:
-        """(v_f, v_g) in m^3/kg at the given saturation pressure (Pa)."""
-        return (1.0 / PropsSI("D", "P", pressure_pa, "Q", 0, "N2O"),
-                1.0 / PropsSI("D", "P", pressure_pa, "Q", 1, "N2O"))
-
+    def _clamp_p(cls, p) -> float:
+        """Keep pressure inside the N2O liquid-vapor dome (triple point .. critical point)."""
+        if cls._P_LO is None:
+            cls._P_LO = PropsSI("ptriple", "N2O") * 1.001
+            cls._P_HI = PropsSI("pcrit", "N2O") * 0.999
+        p = float(p)
+        if not np.isfinite(p):
+            return float("nan")
+        return min(max(p, cls._P_LO), cls._P_HI)
 
     @classmethod
-    def vg(cls, pressure_pa: float) -> float:
-        """Saturated-vapor specific volume (m^3/kg) at pressure -- used for the ullage."""
-        return 1.0 / PropsSI("D", "P", pressure_pa, "Q", 1, "N2O")
+    def vf_vg(cls, pressure_pa):
+        p = cls._clamp_p(pressure_pa)
+        return (1.0 / PropsSI("D", "P", p, "Q", 0, "N2O"),
+                1.0 / PropsSI("D", "P", p, "Q", 1, "N2O"))
 
-
+    @classmethod
+    def vg(cls, pressure_pa):
+        p = cls._clamp_p(pressure_pa)
+        return 1.0 / PropsSI("D", "P", p, "Q", 1, "N2O")
+    
     @classmethod
     def p_sat(cls, temperature_k: float) -> float:
         """Saturation pressure (Pa) at temperature (K)."""
         return PropsSI("P", "T", temperature_k, "Q", 0, "N2O")
-
+    
     @classmethod
-    def t_sat(cls, pressure_pa: float) -> float:
-        """Saturation temperature (K) at pressure (Pa), clamped to the N2O liquid-vapor range."""
-        p_lo = PropsSI("ptriple", "N2O") * 1.001
-        p_hi = PropsSI("pcrit", "N2O") * 0.999
-        if not np.isfinite(pressure_pa):
-            return float("nan")
-        p = min(max(float(pressure_pa), p_lo), p_hi)
+    def t_sat(cls, pressure_pa):
+        p = cls._clamp_p(pressure_pa)
         return PropsSI("T", "P", p, "Q", 0, "N2O")
 
     @classmethod
@@ -979,8 +985,29 @@ def build_engine(
                        p_tank_psi=pressure_psi,      # P1 = injector-side pressure
                        p_chamber_psi=chamber_pressure_psi,
                        liquid_temp_K=T_tank, strict=strict)
+    fu = fuel_mdot_array(t, ox, cfg["grain"], flow, ignition_idx, burnout_idx, thrust_lbf)
+
+    if pressure_psi is None:
+        T_K = (float(tk["liquid_temp_F"]) - 32.0) * 5.0 / 9.0 + 273.15
+        p_psi = N2OSaturation.p_sat(T_K) / PSI_TO_PA
+        warnings.warn(f"no pressure_psi given; assuming constant saturation pressure {p_psi:.0f} psi.")
+        pressure_psi = np.full_like(t, p_psi)
+    # calling physical components  
+    tank = OxidizerTank(
+        casing=EngineComponent("ox_tank", tk["dry_mass"], tk["offset"], tk["length"], tk.get("radius")),
+        volume_in3=tk["volume_in3"], initial_ox_mass_lbm=tk["initial_ox_mass_lbm"],
+        liquid_temp_F=tk.get("liquid_temp_F"), times_s=t, pressure_psi=pressure_psi, mdot_lbm_s=ox,
+        final_mass_lbm=flow.get("ox_final_mass_lbm"), liquid_end=liquid_end, strict=strict)
+    grain = FuelGrain(
+        casing=EngineComponent("grain", gr["dry_mass"], gr["offset"], gr["length"], gr.get("radius")),
+        outer_radius_in=gr["outer_radius_in"], initial_port_radius_in=gr["initial_port_radius_in"],
+        length_in=gr["length_in"], fuel_density_lbm_in3=gr["fuel_density_lbm_in3"],
+        times_s=t, mdot_lbm_s=fu, strict=strict)
+    plumbing = EngineComponent("plumbing", pl["dry_mass"], pl["offset"], pl["length"])
+    eng_cfg = cfg["engine"]
     return Engine(tank=tank, plumbing=plumbing, grain=grain, length_in=eng_cfg["length_in"],
                   offset_in=eng_cfg["offset_in"], strict=strict)
+
 
 # old version as comparison for results 
 @dataclass
