@@ -30,11 +30,13 @@ import pandas as pd
 from CoolProp.CoolProp import PropsSI
 
 
+
 # conversions (im not dealing with pints rn)
 IN_TO_M = 0.0254
 IN3_TO_M3 = IN_TO_M ** 3
 LBM_TO_KG = 0.45359237
 PSI_TO_PA = 6894.757293168
+P_ATM_PSI = 14.696
 
 # Pressure window handed to CoolProp's saturation calls (cutting out pre-test zero readings and spikes).
 P_MIN_PA = 1.5e5
@@ -84,7 +86,6 @@ def _resolve(spec: TimeSeries, times: np.ndarray, t_arr: np.ndarray) -> Optional
 
 def _is_scalar(t) -> bool:
     return np.isscalar(t) or np.asarray(t).ndim == 0
-
 # NEED TO FIX IN THE LOAD_DATA FILE: SUPPOSED TO CORRECT THE CHANGE BETWEEN PRESSURE VALUES AND 
 def sensortime_mdot(t_sensor_s, t_model_s, mdot_model, ignition_idx: float = 0.0) -> np.ndarray:
     """
@@ -318,7 +319,7 @@ class N2OSaturation:
             cls._P_LO = PropsSI("ptriple", "N2O") * 1.001
             cls._P_HI = PropsSI("pcrit", "N2O") * 0.999
         p = float(p)
-        if not np.isfinite(p):
+        if not np.isfinite(p):   
             return float("nan")
         return min(max(p, cls._P_LO), cls._P_HI)
 
@@ -955,6 +956,7 @@ def build_engine(
     t = np.asarray(times_s, dtype=float)
     
     flow = dict(cfg.get("flow") or {})
+    
     if not flow: # if there is no sub dictionary call as a constant under the flow
         flow = {"ox_method": "constant", "ox_mdot": cfg["ox_mdot"],
                 "fuel_method": "constant", "fuel_mdot": cfg["fuel_mdot"]}
@@ -1008,81 +1010,6 @@ def build_engine(
     return Engine(tank=tank, plumbing=plumbing, grain=grain, length_in=eng_cfg["length_in"],
                   offset_in=eng_cfg["offset_in"], strict=strict)
 
-
-# old version as comparison for results 
-@dataclass
-class EngineComponent2:
-    name: str
-    dry_mass: float  # lbs
-    offset: float    # in
-    length: float    # in
-    prop_mass: float = 0.0   # to hold depletion (plumbing has none)
-    radius: float = None
-    volume: float = None
-    mass_flow_rate: Optional[float] = None
-
-    def cg_offset(self) -> float:
-        return self.offset + self.length / 2
-@dataclass
-class Engine2:
-    tank: EngineComponent2     # oxidizer
-    plumbing: EngineComponent2  # injector, valves, lines
-    grain: EngineComponent2    # fuel grain + casing
-    length: float  # inches
-    offset: float  # inches
-    thrusts: np.ndarray = None
-    times: np.ndarray = None
-    pressure_tank: np.ndarray = None
-    pressure_grain: np.ndarray = None
-    mass_flow_rate: Optional[float] = None
-
-    def __post_init__(self):
-        self._curve_ready = False
-        if self.thrusts is not None and self.times is not None:
-            self._process_curve()
-
-    def set_curve(self, thrusts, times):
-        self.thrusts = thrusts
-        self.times = times
-        self._process_curve()
-
-    def _process_curve(self):
-        assert len(self.thrusts) == len(self.times)
-        cumulative = np.zeros(len(self.times))
-        cumulative[1:] = np.cumsum(0.5 * (self.thrusts[:-1] + self.thrusts[1:]) * np.diff(self.times))
-        self.total_impulse = cumulative[-1]
-        self._frac_expended = cumulative / self.total_impulse
-        self.burn_time = self.times[-1]
-        self._curve_ready = True
-
-    def _check_ready(self):
-        if not self._curve_ready:
-            raise RuntimeError("Thrust curve not set -- call set_curve(thrusts, times) first")
-
-    def _frac_at(self, t):
-        t = np.asarray(t, dtype=float)
-        frac = np.interp(t, self.times, self._frac_expended, left=0.0, right=1.0)
-        return np.where(t >= self.burn_time, 1.0, frac)
-
-    def mass_at(self, t):
-        self._check_ready()
-        frac = self._frac_at(t)
-        return (self.tank.dry_mass + self.tank.prop_mass * (1 - frac)
-                + self.grain.dry_mass + self.grain.prop_mass * (1 - frac)
-                + self.plumbing.dry_mass)
-
-    def cg_at(self, t):
-        self._check_ready()
-        frac = self._frac_at(t)
-        tank_mass = self.tank.dry_mass + self.tank.prop_mass * (1 - frac)
-        grain_mass = self.grain.dry_mass + self.grain.prop_mass * (1 - frac)
-        plumbing_mass = self.plumbing.dry_mass
-        total = tank_mass + grain_mass + plumbing_mass
-        moment = (tank_mass * self.tank.cg_offset()
-                  + grain_mass * self.grain.cg_offset()
-                  + plumbing_mass * self.plumbing.cg_offset())
-        return self.offset + moment / total
-
 sol_ignis ={
     "ox_mdot": 1.75,
     "fuel_mdot": 1.10,
@@ -1110,13 +1037,16 @@ sol_ignis ={
     }
 if __name__ == "__main__":
 
-    t = np.linspace(0, 8, 161)
-    burn = t < 7.5
-    ox_mdot = np.where(burn, 0.95 - 0.04 * t, 0.0)                # lbm/s, decaying
-    fuel_mdot = np.where(burn, 0.19 + 0.004 * t, 0.0)             # lbm/s, O/F drifts
-    ox_pressure = np.clip(750 - 40 * t + 2 * t ** 2, 300, None)   # psi
-
     sets = pd.read_csv('interp_set-5 full data - set-5 full data.csv', usecols=[0,2,4])
+    sets = sets.sort_values('time').drop_duplicates('time', keep='first').reset_index(drop=True)
+    p = np.asarray(sets['run_tank_pressure'], float)
+    print(np.isnan(p).sum(), np.nanmin(p), np.nanmax(p))
+    print((p < 12.7).sum(), "samples below the triple point")
+    #Ssets['time'], sets['run_tank_pressure'], sets['chamber_pressure'] = sets['time']*P_ATM_PSI, sets['run_tank_pressure']*P_ATM_PSI, sets['chamber_pressure']*P_ATM_PSI
     # --- 2. hardware
     engine = build_engine(sol_ignis, sets['time'], pressure_psi=sets['run_tank_pressure'], chamber_pressure_psi=sets['chamber_pressure'])
-    print(engine.cg_at(sets['time']))
+    arr = np.column_stack([sets['time'], engine.cg_at(sets['time'])])
+    df = pd.DataFrame(arr, columns=["time","cg"])
+
+
+    df.to_csv("output.csv", index=False)

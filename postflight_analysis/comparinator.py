@@ -118,7 +118,8 @@ ROCKET_ENGINES = {
     "morpheus": (sol_ignis, "hybrid"),  
     "sol invictus": (sol_ignis, "hybrid"), 
     "morbin' time": (O3400, "solid"),
-    "mikeys": (lumina, "liquid")
+    "mikeys": (lumina, "liquid"),
+    "l2d2": (O3400, "solid"),
 }
 
 BASE_DIR = r"G:\Shared drives\TAMU-SRT\srt_general\9_flight_data"
@@ -300,29 +301,48 @@ def build_solid(values: dict, t: np.array, df):
     engine = seng.SolidMotor(grain, hardware, offset_in=0)
     return engine 
 
-def calculate(data_dict, cutoff_dict, rocket):
+def calculate(data_dict, cutoff_dict, rocket=None):
     calc_array = []
     calc = {}
     titles = [...]
-
+    print(data_dict)
     def find_bundle(substr):
-        matches = [v for k, v in data_dict.items() if substr in k]
-        if not matches:
-            raise KeyError(f"No dataset found containing '{substr}' in its key")
-        return matches[0]
-    print("calculate")
-    print([k for k in data_dict.keys() if "accel" in k])
+        # prefer the alias group (set from the column headers), fall back to the key
+        for k, b in data_dict.items():
+            if getattr(b, "group", None) == substr:
+                return b
+        for k, b in data_dict.items():
+            if substr in k.lower():
+                return b
+        raise KeyError(f"No dataset found with group or key containing '{substr}'")
 
     accel_bundle = find_bundle("accel")
-    gyro_bundle = find_bundle("gyro")
-    thrust_bundle = find_bundle("thrust")
-    ras_bundle = find_bundle("ras")
-    ork_bundle = find_bundle("ork")
+    try:
+        gyro_bundle = find_bundle("gyro")
+        gyro_present = True
+    except:
+        print("no gyro data")
+        gyro_present = False
+    try:
+        thrust_bundle = find_bundle("thrust")
+        thrust_present = True
+    except:
+        print("no thrust data")
+        thrust_present = False
+    try:
+        ras_bundle = find_bundle("ras")
+        ras_present = True
+    except: 
+        print("no ras data")
+        ras_present = False
+        
+    try:
+        ork_bundle = find_bundle("ork")
+        ork_present = True
+    except:
+        print("no o")
+        ork_present = False
 
-    if accel_bundle.pre_launch is not None:
-        t_pre = accel_bundle.pre_launch.time.magnitude    # s, the negative times
-        v_pre = accel_bundle.pre_launch.v_up.magnitude    # ft/s
-        print(v_pre, len(v_pre))
     else:
         t_pre = v_pre = np.array([])
 
@@ -335,30 +355,32 @@ def calculate(data_dict, cutoff_dict, rocket):
     v_cr = accel_bundle.v_cr.magnitude                  # ft/s
     tilt = accel_bundle.tilt.magnitude                  # deg
 
-    gx_accel = gyro_bundle.gx_accel.magnitude           # g_0
-    gy_accel = gyro_bundle.gy_accel.magnitude           # g_0
-    gz_accel = gyro_bundle.gz_accel.magnitude           # g_0
-    gyro_y = gyro_bundle.gy.magnitude
+    if gyro_present:
+        gx_accel = gyro_bundle.gx_accel.magnitude           # g_0
+        gy_accel = gyro_bundle.gy_accel.magnitude           # g_0
+        gz_accel = gyro_bundle.gz_accel.magnitude           # g_0
+        gyro_y = gyro_bundle.gy.magnitude
 
-    spec_thrust = thrust_bundle.spec_thrust.magnitude   # N
+    if thrust_present:
+        spec_thrust = thrust_bundle.spec_thrust.magnitude   # N
 
-    thrust = ras_bundle.ras_thrust.magnitude            # lbf
-    weight = ras_bundle.weight.magnitude                # lbf
+    if ras_present:
+        thrust = ras_bundle.ras_thrust.magnitude            # lbf
+        weight = ras_bundle.weight.magnitude                # lbf
+    if ork_present:
+        ork_altitude = ork_bundle.ork_altitude.magnitude
+        ork_accel_total = ork_bundle.ork_accel_total.magnitude
+        ork_vel_total = ork_bundle.ork_vel_total.magnitude
+        ork_aoa = ork_bundle.ork_aoa.magnitude
+        ork_sm = ork_bundle.ork_sm.magnitude
+        ork_fd = ork_bundle.ork_fd.magnitude
+        ork_cd = ork_bundle.ork_cd.magnitude
+        ork_pressure = ork_bundle.ork_pressure.magnitude
+        ork_temperature = ork_bundle.ork_temperature.magnitude
 
-    ork_altitude = ork_bundle.ork_altitude.magnitude
-    ork_accel_total = ork_bundle.ork_accel_total.magnitude
-    ork_vel_total = ork_bundle.ork_vel_total.magnitude
-    ork_aoa = ork_bundle.ork_aoa.magnitude
-    ork_sm = ork_bundle.ork_sm.magnitude
-    ork_fd = ork_bundle.ork_fd.magnitude
-    ork_cd = ork_bundle.ork_cd.magnitude
-    ork_pressure = ork_bundle.ork_pressure.magnitude
-    ork_temperature = ork_bundle.ork_temperature.magnitude
 
     cutoff_dict["apogee"] = apogee = np.where(altitude >= max(altitude))[0][0]
-    cutoff_dict["coast"] = np.where(spec_thrust <= 5)[0][2]
-    print(cutoff_dict["coast"])
-    cutoff_dict["uppies"] = 0
+    if thrust_present: cutoff_dict["coast"] = np.where(spec_thrust <= 5)[0][2]
     theta = faa.theta(v_dr, v_cr)
 
     calc["time"] = time
@@ -368,44 +390,49 @@ def calculate(data_dict, cutoff_dict, rocket):
     calc["sound"], calc["vel_mach"] = faa.v_mach(temperature, calc["accel_v"])
     calc["density"] = faa.density(pressure, temperature)
     calc["dyn_pressure"] = faa.dynamic_pressure(calc["density"], calc["accel_v"])
-    calc["ork_density"] = faa.density(ork_pressure, ork_temperature)
-    calc["ork_dyn_pressure"] = faa.dynamic_pressure(calc["ork_density"], ork_vel_total)
+    #calc["ork_density"] = faa.density(ork_pressure, ork_temperature)
+    #calc["ork_dyn_pressure"] = faa.dynamic_pressure(calc["ork_density"], ork_vel_total)
     calc["ax"], calc["ay"], calc["az"], calc["accel_total"] = faa.acceleration(v_up=v_up, v_dr=v_dr, v_cr=v_cr, apogee=apogee, t=calc["time"],
     t_pre=t_pre, v_pre=v_pre, burnout_idx=cutoff_dict["coast"],)
-    calc["accel_gs"] = faa.magnitude(gx_accel, gy_accel, gz_accel)
-    calc["accel_fts2"] = calc["accel_gs"] * 32.2
+    #calc["accel_gs"] = faa.magnitude(gx_accel, gy_accel, gz_accel)
+    #calc["accel_fts2"] = calc["accel_gs"] * 32.2
     calc["density"] = faa.density(pressure, temperature)
-    calc["fdx"], calc["fdy"], calc["fdz"], calc["f_aero"] = faa.fd(thrust, tilt, theta, weight, calc["ax"], calc["ay"], calc["az"])
+
     # drag is the component along the relative wind
-    calc["fd"], calc["lift"] = faa.wind_axes(calc["fdx"], calc["fdy"], calc["fdz"], v_cr, v_dr, v_up)
-    calc["cd"] = faa.cd(calc["fd"], calc["density"], calc["accel_v"])
-    calc["fnx"], calc["fny"], calc["fnz"], calc["fn"] = faa.fn1(tilt, theta, weight, calc["ax"], calc["ay"], calc["az"])
-    calc["cn"], calc["cna"] = faa.cna(calc["fn"], calc["density"], calc["accel_v"], calc["aoa"])
+    if ras_present:
+        calc["fdx"], calc["fdy"], calc["fdz"], calc["f_aero"] = faa.fd(spec_thrust, tilt, theta, weight, calc["ax"], calc["ay"], calc["az"])
+        calc["fd"], calc["lift"] = faa.wind_axes(calc["fdx"], calc["fdy"], calc["fdz"], v_cr, v_dr, v_up)
+        calc["cd"] = faa.cd(calc["fd"], calc["density"], calc["accel_v"])
+        calc["fnx"], calc["fny"], calc["fnz"], calc["fn"] = faa.fn1(tilt, theta, weight, calc["ax"], calc["ay"], calc["az"])
+        calc["cn"], calc["cna"] = faa.cna(calc["fn"], calc["density"], calc["accel_v"], calc["aoa"])
+    else: 
+        print("force values skipped")
     # fd() derived from this same curve returns that curve. the two independent
     # sources are the ras condition file and the motor spec curve.
     calc["thrust_ras"] = thrust
     calc["thrust_spec"] = spec_thrust
     calc["altitude"] = altitude
-    #print(rocket.engine)          # is it None?
-    #print(rocket.mass_at(0), rocket.mass_at(rocket.engine.grain.times_s[-1] if rocket.engine else None))
+    
+    if (rocket != None):
+        print(rocket.engine)          # is it None?
+        print(rocket.mass_at(0), rocket.mass_at(rocket.engine.grain.times_s[-1] if rocket.engine else None))
 
-    calc["cgs"] = geo.total_cg(rocket, calc["time"])
-    print("****")
-    print(calc["cgs"])
-    print("***")
-    #print('time shape:', calc["time"].shape, 'cgs shape:', calc["cgs"].shape)
-    calc["iyy"] = geo.total_iyy(rocket, calc["time"], calc["cgs"])
-    calc["sm"] = faa.stability(time, calc["iyy"], gyro_y, calc["fn"])
+        calc["cgs"] = geo.total_cg(rocket, calc["time"])
+        calc["iyy"] = geo.total_iyy(rocket, calc["time"], calc["cgs"])
+        if gyro_present:
+            calc["sm"] = faa.stability(time, calc["iyy"], gyro_y, calc["fn"])
 
-    #calc["sm2"] = faa.stability1(faa.frequency(calc["aoa"], sample_rate, calc["time"]), calc["iyy"], calc["accel_v"], calc["density"], calc["aoa"], calc["fn"])
-
-    calc["ork_altitude"] = ork_altitude
-    calc["ork_vel_total"] = ork_vel_total
-    calc["ork_accel_total"] = ork_accel_total
-    calc["ork_aoa"] = ork_aoa
-    calc["ork_fd"] = ork_fd
-    calc["ork_cd"] = ork_cd
-    calc["ork_sm"] = ork_sm
+    if ork_present:
+        calc["ork_altitude"] = ork_altitude
+        calc["ork_vel_total"] = ork_vel_total
+        calc["ork_accel_total"] = ork_accel_total
+        calc["ork_aoa"] = ork_aoa
+        calc["ork_fd"] = ork_fd
+        calc["ork_cd"] = ork_cd
+        calc["ork_sm"] = ork_sm
+    else:
+        print("skipping the ork")
+    
 
     df = pd.DataFrame.from_dict(calc)   
     df.to_csv(f"calc_data.csv", index=False)
@@ -813,9 +840,10 @@ def main():
 
     flight_dir = Path(BASE_DIR) / rocket_name / flight
     candidates = [f for f in flight_dir.iterdir() if f.name.lower().endswith('.xml')]
-
+    geometry_present = True
     if not candidates:
-        raise FileNotFoundError(f"No suitable XML files found in {flight_dir}")
+        #raise FileNotFoundError(f"No suitable XML files found in {flight_dir}")
+        geometry_present = False
     if len(candidates) > 1:
         raise ValueError(f"Multiple suitable XML files found in {flight_dir}: {candidates}")
     
@@ -855,9 +883,8 @@ def main():
         nonzero_idx = np.flatnonzero(np.asarray(spec_thrust.magnitude))
         burnout = nonzero_idx[-1] + 1 if nonzero_idx.size else len(spec_thrust)
         engine_used = build_solid(ROCKET_ENGINES[engine_key][0], accel_bundle['time'], thrust_bundle['spec_thrust'])
-
     rocket = geo.Rocket.from_file(candidates[0], engine=engine_used)
-    graph_values, cutoff_dict = calculate(interpolated_data, cutoff_dict, rocket)
+    graph_values, cutoff_dict = calculate(interpolated_data, cutoff_dict)
     graph2(graph_values, cutoff_dict)
 
 
