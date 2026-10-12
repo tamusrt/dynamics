@@ -1,0 +1,52 @@
+# ============================================================
+# ENGINE INFORMATION INPUT
+# ============================================================
+# Units:
+#   Engine/nozzle geometry: mm
+#   Component lengths: inches
+#   Component and propellant masses: kg
+#   CG/mass depletion stop time: seconds after thrust-curve start
+#
+# CG/mass burn time is independent of thrust-curve burn duration.
+# After this time, calculated engine mass and CG are held constant.
+# ============================================================
+
+# ENGINE IDENTITY
+engine_code = ENGINE-2027-python
+manufacturer_name = TAMUSRT
+motor_type = Hybrid
+motor_delay_setting = 0
+engine_comments = ENGINE-2027-python
+
+# ENGINE GEOMETRY (mm)
+engine_outer_diameter_mm = 152.4
+nozzle_throat_diameter_mm = 34.798
+nozzle_exit_diameter_mm = 73.66
+
+# CG / MASS DEPLETION
+cg_mass_burn_time_s = 10.0
+
+# OUTPUT LOCATION
+# Relative to the dynamics folder. Use / or \\ between folders.
+output_subfolder = aero_modeling/IREC_2027/2027_Thrust_Curves
+
+# Output filenames WITHOUT extensions. Extensions are added automatically.
+rse_output_filename = ENGINE-2027-python
+eng_output_filename = ENGINE-2027-python
+
+# ENGINE COMPONENTS
+# The top plumbing component is not included in this model.
+
+# Oxidizer tank
+oxidizer_tank_dry_mass_kg = 14.10672
+oxidizer_tank_length_in = 57.56
+initial_oxidizer_mass_kg = 18.1437
+
+# Middle plumbing
+middle_plumbing_mass_kg = 2.9
+middle_plumbing_length_in = 16.0
+
+# Combustion chamber
+combustion_chamber_dry_mass_kg = 3.583383
+combustion_chamber_length_in = 24.5
+initial_fuel_mass_kg = 3.99161
