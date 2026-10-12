@@ -866,7 +866,7 @@ def build_eng_text():
 # ============================================================
 
 RSE_OUTPUT_DIR = (
-    r"C:\Users\nagah\Desktop\SRT_GitHub"
+    r"C:\Users\derpy\OneDrive\Documents\SRT Folder\srt github local"
     r"\dynamics\aero_modeling\IREC_2027\2027_Thrust_Curves"
 )
 
