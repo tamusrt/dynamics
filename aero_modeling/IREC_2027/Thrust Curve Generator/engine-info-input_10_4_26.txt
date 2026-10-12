@@ -3,21 +3,21 @@
 # ============================================================
 
 # Custom time at which CG/mass depletion stops [s] (when liquid phase ends), engine geometry kept constant
-cg_mass_burn_time = 10.0
+cg_mass_burn_time = 7.75
 
 # RSE metadata
-rse_code = ENGINE-2027-python
+rse_code = Thrust-Trade-1
 rse_mfg = TAMUSRT
 rse_Type = Hybrid
 rse_delays = 0
 
 # Geometry [mm]
 rse_dia_mm = 152.4
-rse_throatDia_mm = 38.3032
+rse_throatDia_mm = 38.608
 rse_exitDia_mm = 73.66
 
 # RSE comments
-rse_comments = ENGINE-2027-python
+rse_comments = Thrust-Trade-1
 
 # ============================================================
 # COMPONENTS
