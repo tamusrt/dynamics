@@ -3,21 +3,21 @@
 # ============================================================
 
 # Custom time at which CG/mass depletion stops [s] (when liquid phase ends), engine geometry kept constant
-cg_mass_burn_time = 8.70
+cg_mass_burn_time = 13.35
 
 # RSE metadata
-rse_code = Thrust-Trade-4000
+rse_code = Thrust-Trade-3000
 rse_mfg = TAMUSRT
 rse_Type = Hybrid
 rse_delays = 0
 
 # Geometry [mm]
 rse_dia_mm = 152.4
-rse_throatDia_mm = 34.798
+rse_throatDia_mm = 32.512
 rse_exitDia_mm = 73.66
 
 # RSE comments
-rse_comments = Thrust-Trade-4000
+rse_comments = Thrust-Trade-3000
 
 # ============================================================
 # COMPONENTS
