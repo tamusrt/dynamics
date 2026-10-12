@@ -1,0 +1,5 @@
+; linear_regressive_4200N_peak - 36000 Ns over 9.0 s, idealized
+linear_regressive_42 152.4 2490.7 0 PROP_KG TOTAL_KG TAMUSRT
+   0.001 4200.00
+   8.999 3800.89
+   9.000 0.00
