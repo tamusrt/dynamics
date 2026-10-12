@@ -2,7 +2,7 @@
 # ENGINE INPUT FILE
 # ============================================================
 
-# Custom time at which CG/mass depletion stops [s]
+# Custom time at which CG/mass depletion stops [s] (when liquid phase ends), engine geometry kept constant
 cg_mass_burn_time = 10.0
 
 # RSE metadata
