@@ -29,8 +29,8 @@ nozzle_exit_diameter_mm = 73.66
 output_subfolder = aero_modeling/AIRMAIL/Thrust_Curves
 
 # Output filenames WITHOUT extensions. Extensions are added automatically.
-rse_output_filename = PER_MY_LAST_RSE
-eng_output_filename = PER_MY_LAST_ENG
+rse_output_filename = PER_MY_LAST
+eng_output_filename = PER_MY_LAST
 
 # ENGINE COMPONENTS
 # The top plumbing component is not included in this model.
