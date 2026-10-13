@@ -28,6 +28,9 @@
     "IREC_2027/OR/2027_OR.ork": {
       "default_motor": "IREC_2027/2027_Thrust_Curves/2027_v1.eng"
     },
+    "IREC_2027/OR/Daniel_Aluminum_Fin_OR.ork": {
+      "default_motor": "IREC_2027/2027_Thrust_Curves/2027_v1.eng"
+    },
     "IREC_2027/OR/Invictus_ReferenceOR.ork": {
       "default_motors": {
         "Ox Tank": "IREC_2027/2026_Curves_(OLD)/OXTank.eng",
