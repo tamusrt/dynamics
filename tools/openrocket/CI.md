@@ -12,6 +12,8 @@ Every push that changes an OpenRocket design under `aero_modeling/` gets simulat
 
 Files under `OLD/`, `PROGRESS REPORT*/` and anything else listed in `ignore` are skipped.
 
+On `main` the workflow has three jobs. `simulate` does the steps above and builds the History site, then posts the OpenRocket comment straight away, usually two to three minutes after the push. `site` starts from that site (handed over as the run's `history-site` artifact), flies the JARVIS predictions, VISION and EDITH, checks the site in a real browser and sends the JARVIS message; problems and notes from that build get a commit comment of their own. `deploy-pages` publishes after both, as before. Other branches run `simulate` and `page-test` only.
+
 ## Motors: the one thing you must configure
 
 An `.ork` only stores a *reference* to its motor (manufacturer, designation, digest). OpenRocket resolves that against its motor database, and headless there is only the commercial thrust-curve database bundled in the jar. A team-made motor (`IGNIS_2027.rse`, the Invictus injector curve) therefore loads as an empty motor and the flight goes to 0 m.
