@@ -39,9 +39,8 @@ def _repo(root: Path) -> None:
     (base / "R/Curves/m.rse").write_text(RSE, encoding="utf-8")
     (base / "R/JARVIS/r_aero.csv").write_text("Mach,Alpha\n", encoding="utf-8")
     (base / "R/RASA/r.CDX1").write_text("<x/>", encoding="utf-8")
-    (base / "R/RASA/res.json").write_text("{}", encoding="utf-8")
     (base / "whatif_config.json").write_text(json.dumps({"default": "A", "rockets": {"A": {
-        "ork": "R/OR/d.ork", "aero": "R/JARVIS/r_aero.csv", "rasaero": "R/RASA/r.CDX1", "rasaero_results": "R/RASA/res.json",
+        "ork": "R/OR/d.ork", "aero": "R/JARVIS/r_aero.csv", "rasaero": "R/RASA/r.CDX1",
         "motor_dir": "R/Curves", "sim": "average"}}}, indent=2), encoding="utf-8")
     (base / "sim_config.json").write_text(json.dumps({"files": {"R/OR/d.ork": {"default_motor": "R/Curves/m.rse"}}}, indent=2), encoding="utf-8")
     (root / ".gitignore").write_text("*.csv\n!aero_modeling/**/*_aero.csv\n", encoding="utf-8")

@@ -1448,8 +1448,9 @@ SITE_HTML = r"""<!doctype html>
   * { box-sizing:border-box; }
   html, body { height:100%; }
   body { margin:0; display:flex; flex-direction:column; overflow:hidden; background:var(--bg); color:var(--fg); font:14px/1.45 -apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif; }
-  .bigerror { flex:none; background:var(--errbg); color:#fff; padding:14px 20px 16px; border-bottom:4px solid var(--errline); }
+  .bigerror { flex:none; position:relative; background:var(--errbg); color:#fff; padding:14px 56px 16px 20px; border-bottom:4px solid var(--errline); }
   .bigerror[hidden] { display:none; }
+  .bigerror #be-close { position:absolute; top:8px; right:12px; border:0; background:transparent; color:#fff; font-size:30px; line-height:1; cursor:pointer; padding:0 6px; }
   .skipnote { flex:none; display:flex; gap:12px; align-items:flex-start; background:#fff4d6; color:#3d2e00; border-bottom:2px solid #d29922; padding:8px 16px; font-size:14px; }
   .skipnote[hidden] { display:none; }
   .skipnote .sn-text { flex:1; } .skipnote a { color:inherit; font-weight:600; }
@@ -1551,6 +1552,7 @@ SITE_HTML = r"""<!doctype html>
 </head>
 <body>
 <div class="bigerror" id="bigerror" role="alert" hidden>
+  <button type="button" id="be-close" aria-label="Hide this error" title="Hide this error">&times;</button>
   <div><span class="be-title">Error</span><span class="be-sub" id="be-sub"></span></div>
   <ul id="be-list"></ul>
   <a id="be-link" target="_blank" rel="noopener" hidden>See what went wrong in the build</a>
@@ -2194,9 +2196,15 @@ function errorLines() {
   for (const [tab, text] of Object.entries(FRAME_ERRORS)) if (!out.some(o => o.area === tab || o.area === 'build')) out.push({ area: tab, text: AREAS[tab] + ': ' + text });
   return out;
 }
+// The x hides the bar for exactly these problems in this browser; a different problem (or a later broken push) shows it again.
+const BIGERROR_KEY = 'srt.bigerror.hidden';
+function bigErrorSignature(items) { return (BUILD && BUILD.commit ? String(BUILD.commit) : '') + '|' + items.map(o => o.text).join('\n'); }
+function bigErrorDismissed(sig) { try { return localStorage.getItem(BIGERROR_KEY) === sig; } catch (e) { return false; } }
 function renderBigError() {
   const box = document.getElementById('bigerror'), list = document.getElementById('be-list'), link = document.getElementById('be-link'), items = errorLines();
-  box.hidden = !items.length; list.innerHTML = '';
+  const sig = bigErrorSignature(items);
+  box.hidden = !items.length || bigErrorDismissed(sig); list.innerHTML = '';
+  document.getElementById('be-close').onclick = () => { box.hidden = true; try { localStorage.setItem(BIGERROR_KEY, sig); } catch (e) { /* not kept */ } };
   for (const o of items) { const li = document.createElement('li'); li.textContent = o.text; list.appendChild(li); }
   document.getElementById('be-sub').textContent = BUILD && BUILD.commit ? 'The latest push (' + String(BUILD.commit).slice(0, 7) + ') broke something.' : '';
   link.hidden = !(BUILD && BUILD.run_url); if (BUILD && BUILD.run_url) link.href = BUILD.run_url;
