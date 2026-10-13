@@ -28,10 +28,10 @@ radius = 3
 
 BASE_DIR = r"G:\Shared drives\TAMU-SRT\srt_general\9_flight_data"
 
-sol_ignis = eng.Engine2(eng.EngineComponent2(name="ox_tank", dry_mass=8.0, prop_mass=40, offset=10.0, length=24.0),
-                        eng.EngineComponent2(name="plumbing", dry_mass=2.0, offset=10.0, length=2.0),
-                        eng.EngineComponent2(name="fuel_grain", dry_mass=3.0, prop_mass=0.1, offset=36.0, length=12.0), length=38, offset=0.0)
-
+#sol_ignis = eng.Engine2(eng.EngineComponent2(name="ox_tank", dry_mass=8.0, prop_mass=40, offset=10.0, length=24.0),
+#                        eng.EngineComponent2(name="plumbing", dry_mass=2.0, offset=10.0, length=2.0),
+#                        eng.EngineComponent2(name="fuel_grain", dry_mass=3.0, prop_mass=0.1, offset=36.0, length=12.0), length=38, offset=0.0)
+sol_ignis = 0
 ROCKET_ENGINES = {
     "morpheus": sol_ignis,  
     "sol_invictus": sol_ignis 
