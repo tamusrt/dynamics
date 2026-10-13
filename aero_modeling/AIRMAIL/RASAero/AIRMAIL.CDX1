@@ -73,7 +73,7 @@
         </BodyTube>
         <BoatTail>
             <PartType>BoatTail</PartType>
-            <Length>3</Length>
+            <Length>4</Length>
             <Diameter>4</Diameter>
             <RearDiameter>4</RearDiameter>
             <Location>167.3177</Location>
@@ -117,7 +117,7 @@
         <Simulation>
             <SustainerLaunchWt>134.0265</SustainerLaunchWt>
             <SustainerNozzleDiameter>0</SustainerNozzleDiameter>
-            <SustainerCG>107.7841</SustainerCG>
+            <SustainerCG>107.809</SustainerCG>
             <SustainerIgnitionDelay>0</SustainerIgnitionDelay>
             <Booster1LaunchWt>0</Booster1LaunchWt>
             <Booster1SeparationDelay>0</Booster1SeparationDelay>
@@ -140,7 +140,7 @@
         <Simulation>
             <SustainerLaunchWt>134.0265</SustainerLaunchWt>
             <SustainerNozzleDiameter>0</SustainerNozzleDiameter>
-            <SustainerCG>107.7841</SustainerCG>
+            <SustainerCG>107.809</SustainerCG>
             <SustainerIgnitionDelay>0</SustainerIgnitionDelay>
             <Booster1LaunchWt>0</Booster1LaunchWt>
             <Booster1SeparationDelay>0</Booster1SeparationDelay>
@@ -163,7 +163,7 @@
         <Simulation>
             <SustainerLaunchWt>134.0265</SustainerLaunchWt>
             <SustainerNozzleDiameter>0</SustainerNozzleDiameter>
-            <SustainerCG>107.7841</SustainerCG>
+            <SustainerCG>107.809</SustainerCG>
             <SustainerIgnitionDelay>0</SustainerIgnitionDelay>
             <Booster1LaunchWt>0</Booster1LaunchWt>
             <Booster1SeparationDelay>0</Booster1SeparationDelay>
@@ -186,7 +186,7 @@
         <Simulation>
             <SustainerLaunchWt>134.0265</SustainerLaunchWt>
             <SustainerNozzleDiameter>0</SustainerNozzleDiameter>
-            <SustainerCG>107.7841</SustainerCG>
+            <SustainerCG>107.809</SustainerCG>
             <SustainerIgnitionDelay>0</SustainerIgnitionDelay>
             <Booster1LaunchWt>0</Booster1LaunchWt>
             <Booster1SeparationDelay>0</Booster1SeparationDelay>
