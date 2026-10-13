@@ -374,8 +374,11 @@ jobs:
         if: always() && github.event_name == 'push' && hashFiles('or_ci_results/report.md') != ''
         env:
           GH_TOKEN: ${{ github.token }}
+        # the OpenRocket design diff and before/after deltas come first; site build problems and file checks after them
         run: |
           {
+            cat or_ci_results/report.md
+            echo
             python - <<'PY'
           import json, pathlib
           status = pathlib.Path("site/build_status.json")
@@ -385,8 +388,6 @@ jobs:
           PY
             if [ -f doctor_comment.md ]; then cat doctor_comment.md; echo; fi
             if [ -f build_notes.md ]; then cat build_notes.md; echo; fi
-            cat or_ci_results/report.md
-            echo
             if [ -f or_ci_results/history/history.md ]; then cat or_ci_results/history/history.md; echo; fi
             echo "_[Workflow run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) · results CSV/JSON and full history CSV in the run's artifacts._"
           } > comment.md

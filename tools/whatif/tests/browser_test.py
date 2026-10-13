@@ -450,7 +450,14 @@ def check_error_bar(b: Browser) -> str:
     size = b.page.evaluate("parseFloat(getComputedStyle(document.querySelector('#bigerror .be-title')).fontSize)")
     assert size >= 24, f"the Error bar's heading is only {size}px"
     b.shot("error_bar")
-    return f"{len(problems)} problem(s) shown at the top"
+    b.page.click("#be-close")
+    assert b.page.evaluate("document.getElementById('bigerror').hidden"), "the x does not hide the Error bar"
+    b.open("tab=history&metric=apogee&view=abs")
+    b.page.wait_for_selector("#hplot .main-svg", timeout=30000)
+    b.page.wait_for_timeout(500)
+    assert b.page.evaluate("document.getElementById('bigerror').hidden"), "the Error bar came back after the x, for the same problems"
+    b.page.evaluate("localStorage.removeItem('srt.bigerror.hidden')")
+    return f"{len(problems)} problem(s) shown at the top, and the x hides them"
 
 
 def run(site: Path, args: argparse.Namespace) -> int:

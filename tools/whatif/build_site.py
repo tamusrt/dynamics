@@ -102,10 +102,10 @@ _SEARCH = {"ork": (".ork",), "rasaero": (".cdx1",)}  # files that may be found a
 
 
 def _resolve_files(repo: Repo, base: Path, spec: dict, notes: resolve.Notes) -> dict[str, resolve.Resolution]:
-    """Find the design, aero table, RASAero file and RASAero results the config names (see resolve.py)."""
+    """Find the design, aero table and RASAero file the config names (see resolve.py)."""
     found: dict[str, resolve.Resolution] = {}
     folder = resolve.rocket_folder(base, spec)
-    for role in (*_FILES, "rasaero", "rasaero_results"):
+    for role in (*_FILES, "rasaero"):
         if role not in spec:
             continue
         suffixes = _SEARCH.get(role, ())
@@ -147,8 +147,7 @@ def files_used(repo, base, key, spec, mode, found, motor, note, history_file, no
         return [{"path": rel(p), "changed": resolve.changed_date(repo, p)} for p in pool[: resolve.MAX_CANDIDATES]]
 
     files = []
-    labels = {"ork": "OpenRocket design", "aero": "Aero table (RASAero CSV)", "rasaero": "RASAero file",
-              "rasaero_results": "RASAero results"}
+    labels = {"ork": "OpenRocket design", "aero": "Aero table (RASAero CSV)", "rasaero": "RASAero file"}
     for role, r in found.items():
         files.append({"role": role, "label": labels[role], "setting": role, "path": rel(r.path), "how": r.how,
                       "auto": r.auto, "changed": resolve.changed_date(repo, r.path), "candidates": others(role, r.path)})
@@ -159,13 +158,6 @@ def files_used(repo, base, key, spec, mode, found, motor, note, history_file, no
     if "aero" in found and _changed_in_last_commit(repo, found["aero"].path, since):
         notes.add("warn", f"The aero table {found['aero'].path.name} was changed by the latest push. Merging is turned off for it, "
                           "so if two people updated it, check that the version on main is the one you meant.")
-    if "rasaero_results" in found and "ork" in found:  # RASAero's own results are typed in by hand: say when they are older
-        typed = resolve.content_time(repo, found["rasaero_results"].path)
-        design = resolve.content_time(repo, found["ork"].path)
-        if typed and design and typed < design:
-            notes.add("warn", f"RASAero II's own results ({found['rasaero_results'].path.name}) were saved before the latest change "
-                              f"to the design ({found['ork'].path.name}, {resolve.changed_date(repo, found['ork'].path)}), so the "
-                              "RASAero II numbers may be for an older rocket. Fly it in RASAero II again and update that file.")
     if "aero" in found:
         table = aero_meta.check(found["aero"].path, found["rasaero"].path if "rasaero" in found else None, found["ork"].path)
         for reason in table["stale"]:
@@ -244,8 +236,6 @@ def plan(config_path: Path, site: Path, edith: bool = False, edith_cache: Path |
             cmd += ["--motor-note", note]
         if "rasaero" in paths:
             cmd += ["--rasaero", str(paths["rasaero"])]
-        if "rasaero_results" in paths:
-            cmd += ["--rasaero-results", str(paths["rasaero_results"])]
         if "sim" in spec:
             cmd += ["--sim", spec["sim"]]
         if (site / "data.json").is_file():  # the History site was built first
