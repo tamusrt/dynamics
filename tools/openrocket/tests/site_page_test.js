@@ -177,7 +177,8 @@ test('events are vertical lines with labels, within the window shown', () => {
 });
 test('legend groups appear only when comparing simulations; design names only across designs', () => {
   let c = run({ tab: 'flight', fx: 'time', fy: 'altitude', apo: '1', sel: enc([A, A2]) });
-  assert.deepStrictEqual([...new Set(c.traces.map(t => t.legendgrouptitle.text))], [A.split('|')[1], A2.split('|')[1]]);
+  const shown = id => { const [f, s] = id.split('|'), m = (DATA.motors[f] || {})[s]; return m ? `${s} [${m}]` : s; };
+  assert.deepStrictEqual([...new Set(c.traces.map(t => t.legendgrouptitle.text))], [shown(A), shown(A2)]);
   assert.deepStrictEqual([...new Set(c.layout.annotations.map(a => a.yshift))], [-2, -15], 'event labels of the second simulation are staggered');
   c = run({ tab: 'flight', fx: 'time', fy: 'altitude', apo: '1', sel: enc([A, B]) });
   const titles = [...new Set(c.traces.map(t => t.legendgrouptitle.text))];
@@ -280,6 +281,17 @@ test('the sidebar shows the History metric on the history tab and apogee elsewhe
   assert(els.navcap.textContent.startsWith('latest max mach'), els.navcap.textContent);
   run({ tab: 'flight', fx: 'time', fy: 'altitude', sel: enc([A]) });
   assert(els.navcap.textContent.startsWith('latest apogee'), els.navcap.textContent);
+});
+test('each simulation is shown with its motor in brackets, while links and data keep the plain name', () => {
+  const labels = simRows.filter(r => r.className === 'sim').map(r => [r.dataset.id, r.children.find(c => c.className === 'label').textContent]);
+  for (const [id, text] of labels) {
+    const [file, sim] = id.split('|'), m = (DATA.motors[file] || {})[sim];
+    assert.strictEqual(text, m ? `${sim} [${m}]` : sim, `sidebar label of ${id}`);
+  }
+  assert(labels.some(([id, t]) => t.endsWith('[a.rse]')) && labels.some(([id, t]) => !t.includes('[')), 'fixture needs both kinds');
+  const c = run({ tab: 'history', metric: 'apogee', view: 'abs', sel: enc([A]) });
+  assert(c.traces.some(t => t.name.endsWith('[a.rse]')), `the chart legend shows the motor: ${c.traces.map(t => t.name)}`);
+  assert(!decodeURIComponent(hash).includes('a.rse'), `the link does not carry the label: ${hash}`);
 });
 
 console.log('changelog tab');

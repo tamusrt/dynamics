@@ -1,0 +1,50 @@
+# ============================================================
+# ENGINE INFORMATION INPUT
+# ============================================================
+# Units:
+#   Engine/nozzle geometry: mm
+#   Component lengths: inches
+#   Component and propellant masses: kg
+#   CG/mass depletion stop time: seconds after thrust-curve start
+#
+# CG/mass burn time is independent of thrust-curve burn duration.
+# Up to this time, propellant mass flow is proportional to thrust
+# (constant Isp). After it, engine mass and CG are held constant.
+# ============================================================
+
+# ENGINE IDENTITY
+engine_code = PER_MY_LAST
+manufacturer_name = TAMUSRT
+motor_type = Hybrid
+motor_delay_setting = 0
+engine_comments = PER_MY_LAST
+
+# ENGINE GEOMETRY (mm)
+engine_outer_diameter_mm = 152.4
+nozzle_throat_diameter_mm = 34.798
+nozzle_exit_diameter_mm = 73.66
+
+# OUTPUT LOCATION
+# Relative to the dynamics folder. Use / or \\ between folders.
+output_subfolder = aero_modeling/AIRMAIL/Thrust_Curves
+
+# Output filenames WITHOUT extensions. Extensions are added automatically.
+rse_output_filename = PER_MY_LAST
+eng_output_filename = PER_MY_LAST
+
+# ENGINE COMPONENTS
+# The top plumbing component is not included in this model.
+
+# Oxidizer tank
+oxidizer_tank_dry_mass_kg = 14.10672
+oxidizer_tank_length_in = 57.56
+initial_oxidizer_mass_kg = 18.1437
+
+# Middle plumbing
+middle_plumbing_mass_kg = 2.9
+middle_plumbing_length_in = 16.0
+
+# Combustion chamber
+combustion_chamber_dry_mass_kg = 3.583383
+combustion_chamber_length_in = 24.5
+initial_fuel_mass_kg = 3.99161

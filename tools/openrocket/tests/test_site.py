@@ -69,17 +69,21 @@ def version(i: int, msg: str) -> dict:
             "message": msg, "path": FILE_A, "blob": f"blob{i}"}
 
 
-def row(v: dict, apogee, fl=None, status="OK", note="") -> dict:
+MOTOR_A = "aero_modeling/A/curves/a.rse"
+
+
+def row(v: dict, apogee, fl=None, status="OK", note="", motor_file="") -> dict:
     return {"short": v["short"], "date": "2027-01-%02d" % (1 + int(v["short"], 16)), "author": v["author"], "message": v["message"],
-            "status": status, "note": note, "metrics": metrics(apogee) if apogee is not None else {}, "flight": fl}
+            "status": status, "note": note, "metrics": metrics(apogee) if apogee is not None else {}, "flight": fl,
+            "motor": "A-rse" if motor_file else "", "motor_file": motor_file}
 
 
 def build(site: Path):
     va = [version(1, "first"), version(2, "longer nose"), version(3, "<script>alert(1)</script> heavier payload")]
     vb = [dict(version(4, "initial"), path=FILE_B), dict(version(5, "broke the motor reference"), path=FILE_B)]
     series = {
-        (FILE_A, "best"): [row(va[0], 3000), row(va[1], 3200, flight(1.0)), row(va[2], 3100, flight(1.02))],
-        (FILE_A, "worst"): [row(va[0], 2500), row(va[1], 2450, flight(0.9)), row(va[2], 2450, flight(0.9))],
+        (FILE_A, "best"): [row(va[0], 3000), row(va[1], 3200, flight(1.0)), row(va[2], 3100, flight(1.02), motor_file=MOTOR_A)],
+        (FILE_A, "worst"): [row(va[0], 2500), row(va[1], 2450, flight(0.9)), row(va[2], 2450, flight(0.9), motor_file=MOTOR_A)],
         (FILE_B, "Simulation 1"): [row(vb[0], 1800, flight(0.6)), row(vb[1], None, None, status="FAILED", note="motor unresolved")],
     }
     files_versions = {FILE_A: va, FILE_B: vb}
@@ -106,8 +110,21 @@ def test_current_sims():
     print("current_sims: ok")
 
 
+def test_variant_sims_keep_their_own_label():
+    """A motor_variants simulation ('S [85%]') already names its curve; it gets no second label. Multi-mount motors join."""
+    v = version(1, "first")
+    series = {("v.ork", "S [85%]"): [row(v, 1000, motor_file="L/85per_Liq.eng")],
+              ("h.ork", "best"): [dict(row(v, 1000), motor_file="H/OXTank.eng, H/CC.eng")]}
+    with tempfile.TemporaryDirectory() as tmp:
+        or_ci.write_site(series, Path(tmp), "imperial", "", {"v.ork": [v], "h.ork": [v]}, "pct", {})
+        motors = json.loads((Path(tmp) / "data.json").read_text(encoding="utf-8"))["motors"]
+    assert motors == {"h.ork": {"best": "OXTank.eng + CC.eng"}}, motors
+    print("motor labels: ok")
+
+
 def main() -> int:
     test_current_sims()
+    test_variant_sims_keep_their_own_label()
     tmp = Path(tempfile.mkdtemp(prefix="or_site_test_"))
     site = tmp / "site"
     try:
@@ -121,6 +138,7 @@ def main() -> int:
         rows_b = data["designs"][FILE_B]["Simulation 1"]
         assert [r["ok"] for r in rows_b] == [True, False], "a failed version must be marked not ok"
         assert len(data["changelog"][FILE_A]) == 2
+        assert data["motors"] == {FILE_A: {"best": "a.rse", "worst": "a.rse"}},             f"each simulation is labelled with the motor file its newest version flew, and only then: {data['motors']}"
         page = (site / "index.html").read_text(encoding="utf-8")
         for icon in ("favicon.ico", "favicon-32x32.png", "favicon-16x16.png", "apple-touch-icon.png", "site.webmanifest"):
             assert (site / icon).is_file() and f'href="{icon}"' in page, f"{icon} is linked and next to the page"

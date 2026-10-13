@@ -32,23 +32,20 @@ This folder builds the JARVIS predictions and VISION tabs. The pages are also av
 - A chart of altitude, speed, Mach number, acceleration, stability margin or drag for the selected launch conditions,
   with Jarvis and OpenRocket as separate lines. **Difference from OpenRocket** shows the gap over time.
 - **Apogee by launch condition**: every simulation saved in the `.ork` (each has its own wind and launch rail).
-- Ascent and descent tables, with grey rows for the difference between Jarvis and OpenRocket (and RASAero II, below).
+- Ascent and descent tables, with grey rows for the difference between Jarvis and OpenRocket.
   The descent is the same full model VISION replays (flight computer, ejection, tumble, shock cord, swing under the
   canopy), so the descent table and VISION show the same flight.
-- **RASAero II's own results** (apogee, top speed, time to apogee), typed in from RASAero's Flight window, next to
-  Jarvis and OpenRocket for the launch condition they were run for, and as a diamond on the altitude chart.
 - Warnings, for example when the stability margin is below the team minimum or the RASAero table is out of date.
 - **IREC checks**, just below the chart: apogee between 21,000 and 39,000 ft above the pad (outside it the flight is
   disqualified), stability, rail exit speed, drogue and main descent rates and main deployment altitude against the IREC Design, Test & Evaluation Guide.
 
 ## Inputs
 
-| Input | File (SRT14) | Used for |
+| Input | File (AIRMAIL) | Used for |
 | --- | --- | --- |
 | OpenRocket design | `IREC_2027/OR/2027_OR.ork` | Geometry, masses and launch conditions |
 | RASAero table | `IREC_2027/JARVIS/ignis_2027_aero.csv` | Drag, lift and center of pressure |
 | RASAero design | `IREC_2027/RASA/rasaero.CDX1` | The shape the RASAero table was made for |
-| RASAero results | `IREC_2027/RASA/rasaero_results.json` | RASAero II's own apogee, top speed and time to apogee, to compare with |
 | Motor | `motor` in `whatif_config.json` if set; otherwise, with `motor_mode` `pinned` (the default), `default_motor` in `sim_config.json` (the History tab's motor), or the newest curve in `motor_dir` if that file is gone (with a warning); with `motor_mode` `newest`, the curve in `motor_dir` whose contents changed last | Thrust curve (the motor masses come from the `.ork`, so the starting mass matches OpenRocket) |
 
 Paths are relative to `aero_modeling/` and are set in `aero_modeling/whatif_config.json`.
@@ -59,7 +56,7 @@ stays where it is. For a new rocket, make `aero_modeling/<ROCKET>/JARVIS/` and p
 
 **RASAero surface finish.** Set RASAero's surface roughness to rough camouflage paint, even when OpenRocket uses a smooth finish.
 Jarvis takes its drag from the RASAero table, so OpenRocket's finish does not matter to it. Rough paint adds skin friction and lowers
-the predicted apogee. Make the table and `rasaero_results.json` with the same finish, so the two can be compared.
+the predicted apogee.
 
 - **OpenRocket results** come from the History tab (the latest successful run of each simulation). When no History
   site is available, the results saved in the `.ork` are used instead, and the page says which.
@@ -235,7 +232,7 @@ meant to make it, so a site that does not run EDITH never shows an old EDITH pag
 ## Adding a rocket
 
 Add an entry under `rockets` in `aero_modeling/whatif_config.json` with `ork`, `aero`, and `motor_dir` or `motor`.
-`rasaero`, `rasaero_results`, `sim` and `alpha_dir` are optional (`alpha_dir` is needed for Update CSV). The `default` rocket is at
+`rasaero`, `sim` and `alpha_dir` are optional (`alpha_dir` is needed for Update CSV). The `default` rocket is at
 `/predictions/`; others are at `/predictions/<key in lowercase>/`.
 
 ## How long a build takes, and the cache
@@ -266,11 +263,3 @@ python tools/whatif/tests/browser_test.py --site site --require-predictions --sh
 ```
 
 Then open `site/predictions/index.html`. `build_site.py --dry-run` prints the commands and the motor it would use.
-
-## Updating the RASAero results
-
-After running RASAero II's flight simulation (Simulations → Flight), type its numbers into
-`aero_modeling/IREC_2027/RASA/rasaero_results.json`: one entry per run, with `apogee_ft`, `max_velocity_ft_s` and
-`time_to_apogee_s` as RASAero shows them, and `sim` set to the name of the matching simulation in the `.ork` (for
-example `"no wind - worst"` for the 8° rail with no wind). Use `null` when the `.ork` has no matching condition; the
-page then lists the run in a note under the apogee table. Pushing the file rebuilds the site.

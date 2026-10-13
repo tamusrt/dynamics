@@ -554,7 +554,7 @@ def check_rocket(repo: Repo, config_path: Path, sim_path: Path, key: str, spec: 
                                 "Add one: it says which thrust curve to fly."))
     ork_path = None
     for setting, role in (("ork", "OpenRocket design"), ("aero", "RASAero table (CSV)"), ("rasaero", "RASAero file (.CDX1)"),
-                          ("rasaero_results", "RASAero results file"), ("motor", "motor file")):
+                          ("motor", "motor file")):
         if setting in spec:
             found = check_path(repo, Needs(f"{role} of {key}", label, base, spec[setting]), findings)
             if setting == "ork":

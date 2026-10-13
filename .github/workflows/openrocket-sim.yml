@@ -5,6 +5,11 @@ name: OpenRocket simulation check
 # changed .ork is simulated before and after the push, and a before/after
 # table is posted as a comment on the commit, in the job summary, and as a
 # downloadable artifact. See tools/openrocket/CI.md.
+#
+# Three jobs on main: `simulate` (OpenRocket: before/after, history, the History site and the commit comment,
+# a few minutes), then `site` (JARVIS predictions, VISION, EDITH, the browser check and the JARVIS message, which
+# take most of the time), then `deploy-pages`. The OpenRocket comment does not wait for JARVIS. Other branches
+# run `simulate` and `page-test` only.
 on:
   push:
     paths:
@@ -56,7 +61,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write   # commit comments
-    timeout-minutes: 50   # the history site and the predictions take about 10; EDITH, when it is on, is allowed up to ~17 more
+    timeout-minutes: 30   # a few minutes; a history backfill after the cache is lost takes longer
     steps:
       - name: Check out (full history, so the base commit is available)
         uses: actions/checkout@v7
@@ -195,6 +200,76 @@ jobs:
             --site site \
             --repo-url "${{ github.server_url }}/${{ github.repository }}" \
             --quiet
+
+      # The next job (JARVIS, VISION, EDITH) builds on this site and needs OpenRocket's results.json; it gets both here
+      # instead of simulating again. Kept for a day: only this run uses it.
+      - name: Hand the History site to the predictions job (main only)
+        if: always() && github.ref == 'refs/heads/main' && hashFiles('site/index.html') != ''
+        uses: actions/upload-artifact@v7
+        with:
+          name: history-site
+          path: |
+            site/
+            or_ci_results/results.json
+          include-hidden-files: true   # site/.nojekyll
+          retention-days: 1
+          overwrite: true
+
+      - name: Upload results (CSV / JSON / report / history)
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: openrocket-sim-${{ github.sha }}-${{ github.run_attempt }}
+          path: or_ci_results/
+          if-no-files-found: ignore
+
+      - name: Comment on the commit
+        if: always() && github.event_name == 'push' && hashFiles('or_ci_results/report.md') != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        # the OpenRocket design diff and before/after deltas first, then the file check; JARVIS build problems are
+        # posted by the site job, so this comment does not wait for JARVIS
+        run: |
+          {
+            cat or_ci_results/report.md
+            echo
+            if [ -f doctor_comment.md ]; then cat doctor_comment.md; echo; fi
+            if [ -f or_ci_results/history/history.md ]; then cat or_ci_results/history/history.md; echo; fi
+            echo "_[Workflow run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) · results CSV/JSON and full history CSV in the run's artifacts._"
+          } > comment.md
+          gh api "repos/${{ github.repository }}/commits/${{ github.sha }}/comments" -F body=@comment.md >/dev/null
+
+  # JARVIS predictions, VISION and EDITH on top of the History site the job above built, then the browser check,
+  # the JARVIS message and the Pages upload. Main only, and only after `simulate` succeeded: as before the split, a
+  # failed OpenRocket check publishes nothing.
+  site:
+    needs: simulate
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write   # commit comments
+    timeout-minutes: 40   # the predictions take about 5-7; EDITH, when it is on, is allowed up to ~17 more
+    steps:
+      - name: Check out (full history, for the per-commit JARVIS points and files that moved)
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Python 3.11
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: |
+            tools/openrocket/requirements.txt
+            .github/workflows/openrocket-sim.yml
+
+      - name: Get the History site and OpenRocket results from the job above
+        uses: actions/download-artifact@v8
+        with:
+          name: history-site
+          path: .
 
       # ---- Predictions page: the committed design flown on the committed RASAero table (tools/whatif/README.md) ----
       # Needs the flight_sim package (it holds the .ork reader, the page template and the 6-DOF sim).
@@ -362,36 +437,6 @@ jobs:
         with:
           path: site
 
-      - name: Upload results (CSV / JSON / report / history)
-        if: always()
-        uses: actions/upload-artifact@v7
-        with:
-          name: openrocket-sim-${{ github.sha }}-${{ github.run_attempt }}
-          path: or_ci_results/
-          if-no-files-found: ignore
-
-      - name: Comment on the commit
-        if: always() && github.event_name == 'push' && hashFiles('or_ci_results/report.md') != ''
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          {
-            python - <<'PY'
-          import json, pathlib
-          status = pathlib.Path("site/build_status.json")
-          if status.is_file():
-              for problem in json.loads(status.read_text(encoding="utf-8")).get("problems", []):
-                  print(f"**ERROR ({problem['area']}):** {problem['message']}\n")
-          PY
-            if [ -f doctor_comment.md ]; then cat doctor_comment.md; echo; fi
-            if [ -f build_notes.md ]; then cat build_notes.md; echo; fi
-            cat or_ci_results/report.md
-            echo
-            if [ -f or_ci_results/history/history.md ]; then cat or_ci_results/history/history.md; echo; fi
-            echo "_[Workflow run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) · results CSV/JSON and full history CSV in the run's artifacts._"
-          } > comment.md
-          gh api "repos/${{ github.repository }}/commits/${{ github.sha }}/comments" -F body=@comment.md >/dev/null
-
       # Its own message, separate from the OpenRocket one. With a Discord webhook (repository secret
       # DISCORD_WEBHOOK_URL, tools/whatif/README.md) it goes straight to the channel with the VISION picture;
       # without one it is a commit comment, which the Discord GitHub bot shows as text.
@@ -411,6 +456,28 @@ jobs:
             echo "_[Workflow run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})_"
           } > note_comment.md
           gh api "repos/${{ github.repository }}/commits/${{ github.sha }}/comments" -F body=@note_comment.md >/dev/null
+
+      # What broke in the predictions build, and its notes (auto-fixes, stale tables). They used to ride in the
+      # OpenRocket comment; now they get their own, only when there is something to say.
+      - name: Comment on the commit about the predictions build (only problems and notes)
+        if: always() && github.event_name == 'push' && hashFiles('site/index.html') != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          {
+            python - <<'PY'
+          import json, pathlib
+          status = pathlib.Path("site/build_status.json")
+          if status.is_file():
+              for problem in json.loads(status.read_text(encoding="utf-8")).get("problems", []):
+                  print(f"**ERROR ({problem['area']}):** {problem['message']}\n")
+          PY
+            if [ -f build_notes.md ]; then cat build_notes.md; echo; fi
+          } > predictions_comment.md
+          if [ -s predictions_comment.md ]; then
+            echo "_[Workflow run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})_" >> predictions_comment.md
+            gh api "repos/${{ github.repository }}/commits/${{ github.sha }}/comments" -F body=@predictions_comment.md >/dev/null
+          fi
 
   # Regression test of the site page: builds a site from synthetic data (no OpenRocket) and runs the
   # page's JavaScript with assertions, then renders it through the real Plotly. A broken page blocks
@@ -463,7 +530,7 @@ jobs:
   # Publishes the site built above. Runs only for pushes to main; the URL is shown on the run
   # and under Settings -> Pages. Pages must be set to "GitHub Actions" as the source (once).
   deploy-pages:
-    needs: [simulate, page-test]
+    needs: [site, page-test]
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:

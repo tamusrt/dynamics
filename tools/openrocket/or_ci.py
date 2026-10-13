@@ -1346,6 +1346,7 @@ def cmd_history(args):
                 row = {"label": f"{date[5:]} {v['short']}", "short": v["short"], "date": date, "author": v["author"],
                        "message": v["message"], "status": rec["status"], "metrics": rec.get("metrics") or {},
                        "note": ("motor unresolved" if "unresolved" in (rec.get("motor_source") or "") else ""),
+                       "motor": rec.get("motor", ""), "motor_file": rec.get("motor_file", ""),
                        "flight": rec.get("series") if (f, v["blob"]) in want_series else None}
                 series.setdefault((f, sim), []).append(row)
                 csv_rows.append({"file": f, "path_at_commit": v["path"], "sim_name": sim, "commit": v["sha"] or "",
@@ -1448,8 +1449,9 @@ SITE_HTML = r"""<!doctype html>
   * { box-sizing:border-box; }
   html, body { height:100%; }
   body { margin:0; display:flex; flex-direction:column; overflow:hidden; background:var(--bg); color:var(--fg); font:14px/1.45 -apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif; }
-  .bigerror { flex:none; background:var(--errbg); color:#fff; padding:14px 20px 16px; border-bottom:4px solid var(--errline); }
+  .bigerror { flex:none; position:relative; background:var(--errbg); color:#fff; padding:14px 56px 16px 20px; border-bottom:4px solid var(--errline); }
   .bigerror[hidden] { display:none; }
+  .bigerror #be-close { position:absolute; top:8px; right:12px; border:0; background:transparent; color:#fff; font-size:30px; line-height:1; cursor:pointer; padding:0 6px; }
   .skipnote { flex:none; display:flex; gap:12px; align-items:flex-start; background:#fff4d6; color:#3d2e00; border-bottom:2px solid #d29922; padding:8px 16px; font-size:14px; }
   .skipnote[hidden] { display:none; }
   .skipnote .sn-text { flex:1; } .skipnote a { color:inherit; font-weight:600; }
@@ -1551,6 +1553,7 @@ SITE_HTML = r"""<!doctype html>
 </head>
 <body>
 <div class="bigerror" id="bigerror" role="alert" hidden>
+  <button type="button" id="be-close" aria-label="Hide this error" title="Hide this error">&times;</button>
   <div><span class="be-title">Error</span><span class="be-sub" id="be-sub"></span></div>
   <ul id="be-list"></ul>
   <a id="be-link" target="_blank" rel="noopener" hidden>See what went wrong in the build</a>
@@ -1609,8 +1612,9 @@ sub.textContent = `${DATA.generated}` + (DATA.repo ? ' · ' : '');
 if (DATA.repo) { const a = document.createElement('a'); a.href = DATA.repo; a.textContent = DATA.repo.replace('https://github.com/', ''); sub.appendChild(a); }
 
 // ---- state (mirrored in the URL hash) ----
-const ALL = [];  // {id, file, sim, rows}
-for (const [file, sims] of Object.entries(DATA.designs)) for (const [sim, rows] of Object.entries(sims)) ALL.push({ id: `${file}|${sim}`, file, sim, rows });
+const ALL = [];  // {id, file, sim, name, rows}: sim is the key (links, Jarvis, flights), name is what the page shows
+function simName(file, sim) { const m = ((DATA.motors || {})[file] || {})[sim]; return m ? `${sim} [${m}]` : sim; }
+for (const [file, sims] of Object.entries(DATA.designs)) for (const [sim, rows] of Object.entries(sims)) ALL.push({ id: `${file}|${sim}`, file, sim, name: simName(file, sim), rows });
 const VIEWS = [['abs', 'Absolute'], ['dline', 'Δ line'], ['dbar', 'Δ bars']];
 const DEFAULTS = () => ({ metric: DATA.metrics[0].key, view: 'abs', units: DATA.default_units || 'metric', stab: DATA.default_stability || 'cal',
                           fx: 'altitude', fys: [{ key: 'stability', side: 'l' }], fapo: true });   // fys: Y variables in order, side l|r
@@ -1720,7 +1724,7 @@ function buildNav() {
       const cb = document.createElement('input'); cb.type = 'checkbox'; cb.checked = state.sel.has(id);
       cb.onchange = () => { cb.checked ? state.sel.add(id) : state.sel.delete(id); update(); };
       const sw = document.createElement('span'); sw.className = 'swatch';
-      const lab = document.createElement('span'); lab.className = 'label'; lab.textContent = sim; lab.title = sim;
+      const lab = document.createElement('span'); lab.className = 'label'; lab.textContent = lab.title = simName(file, sim);
       const val = document.createElement('span'); val.className = 'val';
       row.append(cb, sw, lab, val); list.appendChild(row);
     }
@@ -1764,7 +1768,7 @@ function buildMetrics() {
 // ---- history chart (Plotly) ----
 const hplot = document.getElementById('hplot'), empty = document.getElementById('empty');
 const filesTicked = () => new Set([...state.sel].map(id => id.split('|')[0]));
-function simLabel(a) { return (filesTicked().size > 1 ? short(a.file) + ' \u00b7 ' : '') + a.sim; }
+function simLabel(a) { return (filesTicked().size > 1 ? short(a.file) + ' \u00b7 ' : '') + a.name; }
 const isDark = () => window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
 function baseLayout(xTitle, yTitle) {
   const grid = isDark() ? '#30363d' : '#d0d7de';
@@ -1877,7 +1881,7 @@ function drawTable() {
   let h = '<table><thead><tr><th>Simulation</th>' + specs.map(m => `<th>${m.label}${m.unit ? ' (' + m.unit + ')' : ''}</th>`).join('') + '<th>Latest version</th></tr></thead><tbody>';
   for (const a of rows) {
     const ok = a.rows.filter(r => r.ok); const last = ok[ok.length - 1], prev = ok[ok.length - 2];
-    h += `<tr><td><span class="sw" style="background:${colorOf.get(a.id)}"></span>${Object.keys(DATA.designs).length > 1 ? short(a.file) + ' · ' : ''}${a.sim}</td>`;
+    h += `<tr><td><span class="sw" style="background:${colorOf.get(a.id)}"></span>${Object.keys(DATA.designs).length > 1 ? short(a.file) + ' · ' : ''}${esc(a.name)}</td>`;
     for (const m of specs) {
       const v = last ? val(last, m.key) : null, p = prev ? val(prev, m.key) : null;
       let d = '';
@@ -2144,7 +2148,7 @@ function changeChips(file, entry) {   // performance change of each ticked simul
       const d = v - p, flat = Math.abs(d) < Math.pow(10, -sp.dec) / 2;
       parts.push(`<span class="${flat ? '' : d > 0 ? 'up' : 'down'}">${sp.label} ${flat ? 'unchanged' : (d > 0 ? '+' : '') + fmt(d, sp.dec) + (sp.unit ? ' ' + sp.unit : '')}</span>`);
     }
-    if (parts.length) chips.push(`<span class="chip"><b>${esc(a.sim)}</b> ${parts.join(' · ')}</span>`);
+    if (parts.length) chips.push(`<span class="chip"><b>${esc(a.name)}</b> ${parts.join(' · ')}</span>`);
   }
   return chips.join('');
 }
@@ -2194,9 +2198,15 @@ function errorLines() {
   for (const [tab, text] of Object.entries(FRAME_ERRORS)) if (!out.some(o => o.area === tab || o.area === 'build')) out.push({ area: tab, text: AREAS[tab] + ': ' + text });
   return out;
 }
+// The x hides the bar for exactly these problems in this browser; a different problem (or a later broken push) shows it again.
+const BIGERROR_KEY = 'srt.bigerror.hidden';
+function bigErrorSignature(items) { return (BUILD && BUILD.commit ? String(BUILD.commit) : '') + '|' + items.map(o => o.text).join('\n'); }
+function bigErrorDismissed(sig) { try { return localStorage.getItem(BIGERROR_KEY) === sig; } catch (e) { return false; } }
 function renderBigError() {
   const box = document.getElementById('bigerror'), list = document.getElementById('be-list'), link = document.getElementById('be-link'), items = errorLines();
-  box.hidden = !items.length; list.innerHTML = '';
+  const sig = bigErrorSignature(items);
+  box.hidden = !items.length || bigErrorDismissed(sig); list.innerHTML = '';
+  document.getElementById('be-close').onclick = () => { box.hidden = true; try { localStorage.setItem(BIGERROR_KEY, sig); } catch (e) { /* not kept */ } };
   for (const o of items) { const li = document.createElement('li'); li.textContent = o.text; list.appendChild(li); }
   document.getElementById('be-sub').textContent = BUILD && BUILD.commit ? 'The latest push (' + String(BUILD.commit).slice(0, 7) + ') broke something.' : '';
   link.hidden = !(BUILD && BUILD.run_url); if (BUILD && BUILD.run_url) link.href = BUILD.run_url;
@@ -2293,10 +2303,17 @@ def write_site(series: dict, site_dir: Path, units: str, repo_url: str, files_ve
     import hashlib
     import shutil
     site_keys = PRIMARY_KEYS + list(STABILITY_PAIRS.values())
-    designs, flights, flight_vars = {}, {}, {}
+    designs, flights, flight_vars, motors = {}, {}, {}, {}
     site_dir.mkdir(parents=True, exist_ok=True)
     shutil.rmtree(site_dir / "flights", ignore_errors=True)   # stale simulations must not linger
     for (file, sim), rows in series.items():
+        # the motor the newest version flew (its file(s) when a curve was attached, else the designation it resolved to),
+        # shown after the simulation's name on the page; a motor_variants simulation already carries its label
+        newest = rows[-1] if rows else {}
+        flown = [Path(p).name for p in (newest.get("motor_file") or "").split(", ") if p] or \
+                [d for d in (newest.get("motor") or "").split(" + ") if d and d != "none"]
+        if flown and not sim.endswith("]"):
+            motors.setdefault(file, {})[sim] = " + ".join(flown)
         out_rows = []
         # map short sha -> full sha via files_versions
         shas = {v["short"]: v["sha"] for v in files_versions.get(file, [])}
@@ -2335,6 +2352,7 @@ def write_site(series: dict, site_dir: Path, units: str, repo_url: str, files_ve
                     for (k, label, mu, md, _), (_, _, iu, idec, f)
                     in zip([spec_for(k, "metric") for k in site_keys], [spec_for(k, "imperial") for k in site_keys])],
         "designs": designs,
+        "motors": motors,              # design file -> {simulation: motor label shown after its name}
         "flights": flights,            # simulation id -> data script with the full flight time series
         "flight_vars": flight_vars,    # variable key -> {label, SI unit}
         "changelog": changelog or {},  # design file -> [entry, ...] newest first (ork_diff + optional narration)
