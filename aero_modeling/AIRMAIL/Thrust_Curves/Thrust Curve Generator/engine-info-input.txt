@@ -8,15 +8,16 @@
 #   CG/mass depletion stop time: seconds after thrust-curve start
 #
 # CG/mass burn time is independent of thrust-curve burn duration.
-# After this time, calculated engine mass and CG are held constant.
+# Up to this time, propellant mass flow is proportional to thrust
+# (constant Isp). After it, engine mass and CG are held constant.
 # ============================================================
 
 # ENGINE IDENTITY
-engine_code = ENGINE-2027-python
+engine_code = PER_MY_LAST
 manufacturer_name = TAMUSRT
 motor_type = Hybrid
 motor_delay_setting = 0
-engine_comments = ENGINE-2027-python
+engine_comments = PER_MY_LAST
 
 # ENGINE GEOMETRY (mm)
 engine_outer_diameter_mm = 152.4
@@ -28,11 +29,11 @@ cg_mass_burn_time_s = 10.0
 
 # OUTPUT LOCATION
 # Relative to the dynamics folder. Use / or \\ between folders.
-output_subfolder = aero_modeling/IREC_2027/2027_Thrust_Curves
+output_subfolder = aero_modeling/AIRMAIL/Thrust_Curves
 
 # Output filenames WITHOUT extensions. Extensions are added automatically.
-rse_output_filename = ENGINE-2027-python
-eng_output_filename = ENGINE-2027-python
+rse_output_filename = PER_MY_LAST
+eng_output_filename = PER_MY_LAST
 
 # ENGINE COMPONENTS
 # The top plumbing component is not included in this model.
