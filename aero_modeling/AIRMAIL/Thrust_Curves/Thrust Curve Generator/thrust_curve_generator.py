@@ -1,7 +1,9 @@
+
 """Generate RSE and RASP .eng files from an engine information file and a thrust curve."""
 
 import sys
 from pathlib import Path
+import xml.sax.saxutils as xml_utils
 
 import numpy as np
 import pandas as pd
@@ -13,30 +15,22 @@ KG_TO_G = 1000.0
 STANDARD_GRAVITY_M_S2 = 9.80665
 
 REQUIRED_SETTINGS = {
-
     "engine_code": str,
     "manufacturer_name": str,
     "motor_type": str,
     "motor_delay_setting": str,
     "engine_comments": str,
-
     "engine_outer_diameter_mm": float,
     "nozzle_throat_diameter_mm": float,
     "nozzle_exit_diameter_mm": float,
-
-    "cg_mass_burn_time_s": float,
-
     "output_subfolder": str,
     "rse_output_filename": str,
     "eng_output_filename": str,
-
     "oxidizer_tank_dry_mass_kg": float,
     "oxidizer_tank_length_in": float,
     "initial_oxidizer_mass_kg": float,
-
     "middle_plumbing_mass_kg": float,
     "middle_plumbing_length_in": float,
-
     "combustion_chamber_dry_mass_kg": float,
     "combustion_chamber_length_in": float,
     "initial_fuel_mass_kg": float,
@@ -113,10 +107,12 @@ def read_engine_info(filename: Path) -> dict:
         try:
             if value_type is float:
                 settings[key] = float(value)
+
                 if not np.isfinite(settings[key]):
                     raise ValueError("Value must be finite.")
             else:
                 settings[key] = value
+
         except ValueError as exc:
             raise ValueError(
                 f"Invalid value for '{key}': {value!r}"
@@ -126,7 +122,6 @@ def read_engine_info(filename: Path) -> dict:
         "engine_outer_diameter_mm",
         "nozzle_throat_diameter_mm",
         "nozzle_exit_diameter_mm",
-        "cg_mass_burn_time_s",
         "oxidizer_tank_length_in",
         "middle_plumbing_length_in",
         "combustion_chamber_length_in",
@@ -152,6 +147,17 @@ def read_engine_info(filename: Path) -> dict:
                 f"'{key}' cannot be negative."
             )
 
+    total_initial_propellant = (
+        settings["initial_oxidizer_mass_kg"]
+        + settings["initial_fuel_mass_kg"]
+    )
+
+    if total_initial_propellant <= 0:
+        raise ValueError(
+            "The combined initial oxidizer and fuel mass "
+            "must be greater than zero."
+        )
+
     if not settings["engine_code"].strip():
         raise ValueError("'engine_code' cannot be blank.")
 
@@ -160,7 +166,8 @@ def read_engine_info(filename: Path) -> dict:
 
     subfolder = settings["output_subfolder"].strip()
     subfolder_parts = [
-        part for part in subfolder.replace("\\\\", "/").split("/")
+        part
+        for part in subfolder.replace("\\", "/").split("/")
         if part and part != "."
     ]
 
@@ -223,10 +230,18 @@ def read_thrust_curve(filename: Path):
     times_s = data["Time (s)"].to_numpy(dtype=float)
     thrust_n = data["Thrust (N)"].to_numpy(dtype=float)
 
+    if not np.all(np.isfinite(times_s)) or not np.all(
+        np.isfinite(thrust_n)
+    ):
+        raise ValueError("Thrust data must contain finite values.")
+
     if np.any(np.diff(times_s) <= 0):
         raise ValueError(
             "Thrust-curve times must be strictly increasing."
         )
+
+    if np.any(thrust_n < 0):
+        raise ValueError("Thrust values cannot be negative.")
 
     positive = np.flatnonzero(thrust_n > 0)
 
@@ -257,8 +272,17 @@ def read_thrust_curve(filename: Path):
     return times_s, thrust_n
 
 
-def calculate_mass_and_cg(settings: dict, times_s: np.ndarray, thrust_n: np.ndarray):
-    """Deplete propellant with mass flow proportional to thrust (constant Isp) until the configured stop."""
+def calculate_mass_and_cg(
+    settings: dict,
+    times_s: np.ndarray,
+    thrust_n: np.ndarray,
+):
+    """Calculate mass and CG using constant effective Isp.
+
+    The effective Isp is determined by total impulse divided by
+    initial propellant mass. Oxidizer and fuel deplete in proportion
+    to accumulated impulse until all propellant is consumed.
+    """
 
     tank_dry = settings["oxidizer_tank_dry_mass_kg"]
     tank_len = settings["oxidizer_tank_length_in"]
@@ -271,6 +295,8 @@ def calculate_mass_and_cg(settings: dict, times_s: np.ndarray, thrust_n: np.ndar
     chamber_len = settings["combustion_chamber_length_in"]
     fuel_initial = settings["initial_fuel_mass_kg"]
 
+    initial_propellant_kg = oxidizer_initial + fuel_initial
+
     tank_start = 0.0
     middle_start = tank_start + tank_len
     chamber_start = middle_start + middle_len
@@ -281,80 +307,92 @@ def calculate_mass_and_cg(settings: dict, times_s: np.ndarray, thrust_n: np.ndar
     chamber_cg = chamber_start + chamber_len / 2
     tank_bottom = tank_start + tank_len
 
-    cg_stop_s = settings["cg_mass_burn_time_s"]
-
     elapsed_s = times_s - times_s[0]
 
-    # mdot = F / (Isp * g0): the propellant burned by time t is the
-    # impulse delivered by t over the impulse delivered by the stop time
+    # Integrate thrust to obtain cumulative delivered impulse.
     cumulative_impulse_ns = np.concatenate((
         [0.0],
-        np.cumsum(np.diff(times_s) * (thrust_n[1:] + thrust_n[:-1]) / 2),
+        np.cumsum(
+            np.diff(times_s)
+            * (thrust_n[1:] + thrust_n[:-1])
+            / 2.0
+        ),
     ))
-    impulse_at_stop_ns = float(
-        np.interp(cg_stop_s, elapsed_s, cumulative_impulse_ns)
-    )
 
-    if impulse_at_stop_ns <= 0:
+    total_impulse_ns = float(cumulative_impulse_ns[-1])
+
+    if total_impulse_ns <= 0:
         raise ValueError(
-            "The thrust curve delivers no impulse before "
-            "cg_mass_burn_time_s, so no propellant can be burned."
+            "The thrust curve must deliver positive total impulse."
         )
 
-    depletion_fraction = np.clip(
-        cumulative_impulse_ns / impulse_at_stop_ns, 0.0, 1.0
+    # Effective constant Isp required to consume all initial propellant.
+    effective_isp_s = total_impulse_ns / (
+        initial_propellant_kg * STANDARD_GRAVITY_M_S2
     )
 
-    cg_mm = np.zeros(len(times_s))
-    mass_g = np.zeros(len(times_s))
+    if not np.isfinite(effective_isp_s) or effective_isp_s <= 0:
+        raise ValueError("Calculated effective Isp is invalid.")
 
-    for i, fraction in enumerate(depletion_fraction):
-        oxidizer_remaining = oxidizer_initial * (1.0 - fraction)
-        fuel_remaining = fuel_initial * (1.0 - fraction)
+    # Mass consumed = accumulated impulse / (Isp * g0).
+    # Normalize against total impulse so all propellant is consumed
+    # by the end of the supplied thrust curve.
+    depletion_fraction = np.clip(
+        cumulative_impulse_ns / total_impulse_ns,
+        0.0,
+        1.0,
+    )
 
-        oxidizer_cg = tank_cg + fraction * (
-            tank_bottom - tank_cg
+    oxidizer_remaining_kg = (
+        oxidizer_initial * (1.0 - depletion_fraction)
+    )
+
+    fuel_remaining_kg = (
+        fuel_initial * (1.0 - depletion_fraction)
+    )
+
+    # Assume the remaining oxidizer moves uniformly from the tank CG
+    # toward the bottom of the tank as it depletes.
+    oxidizer_cg = tank_cg + depletion_fraction * (
+        tank_bottom - tank_cg
+    )
+
+    total_mass_kg = (
+        tank_dry
+        + middle_mass
+        + chamber_dry
+        + oxidizer_remaining_kg
+        + fuel_remaining_kg
+    )
+
+    moment_kg_in = (
+        tank_dry * tank_cg
+        + middle_mass * middle_cg
+        + chamber_dry * chamber_cg
+        + oxidizer_remaining_kg * oxidizer_cg
+        + fuel_remaining_kg * chamber_cg
+    )
+
+    if np.any(total_mass_kg <= 0):
+        raise ValueError(
+            "Calculated engine mass must remain greater than zero."
         )
 
-        total_mass_kg = (
-            tank_dry + middle_mass + chamber_dry
-            + oxidizer_remaining + fuel_remaining
-        )
+    cg_mm = (
+        moment_kg_in / total_mass_kg
+    ) * IN_TO_MM
 
-        moment_kg_in = (
-            tank_dry * tank_cg
-            + middle_mass * middle_cg
-            + chamber_dry * chamber_cg
-            + oxidizer_remaining * oxidizer_cg
-            + fuel_remaining * chamber_cg
-        )
-
-        cg_mm[i] = (
-            moment_kg_in / total_mass_kg
-        ) * IN_TO_MM
-
-        mass_g[i] = total_mass_kg * KG_TO_G
+    mass_g = total_mass_kg * KG_TO_G
 
     wet_mass_g = float(mass_g[0])
 
-    stop_index = int(
-        np.searchsorted(elapsed_s, cg_stop_s, side="right") - 1
+    empty_mass_g = float(
+        tank_dry + middle_mass + chamber_dry
+    ) * KG_TO_G
+
+    propellant_mass_g = (
+        initial_propellant_kg * KG_TO_G
     )
-    stop_index = max(0, min(stop_index, len(times_s) - 1))
-
-    empty_mass_g = float(mass_g[stop_index])
-    propellant_mass_g = wet_mass_g - empty_mass_g
-
-    if propellant_mass_g <= 0:
-        raise ValueError(
-            "Calculated depleted propellant mass is zero. Check that "
-            "cg_mass_burn_time_s is within the thrust-curve duration "
-            "and that the initial propellant masses are positive."
-        )
-
-    if elapsed_s[-1] > cg_stop_s:
-        cg_mm[stop_index + 1:] = cg_mm[stop_index]
-        mass_g[stop_index + 1:] = mass_g[stop_index]
 
     return (
         cg_mm,
@@ -363,7 +401,7 @@ def calculate_mass_and_cg(settings: dict, times_s: np.ndarray, thrust_n: np.ndar
         wet_mass_g,
         empty_mass_g,
         propellant_mass_g,
-        stop_index,
+        effective_isp_s,
     )
 
 
@@ -378,6 +416,7 @@ def build_rse_text(
     propellant_mass_g,
 ):
     rse_code = f"{settings['engine_code']}-rse"
+
     total_impulse_ns = float(np.trapezoid(thrust_n, times_s))
     curve_duration_s = float(times_s[-1] - times_s[0])
 
@@ -390,15 +429,18 @@ def build_rse_text(
     peak_thrust_n = float(np.max(thrust_n))
 
     isp_s = total_impulse_ns / (
-        (propellant_mass_g / KG_TO_G) * STANDARD_GRAVITY_M_S2
+        (propellant_mass_g / KG_TO_G)
+        * STANDARD_GRAVITY_M_S2
     )
 
     mass_fraction = (
         (wet_mass_g - propellant_mass_g) / wet_mass_g
     )
 
+    comments = xml_utils.escape(settings["engine_comments"])
+
     rows = [
-        f'\t\t<eng-data cg="{cg:.6f}" f="{force:.6f}" '
+        f'\t\t\t\t<eng-data cg="{cg:.6f}" f="{force:.6f}" '
         f'm="{mass:.6f}" t="{time:.6f}"/>'
         for time, force, cg, mass in zip(
             times_s, thrust_n, cg_mm, mass_g
@@ -410,23 +452,23 @@ def build_rse_text(
 \t\t<engine
 \t\t\tIsp="{isp_s:.6f}"
 \t\t\tItot="{total_impulse_ns:.6f}"
-\t\t\tType="{settings['motor_type']}"
+\t\t\tType="{xml_utils.escape(settings['motor_type'])}"
 \t\t\tauto-calc-cg="0"
 \t\t\tauto-calc-mass="0"
 \t\t\tavgThrust="{avg_thrust_n:.6f}"
 \t\t\tburn-time="{curve_duration_s:.6f}"
-\t\t\tcode="{rse_code}"
-\t\t\tdelays="{settings['motor_delay_setting']}"
+\t\t\tcode="{xml_utils.escape(rse_code)}"
+\t\t\tdelays="{xml_utils.escape(settings['motor_delay_setting'])}"
 \t\t\tdia="{settings['engine_outer_diameter_mm']:.6f}"
 \t\t\texitDia="{settings['nozzle_exit_diameter_mm']:.6f}"
 \t\t\tinitWt="{wet_mass_g:.6f}"
 \t\t\tlen="{engine_length_in * IN_TO_MM:.6f}"
 \t\t\tmassFrac="{mass_fraction:.6f}"
-\t\t\tmfg="{settings['manufacturer_name']}"
+\t\t\tmfg="{xml_utils.escape(settings['manufacturer_name'])}"
 \t\t\tpeakThrust="{peak_thrust_n:.6f}"
 \t\t\tpropWt="{propellant_mass_g:.6f}"
 \t\t\tthroatDia="{settings['nozzle_throat_diameter_mm']:.6f}">
-\t\t\t<comments>{settings['engine_comments']}</comments>
+\t\t\t<comments>{comments}</comments>
 \t\t\t<data>
 {chr(10).join(rows)}
 \t\t\t</data>
@@ -445,6 +487,7 @@ def build_eng_text(
     propellant_mass_g,
 ):
     eng_code = f"{settings['engine_code']}-eng"
+
     header = (
         f"{eng_code} "
         f"{settings['engine_outer_diameter_mm']:.6f} "
@@ -477,7 +520,6 @@ def build_eng_text(
 
 
 def main():
-
     current_folder = Path.cwd()
 
     if current_folder.name.lower() != "dynamics":
@@ -507,8 +549,6 @@ def main():
         settings = read_engine_info(engine_info_path)
     except (FileNotFoundError, ValueError) as exc:
         sys.exit(f"\nERROR: {exc}")
-
-    settings["dynamics_github_folder"] = dynamics_github_folder
 
     print("\nEngine information loaded successfully.")
     print(f"Input file: {engine_info_path}")
@@ -540,14 +580,18 @@ def main():
             wet_mass_g,
             empty_mass_g,
             propellant_mass_g,
-            stop_index,
-        ) = calculate_mass_and_cg(settings, times_s, thrust_n)
+            effective_isp_s,
+        ) = calculate_mass_and_cg(
+            settings,
+            times_s,
+            thrust_n,
+        )
 
     except (ValueError, OSError, ImportError) as exc:
         sys.exit(f"\nERROR: {exc}")
 
     output_dir = (
-        settings["dynamics_github_folder"]
+        dynamics_github_folder
         / settings["output_subfolder"]
     )
 
@@ -556,15 +600,18 @@ def main():
 
     print("\n================ ENGINE FILE EXPORT ================")
     print(f"Engine code: {settings['engine_code']}")
-    print(f"Thrust-curve duration: {times_s[-1] - times_s[0]:.3f} s")
     print(
-        "CG/mass depletion stop: "
-        f"{settings['cg_mass_burn_time_s']:.3f} s"
+        f"Thrust-curve duration: "
+        f"{times_s[-1] - times_s[0]:.3f} s"
     )
     print(f"Engine length: {engine_length_in:.3f} in")
+    print(f"Effective Isp: {effective_isp_s:.3f} s")
     print(f"Wet mass: {wet_mass_g / KG_TO_G:.3f} kg")
-    print(f"Mass at stop index: {empty_mass_g / KG_TO_G:.3f} kg")
-    print(f"Propellant mass depleted: {propellant_mass_g / KG_TO_G:.3f} kg")
+    print(f"Empty mass: {empty_mass_g / KG_TO_G:.3f} kg")
+    print(
+        f"Total propellant consumed: "
+        f"{propellant_mass_g / KG_TO_G:.3f} kg"
+    )
     print(f"Output folder: {output_dir}")
 
     answer = input(

@@ -24,16 +24,13 @@ engine_outer_diameter_mm = 152.4
 nozzle_throat_diameter_mm = 34.798
 nozzle_exit_diameter_mm = 73.66
 
-# CG / MASS DEPLETION
-cg_mass_burn_time_s = 10.0
-
 # OUTPUT LOCATION
 # Relative to the dynamics folder. Use / or \\ between folders.
 output_subfolder = aero_modeling/AIRMAIL/Thrust_Curves
 
 # Output filenames WITHOUT extensions. Extensions are added automatically.
-rse_output_filename = PER_MY_LAST
-eng_output_filename = PER_MY_LAST
+rse_output_filename = PER_MY_LAST_RSE
+eng_output_filename = PER_MY_LAST_ENG
 
 # ENGINE COMPONENTS
 # The top plumbing component is not included in this model.
