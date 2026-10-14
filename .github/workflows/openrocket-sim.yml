@@ -498,6 +498,8 @@ jobs:
         run: npm install --prefix tools/openrocket --no-package-lock --no-audit --no-fund
       - name: Test the site page
         run: python tools/openrocket/tests/test_site.py
+      - name: Test the history walk (every version of a design, through renames and merges)
+        run: python tools/openrocket/tests/test_history.py
       - name: Test the predictions build script and the Update CSV helper
         run: |
           python tools/whatif/tests/test_build_site.py

@@ -1133,20 +1133,46 @@ def _emit(report: str, args):
 # ----------------------------------------------------------------------------
 # history: every committed version of a design, as Mermaid bar charts
 # ----------------------------------------------------------------------------
-def git_file_history(root: Path, rel: str, max_commits: int):
-    """Commits (oldest first) that touched `rel`, following renames along the first-parent line.
-    Each entry: sha, short, time, author, message, path (the file's name AT that commit)."""
+def _first_parent_versions(root: Path, start: str, rel: str, max_commits: int) -> list[dict]:
+    """Commits (newest first) from `start` that touched `rel`, following renames along the first-parent line."""
     r = _git(root, "log", "--first-parent", "--follow", f"--max-count={max_commits}",
-             "--format=__C__%H%x1f%ct%x1f%h%x1f%an%x1f%s", "--name-only", "--", rel, check=False)
+             "--format=__C__%H%x1f%P%x1f%ct%x1f%h%x1f%an%x1f%s", "--name-only", start, "--", rel, check=False)
     entries, cur = [], None
     for line in r.stdout.splitlines():
         if line.startswith("__C__"):
-            sha, ct, short, author, msg = line[5:].split("\x1f", 4)
-            cur = {"sha": sha, "short": short, "time": int(ct), "author": author, "message": msg, "path": None}
+            sha, parents, ct, short, author, msg = line[5:].split("\x1f", 5)
+            cur = {"sha": sha, "parents": parents.split(), "short": short, "time": int(ct), "author": author,
+                   "message": msg, "path": None}
             entries.append(cur)
         elif line.strip() and cur is not None and cur["path"] is None:
             cur["path"] = line.strip()
-    return [e for e in entries if e["path"]][::-1]
+    return [e for e in entries if e["path"]]
+
+
+def git_file_history(root: Path, rel: str, max_commits: int):
+    """Commits (oldest first) that touched `rel`, following renames along the first-parent line.
+    Each entry: sha, short, time, author, message, path (the file's name AT that commit).
+
+    Someone who commits on an old copy of main and then pulls makes a merge whose FIRST parent is their old
+    side; if the design was renamed on main meanwhile, the first-parent line has no earlier versions and the
+    file looks new at the merge. The walk then carries on down the parent that already had the file."""
+    entries, start, path, seen = [], "HEAD", rel, set()
+    while len(entries) < max_commits:
+        got = [e for e in _first_parent_versions(root, start, path, max_commits - len(entries)) if e["sha"] not in seen]
+        if not got:
+            break
+        entries += got
+        seen.update(e["sha"] for e in got)
+        oldest = got[-1]
+        if len(oldest["parents"]) < 2 or _blob(root, oldest["parents"][0], oldest["path"]) is not None:
+            break  # created here, or the log simply ran out: nothing further back on another side
+        other = next((p for p in oldest["parents"][1:] if _blob(root, p, oldest["path"]) is not None), None)
+        if other is None:
+            break
+        start, path = other, oldest["path"]
+    for e in entries:
+        e.pop("parents", None)
+    return entries[::-1]
 
 
 def _blob(root: Path, sha: str, rel: str):
