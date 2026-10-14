@@ -315,7 +315,8 @@ jobs:
             edith-
 
       # Each rocket's predictions page and Vision flights, keyed like the history cache above: by the git blob id of
-      # the design and a salt (the aero table, motor, RASAero files, this design's History data, the flight_sim code).
+      # the design and a salt (the aero table, motor, RASAero files, this design's newest OpenRocket results on the
+      # History tab, the flight_sim code).
       # A push that changes none of them (a page or workflow fix, another folder) reuses them instead of flying again.
       - name: Restore the predictions cache (main only)
         if: always() && github.ref == 'refs/heads/main' && steps.flightsim.outcome == 'success'

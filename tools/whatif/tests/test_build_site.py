@@ -380,25 +380,44 @@ def test_the_page_is_reused_while_nothing_it_is_made_from_changes():
         assert entries[0].startswith(f"{blob}-{build_site.CACHE_SALT}-"), "named like or_ci.py's: <.ork blob id>-<salt>"
 
 
-def test_the_history_data_of_the_design_is_part_of_the_key_but_not_the_rest():
+def test_only_the_newest_openrocket_results_of_the_design_are_part_of_the_key():
+    """The page takes the newest good version's numbers and flight from the History tab, nothing older; Jarvis on
+    every commit is cheap and made again on every run, so it follows a history that grew without flying the page."""
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
         path = _config(root, {"R": {"ork": "OR/a.ork", "aero": "a.csv", "motor": "a.eng"}}, "R")
         package = root / "flight_sim"
         package.mkdir()
         site = root / "site"
-        site.mkdir()
+        (site / "flights").mkdir(parents=True)
+        page, by_commit = ["flight_sim.whatif.build", "flight_sim.whatif.commits"], ["flight_sim.whatif.commits"]
 
-        def history(generated: str, rows: list, other: list) -> None:
-            data = {"generated": generated, "designs": {"OR/a.ork": {"avg": rows}, "OR/b.ork": {"avg": other}}, "flights": {}}
+        def version(sha: str, apogee: float, ok: bool = True) -> dict:
+            return {"sha": sha, "ok": ok, "m": {"apogee": apogee}}
+
+        def history(generated: str, rows: list, other: list, flights: tuple = ([1.0], [0.9])) -> None:
+            data = {"generated": generated, "designs": {"OR/a.ork": {"avg": rows}, "OR/b.ork": {"avg": other}},
+                    "flights": {"OR/a.ork|avg": "flights/a.js"}}
             (site / "data.json").write_text(json.dumps(data))
+            versions = [{"short": f"v{i}", "cols": {"altitude": alt}} for i, alt in enumerate(flights)]  # newest first
+            (site / "flights" / "a.js").write_text(f'window.__flight("OR/a.ork|avg", {json.dumps({"versions": versions})});\n')
 
-        history("monday", [{"sha": "1"}], [])
-        assert _cached_runs(root, path, package) == ["flight_sim.whatif.build", "flight_sim.whatif.commits"]
-        history("tuesday", [{"sha": "1"}], [{"sha": "9"}])  # a new build time, another design changed
-        assert _cached_runs(root, path, package) == [], "only this design's History data matters"
-        history("tuesday", [{"sha": "1"}, {"sha": "2"}], [{"sha": "9"}])  # a new version of this design
-        assert _cached_runs(root, path, package) == ["flight_sim.whatif.build", "flight_sim.whatif.commits"]
+        history("monday", [version("1", 9000)], [])
+        assert _cached_runs(root, path, package) == page
+        history("tuesday", [version("1", 9000)], [version("9", 1)])  # a new build time, another design changed
+        assert _cached_runs(root, path, package) == by_commit, "kept; only the per-commit points are made again"
+        history("tuesday", [version("0", 8000), version("1", 9000)], [version("9", 1)])  # an older version found
+        assert _cached_runs(root, path, package) == by_commit, "older versions do not fly the page again"
+        history("tuesday", [version("0", 8000), version("1", 9000)], [version("9", 1)], flights=([1.0], [0.5]))
+        assert _cached_runs(root, path, package) == by_commit, "nor does the previous version's flight"
+        history("tuesday", [version("0", 8000), version("1", 9000), version("2", 0, ok=False)], [version("9", 1)])
+        assert _cached_runs(root, path, package) == by_commit, "a failed newest version leaves the newest good one"
+        history("tuesday", [version("0", 8000), version("1", 9100)], [version("9", 1)])  # the newest numbers moved
+        assert _cached_runs(root, path, package) == page
+        history("tuesday", [version("0", 8000), version("1", 9100)], [version("9", 1)], flights=([1.1], [0.9]))
+        assert _cached_runs(root, path, package) == page, "and so does the newest flight"
+        (site / "flights" / "a.js").write_text("not a flight script")  # unreadable: the whole file counts
+        assert _cached_runs(root, path, package) == page
 
 
 def test_edith_and_the_other_rockets_are_not_kept_with_the_default_rockets_page():

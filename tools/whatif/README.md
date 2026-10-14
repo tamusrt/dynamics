@@ -241,8 +241,10 @@ Flying the predictions page and Vision's flights takes about 3–5 minutes, and 
 runs, so a push that does not change what they are made from skips them. The page and flight are kept in
 `.predictions_cache` the way the History tab keeps its OpenRocket runs in `.or_ci_cache`: one entry per rocket, named
 `<git blob id of the .ork>-<salt>`. The salt is `CACHE_SALT` in `build_site.py` and a hash of everything else they are
-made from (the aero table, motor and RASAero files, the build options, this design's History data and the `flight_sim`
-code). Change any of these and the rocket is flown again. The log says `Predictions: 1 rocket(s); 0 to fly, 1 from cache`.
+made from (the aero table, motor and RASAero files, the build options, the newest OpenRocket results of this design on
+the History tab, and the `flight_sim` code). Change any of these and the rocket is flown again. Older History versions
+are not part of it: Jarvis on every commit (the History tab's dashed lines) takes seconds and is made again on every run,
+so a history that grows without the design changing does not fly the page again. The log says `Predictions: 1 rocket(s); 0 to fly, 1 from cache`.
 Bump `CACHE_SALT` when the page changes in a way none of its inputs show. The page's "generated" time is then the time it
 was last flown.
 
