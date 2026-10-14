@@ -15,8 +15,8 @@ depends on changes, and whatever goes wrong with it leaves the pages built befor
 
 The page and flight take minutes too, so with ``--cache`` each rocket's result is kept the way or_ci.py keeps the History
 tab's simulations: under the git blob id of the design and a salt (CACHE_SALT and a hash of the other inputs: the aero
-table, motor and RASAero files, the options, this design's History data and the flight_sim code), and reused while
-none of them change.
+table, motor and RASAero files, the options, the newest OpenRocket results of this design on the History tab and the
+flight_sim code), and reused while none of them change. Jarvis on every commit is cheap and is made again each run.
 """
 
 from __future__ import annotations
@@ -25,6 +25,7 @@ import argparse
 import hashlib
 import importlib.util
 import json
+import re
 import shutil
 import subprocess
 import sys
@@ -333,8 +334,25 @@ def _flight_sim_id(package: Path) -> str:
     return hashlib.sha1(entry.encode()).hexdigest()
 
 
+_FLIGHT_SCRIPT = re.compile(r'window\.__flight\(("(?:[^"\\]|\\.)*"), (.*)\);\s*$', re.S)
+
+
+def _newest_flight_id(script: Path) -> str:
+    """An id for the newest version's flight in one of the History site's flights/*.js files (they also hold the
+    version before it, which the page does not use); the whole file's id if it cannot be read that way."""
+    match = _FLIGHT_SCRIPT.match(script.read_text(encoding="utf-8"))
+    try:
+        newest = json.loads(match.group(2))["versions"][:1]  # newest first, as or_ci.py writes them
+    except (AttributeError, ValueError, KeyError, TypeError):
+        return _hash_file(script)
+    return hashlib.sha1(json.dumps(newest, sort_keys=True).encode()).hexdigest()
+
+
 def _history_id(site: Path, ork_name: str) -> str:
-    """One id for this design's rows and flight files in the History site (the rest of data.json, such as its time, is left out)."""
+    """One id for what the page takes from the History site for this design: per simulation, the newest good
+    version's numbers and that version's flight (flight_sim's load_history reads nothing else). Older versions, the
+    other designs and the build time leave it unchanged, so a push that only adds to the history (a fix that finds
+    lost versions, say) keeps the page; the per-commit Jarvis points are made again on every run instead."""
     try:
         data = json.loads((site / "data.json").read_text(encoding="utf-8"))
     except (OSError, ValueError):
@@ -343,11 +361,12 @@ def _history_id(site: Path, ork_name: str) -> str:
     for design, sims in sorted((data.get("designs") or {}).items()):
         if Path(design).name != ork_name:
             continue
-        part.append(json.dumps([design, sims], sort_keys=True))
         for sim in sorted(sims):
+            good = [r for r in sims[sim] if r.get("ok")]
+            part.append(json.dumps([design, sim, good[-1] if good else None], sort_keys=True))
             script = (data.get("flights") or {}).get(f"{design}|{sim}")
             if script and (site / script).is_file():
-                part.append(_hash_file(site / script))
+                part.append(_newest_flight_id(site / script))
     return hashlib.sha1("\n".join(part).encode()).hexdigest() if part else ""
 
 
@@ -376,7 +395,7 @@ def cache_name(build: dict, site: Path) -> str | None:
 
     As in or_ci.py, the entry is named by the git blob id of the design and a salt: CACHE_SALT and a short hash of
     everything else the page and flight are made from (the options they are built with, the blob ids of the aero
-    table, motor and RASAero files, this design's History data and the installed flight_sim code).
+    table, motor and RASAero files, the newest OpenRocket results of this design and the installed flight_sim code).
     """
     parts = cache_parts(build, site)
     if parts is None:
@@ -569,6 +588,9 @@ def main(argv: list[str] | None = None) -> int:
                     "so the JARVIS predictions, VISION and EDITH were not flown again: they show the previous version of the design.")})
         if name and restore_cached(build, cache, name):
             print(f"  from cache ({name})", flush=True)
+            # the kept by_commit.json may lack commits the history gained since (the key only has the newest version)
+            if build["by_commit"] and subprocess.run(build["by_commit"], check=False).returncode:  # cheap: keep it current
+                print(f"  (no Jarvis line by commit for {build['key']}; the kept one is shown)", flush=True)
         elif reuse and restore_cached(build, cache, reuse):
             print(f"  small design change: kept the last pages ({reuse}); {skipped[-1]['text']}", flush=True)
             names[build["key"]] = reuse  # so prune_cache keeps it for the next push
