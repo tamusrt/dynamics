@@ -53,8 +53,8 @@
       <LaunchShoeArea>0</LaunchShoeArea>
       <Location>69.2578</Location>
       <Color>Black</Color>
-      <BoattailLength>4</BoattailLength>
-      <BoattailRearDiameter>4</BoattailRearDiameter>
+      <BoattailLength>4.15</BoattailLength>
+      <BoattailRearDiameter>3.6</BoattailRearDiameter>
       <BoattailOffset>0</BoattailOffset>
       <Overhang>0</Overhang>
       <Fin>
@@ -73,9 +73,9 @@
     </BodyTube>
     <BoatTail>
       <PartType>BoatTail</PartType>
-      <Length>4</Length>
+      <Length>4.15</Length>
       <Diameter>6</Diameter>
-      <RearDiameter>4</RearDiameter>
+      <RearDiameter>3.6</RearDiameter>
       <Location>167.3176</Location>
       <Color>Blue</Color>
     </BoatTail>
