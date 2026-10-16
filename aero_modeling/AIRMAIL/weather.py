@@ -1,0 +1,128 @@
+#https://open-meteo.com/en/docs/historical-weather-api?latitude=31.024&longitude=-103.6616&start_date=2016-06-01&end_date=2016-06-30&hourly=temperature_2m,wind_speed_10m,wind_speed_100m,wind_direction_10m,wind_direction_100m,wind_gusts_10m,pressure_msl,surface_pressure&temperature_unit=fahrenheit&wind_speed_unit=mph&precipitation_unit=inch
+
+#pip install openmeteo-requests
+#pip install requests-cache retry-requests numpy pandas
+
+from math import sqrt
+from pathlib import Path
+
+import openmeteo_requests
+
+import pandas as pd
+import requests_cache
+from retry_requests import retry
+
+# Setup the Open-Meteo API client with cache and retry on error
+cache_session = requests_cache.CachedSession(".cache", expire_after=-1)
+retry_session = retry(cache_session, retries=5, backoff_factor=0.2)
+openmeteo = openmeteo_requests.Client(session=retry_session)
+
+url = "https://archive-api.open-meteo.com/v1/archive"
+local_timezone = "America/Chicago"
+number_of_parameters = 2  # Set this to the number of weather parameters.
+if number_of_parameters <= 0:
+    raise ValueError("number_of_parameters must be greater than zero.")
+params = {
+    "latitude": 31.024,
+    "longitude": -103.6616,
+    "timezone": local_timezone,
+    "hourly": [
+        "temperature_2m",
+        "wind_speed_10m",
+        "wind_speed_100m",
+        "wind_direction_10m",
+        "wind_direction_100m",
+        "wind_gusts_10m",
+        "pressure_msl",
+        "surface_pressure",
+    ],
+    "temperature_unit": "fahrenheit",
+    "wind_speed_unit": "mph",
+    "precipitation_unit": "inch",
+}
+
+hourly_dataframes = []
+for year in range(2016, 2027):
+    year_params = {
+        **params,
+        "start_date": f"{year}-06-01",
+        "end_date": f"{year}-06-30",
+    }
+    response = openmeteo.weather_api(url, params=year_params)[0]
+
+    hourly = response.Hourly()
+    hourly_data = {
+        "date": pd.date_range(
+            start=pd.to_datetime(hourly.Time(), unit="s", utc=True),
+            end=pd.to_datetime(hourly.TimeEnd(), unit="s", utc=True),
+            freq=pd.Timedelta(seconds=hourly.Interval()),
+            inclusive="left",
+        ).tz_convert(local_timezone),
+        "temperature_2m": hourly.Variables(0).ValuesAsNumpy(),
+        "wind_speed_10m": hourly.Variables(1).ValuesAsNumpy(),
+        "wind_speed_100m": hourly.Variables(2).ValuesAsNumpy(),
+        "wind_direction_10m": hourly.Variables(3).ValuesAsNumpy(),
+        "wind_direction_100m": hourly.Variables(4).ValuesAsNumpy(),
+        "wind_gusts_10m": hourly.Variables(5).ValuesAsNumpy(),
+        "pressure_msl": hourly.Variables(6).ValuesAsNumpy(),
+        "surface_pressure": hourly.Variables(7).ValuesAsNumpy(),
+    }
+    hourly_dataframes.append(pd.DataFrame(data=hourly_data))
+
+hourly_dataframe = pd.concat(hourly_dataframes, ignore_index=True)
+
+# Convert the default pressure unit, hPa, to inHg.
+hectopascals_per_inhg = 33.8638866667
+pressure_columns = ["pressure_msl", "surface_pressure"]
+hourly_dataframe[pressure_columns] = (
+    hourly_dataframe[pressure_columns] / hectopascals_per_inhg
+)
+
+output_directory = Path(__file__).resolve().parent / "hourly_datasets"
+output_directory.mkdir(parents=True, exist_ok=True)
+summary_directory = output_directory / "sigma_summaries"
+summary_directory.mkdir(parents=True, exist_ok=True)
+
+parameter_columns = hourly_dataframe.columns.drop("date")
+sigma_denominator = sqrt(number_of_parameters)
+sigma_labels = {
+    -3: f"-3/sqrt({number_of_parameters})sigma",
+    -2: f"-2/sqrt({number_of_parameters})sigma",
+    -1: f"-1/sqrt({number_of_parameters})sigma",
+    0: "average",
+    1: f"+1/sqrt({number_of_parameters})sigma",
+    2: f"+2/sqrt({number_of_parameters})sigma",
+    3: f"+3/sqrt({number_of_parameters})sigma",
+}
+
+for hour in range(24):
+    hourly_dataset = hourly_dataframe[hourly_dataframe["date"].dt.hour == hour]
+
+    # Save the raw observations without printing a save message.
+    output_path = output_directory / f"hour_{hour:02d}.csv"
+    hourly_dataset.to_csv(output_path, index=False)
+
+    means = hourly_dataset[parameter_columns].mean()
+    standard_deviations = hourly_dataset[parameter_columns].std()
+    sigma_summary = pd.DataFrame({
+        "parameter": parameter_columns,
+        "mean": means.to_numpy(),
+    })
+
+    for sigma_level, label in sigma_labels.items():
+        sigma_summary[label] = (
+            means.to_numpy()
+            + (sigma_level / sigma_denominator) * standard_deviations.to_numpy()
+        )
+
+    # Save the summary and print it for this hour.
+    summary_path = summary_directory / f"hour_{hour:02d}_sigma_summary.csv"
+    sigma_summary.to_csv(summary_path, index=False)
+
+    print(f"\nHour {hour:02d}:00 local time ({local_timezone})")
+    print(
+        sigma_summary.to_string(
+            index=False,
+            float_format=lambda value: f"{value:.3f}",
+        )
+    )
