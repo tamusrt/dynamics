@@ -19,7 +19,7 @@ openmeteo = openmeteo_requests.Client(session=retry_session)
 
 url = "https://archive-api.open-meteo.com/v1/archive"
 local_timezone = "America/Chicago"
-number_of_parameters = 2  # Set this to the number of weather parameters.
+number_of_parameters = 3  # Set this to the number of weather parameters.
 if number_of_parameters <= 0:
     raise ValueError("number_of_parameters must be greater than zero.")
 params = {
@@ -83,7 +83,13 @@ output_directory.mkdir(parents=True, exist_ok=True)
 summary_directory = output_directory / "sigma_summaries"
 summary_directory.mkdir(parents=True, exist_ok=True)
 
-parameter_columns = hourly_dataframe.columns.drop("date")
+parameter_columns = [
+    "temperature_2m",
+    "wind_speed_10m",
+    "wind_speed_100m",
+    "pressure_msl",
+    "surface_pressure",
+]
 sigma_denominator = sqrt(number_of_parameters)
 sigma_labels = {
     -3: f"-3/sqrt({number_of_parameters})sigma",
@@ -95,34 +101,36 @@ sigma_labels = {
     3: f"+3/sqrt({number_of_parameters})sigma",
 }
 
-for hour in range(24):
+hourly_summaries = []
+for hour in range(9, 18):
     hourly_dataset = hourly_dataframe[hourly_dataframe["date"].dt.hour == hour]
-
-    # Save the raw observations without printing a save message.
-    output_path = output_directory / f"hour_{hour:02d}.csv"
-    hourly_dataset.to_csv(output_path, index=False)
-
     means = hourly_dataset[parameter_columns].mean()
     standard_deviations = hourly_dataset[parameter_columns].std()
-    sigma_summary = pd.DataFrame({
-        "parameter": parameter_columns,
-        "mean": means.to_numpy(),
-    })
+    sigma_summary = pd.DataFrame({"parameter": parameter_columns})
 
     for sigma_level, label in sigma_labels.items():
         sigma_summary[label] = (
             means.to_numpy()
-            + (sigma_level / sigma_denominator) * standard_deviations.to_numpy()
+            + (sigma_level / sigma_denominator)
+            * standard_deviations.to_numpy()
         )
 
-    # Save the summary and print it for this hour.
-    summary_path = summary_directory / f"hour_{hour:02d}_sigma_summary.csv"
-    sigma_summary.to_csv(summary_path, index=False)
+    hourly_summaries.append(sigma_summary)
 
-    print(f"\nHour {hour:02d}:00 local time ({local_timezone})")
-    print(
-        sigma_summary.to_string(
-            index=False,
-            float_format=lambda value: f"{value:.3f}",
-        )
+average_sigma_summary = (
+    pd.concat(hourly_summaries)
+    .groupby("parameter", sort=False)[list(sigma_labels.values())]
+    .mean()
+    .reset_index()
+)
+
+average_summary_path = summary_directory / "hours_09_to_17_sigma_summary.csv"
+average_sigma_summary.to_csv(average_summary_path, index=False)
+
+print(f"\nAverage across hours 09:00-17:00 local time ({local_timezone})")
+print(
+    average_sigma_summary.to_string(
+        index=False,
+        float_format=lambda value: f"{value:.3f}",
     )
+)
