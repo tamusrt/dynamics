@@ -59,15 +59,15 @@
       <Overhang>0</Overhang>
       <Fin>
         <Count>4</Count>
-        <Chord>11.6</Chord>
-        <Span>8.95</Span>
-        <SweepDistance>12.5</SweepDistance>
-        <TipChord>4</TipChord>
+        <Chord>16</Chord>
+        <Span>7</Span>
+        <SweepDistance>4</SweepDistance>
+        <TipChord>5</TipChord>
         <Thickness>0.3</Thickness>
         <LERadius>0.0313</LERadius>
-        <Location>14.6</Location>
+        <Location>19</Location>
         <AirfoilSection>Double Wedge</AirfoilSection>
-        <FX1>3.9</FX1>
+        <FX1>2.5</FX1>
         <FX3>0</FX3>
       </Fin>
     </BodyTube>
@@ -116,9 +116,9 @@
   <SimulationList>
     <Simulation>
       <SustainerEngine>ENGINE-2027-python  (TAMUSRT)</SustainerEngine>
-      <SustainerLaunchWt>134.03</SustainerLaunchWt>
+      <SustainerLaunchWt>136</SustainerLaunchWt>
       <SustainerNozzleDiameter>0</SustainerNozzleDiameter>
-      <SustainerCG>107.76</SustainerCG>
+      <SustainerCG>101</SustainerCG>
       <SustainerIgnitionDelay>0</SustainerIgnitionDelay>
       <Booster1LaunchWt>0</Booster1LaunchWt>
       <Booster1SeparationDelay>0</Booster1SeparationDelay>
@@ -132,9 +132,9 @@
       <Booster2NozzleDiameter>0</Booster2NozzleDiameter>
       <IncludeBooster2>False</IncludeBooster2>
       <FlightTime>0</FlightTime>
-      <TimetoApogee>43.29874</TimetoApogee>
-      <MaxAltitude>30689.51</MaxAltitude>
-      <MaxVelocity>1742.826</MaxVelocity>
+      <TimetoApogee>42.09894</TimetoApogee>
+      <MaxAltitude>29038.5</MaxAltitude>
+      <MaxVelocity>1690.347</MaxVelocity>
       <OptimumWt>0</OptimumWt>
       <OptimumMaxAlt>0</OptimumMaxAlt>
     </Simulation>
