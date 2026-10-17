@@ -134,3 +134,24 @@ print(
         float_format=lambda value: f"{value:.3f}",
     )
 )
+
+import numpy as np
+import matplotlib.pyplot as plt
+
+# Replace with your measured wind speeds [m/s]
+V10 = 15.489
+V100 = 19.449
+
+# Calculate power-law exponent
+alpha = np.log(V100 / V10) / np.log(328 / 32.8)
+
+# Altitudes from 0 ft to 30000 ft
+altitude = np.arange(0, 35001, 5000)
+
+# Estimate wind speed
+wind_speed = V10 * (altitude / 32.8) ** alpha
+wind_speed[0] = V10
+
+print()
+for altitude_ft, speed in zip(altitude, wind_speed):
+    print(f"Altitude: {altitude_ft} ft, Wind speed: {speed:.2f} m/s")
