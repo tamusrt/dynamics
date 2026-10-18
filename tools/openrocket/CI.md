@@ -106,6 +106,7 @@ An `.ork` is a zip around XML, and git shows it as an opaque binary. The check u
 
 ```
 python tools/openrocket/ork_diff.py old.ork new.ork --units imperial --table
+python tools/openrocket/ork_diff.py --base HEAD~1 aero_modeling/AIRMAIL/OpenRocket/AIRMAIL.ork --units imperial   # committed version vs the working file
 ```
 
 ### Optional: a Copilot-written summary
