@@ -17,7 +17,9 @@ report and the website, or handed to a language model to narrate.
 """
 
 import argparse
+import io
 import math
+import subprocess
 import sys
 import xml.etree.ElementTree as ET
 import zipfile
@@ -69,9 +71,27 @@ KIND_NAMES = {"nosecone": "nose cone", "bodytube": "body tube", "transition": "t
 # reading
 # ----------------------------------------------------------------------------
 def load_ork_xml(path) -> ET.Element:
-    with zipfile.ZipFile(path) as zf:
-        names = zf.namelist()
-        return ET.fromstring(zf.read("rocket.ork" if "rocket.ork" in names else names[0]))
+    """path: an .ork file, or the bytes of one."""
+    src = io.BytesIO(path) if isinstance(path, bytes) else path
+    try:
+        with zipfile.ZipFile(src) as zf:
+            names = zf.namelist()
+            return ET.fromstring(zf.read("rocket.ork" if "rocket.ork" in names else names[0]))
+    except zipfile.BadZipFile:
+        raise SystemExit(f"{path if not isinstance(path, bytes) else 'the old version'}: not an .ork file (an .ork is a zip). "
+                         "If it came from `git show ... > file` in PowerShell, the redirection corrupted it: "
+                         "use --base <commit> instead, which reads the old version from git directly.")
+
+
+def git_version(ref: str, path: Path) -> bytes:
+    """The file as committed at ref (a commit, branch or tag), straight from git; no temp file, no shell redirection."""
+    rel = subprocess.run(["git", "ls-files", "--full-name", "--error-unmatch", str(path)], capture_output=True, text=True)
+    if rel.returncode:
+        raise SystemExit(f"{path} is not tracked by git: {rel.stderr.strip()}")
+    r = subprocess.run(["git", "show", f"{ref}:{rel.stdout.strip()}"], capture_output=True)
+    if r.returncode:
+        raise SystemExit(r.stderr.decode(errors="replace").strip())
+    return r.stdout
 
 
 def _leaf_value(el: ET.Element) -> str:
@@ -352,9 +372,13 @@ def rows(diff: dict, units: str = "metric") -> list:
 
 
 def main():
-    p = argparse.ArgumentParser(description="What changed between two OpenRocket files.")
-    p.add_argument("old")
-    p.add_argument("new")
+    p = argparse.ArgumentParser(description="What changed between two OpenRocket files.",
+                                epilog="\n".join(["Examples:  ork_diff.py old.ork new.ork --units imperial --table",
+                                                   "           ork_diff.py --base HEAD~1 aero_modeling/X/X.ork   (committed version vs the working file)",
+                                                   "           ork_diff.py --base origin/main aero_modeling/X/X.ork"]),
+                                formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument("files", nargs="+", metavar="FILE", help="OLD NEW, or just NEW with --base")
+    p.add_argument("--base", metavar="REF", help="Compare NEW against its version at this git commit/branch/tag instead of an OLD file")
     p.add_argument("--units", choices=["metric", "imperial"], default="metric")
     p.add_argument("--table", action="store_true", help="Also print every changed field")
     a = p.parse_args()
@@ -362,7 +386,15 @@ def main():
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     except Exception:
         pass
-    d = diff_files(Path(a.old), Path(a.new))
+    if a.base:
+        if len(a.files) != 1:
+            p.error("with --base give one file: the current one")
+        new = Path(a.files[0])
+        d = diff_roots(load_ork_xml(git_version(a.base, new)), load_ork_xml(new))
+    elif len(a.files) == 2:
+        d = diff_files(Path(a.files[0]), Path(a.files[1]))
+    else:
+        p.error("give OLD and NEW, or --base REF and NEW")
     print(headline(d))
     for line in describe(d, a.units):
         print(" -", line.replace("**", ""))

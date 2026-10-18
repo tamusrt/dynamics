@@ -116,9 +116,9 @@
   <SimulationList>
     <Simulation>
       <SustainerEngine>PER_MY_LAST-eng  (TAMUSRT)</SustainerEngine>
-      <SustainerLaunchWt>135</SustainerLaunchWt>
+      <SustainerLaunchWt>136</SustainerLaunchWt>
       <SustainerNozzleDiameter>0</SustainerNozzleDiameter>
-      <SustainerCG>99.67</SustainerCG>
+      <SustainerCG>99.23</SustainerCG>
       <SustainerIgnitionDelay>0</SustainerIgnitionDelay>
       <Booster1LaunchWt>0</Booster1LaunchWt>
       <Booster1SeparationDelay>0</Booster1SeparationDelay>
