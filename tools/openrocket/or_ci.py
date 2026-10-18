@@ -596,6 +596,18 @@ def run_ork(helper, cfg: Config, snap: Snapshot, root: Path, ork_rel: str, seed:
     return records
 
 
+def describe_wind(opts) -> str:
+    """'profile 6.9-13.8 m/s (8 levels)' or 'average 8.0 m/s', for the report."""
+    try:
+        if str(opts.getWindModelType()) == "MULTI_LEVEL":
+            speeds = [float(l.getSpeed()) for l in opts.getMultiLevelWindModel().getLevels()]
+            if speeds:
+                return f"profile {min(speeds):.1f}-{max(speeds):.1f} m/s ({len(speeds)} levels)"
+        return f"average {float(opts.getAverageWindModel().getAverage()):.1f} m/s"
+    except Exception:
+        return ""
+
+
 def _run_one(helper, cfg, snap, root, ork_rel, base_rec, info, fcfg, scfg, sim, i, sim_name, configid,
              vlabel, voverride, seed, log, fallback, capture_series=False):
     """Resolve motors, run one simulation (one motor variant), return its record.
@@ -638,12 +650,19 @@ def _run_one(helper, cfg, snap, root, ork_rel, base_rec, info, fcfg, scfg, sim, 
         rec["motor_source"] = ", ".join(sorted({m["source"] for m in rec["motors"]}))
         rec["motor_file"] = ", ".join(m["file"] for m in rec["motors"] if m["file"])
         rec["notes"] = "; ".join(notes)
+        opts = sim.getOptions()
         if cfg.deterministic_wind:
             # OpenRocket 24.12 draws turbulence entropy outside the seed: two loads of the
             # same file differ by ~0.1-0.5 cal in stability off the rod. Zero turbulence
-            # (average wind kept) makes before/after bit-identical for an unchanged design.
-            sim.getOptions().setWindTurbulenceIntensity(0.0)
-        sim.getOptions().setRandomSeed(int(seed))
+            # (wind speeds kept) makes before/after bit-identical for an unchanged design.
+            # Set it on the model objects: SimulationOptions.setWindTurbulenceIntensity()
+            # also switches the wind model type to AVERAGE, which silently discards a
+            # multi-level wind profile (it did, until 2026-10).
+            opts.getAverageWindModel().setTurbulenceIntensity(0.0)
+            for level in opts.getMultiLevelWindModel().getLevels():
+                level.setTurbulenceIntensity(0.0)
+        opts.setRandomSeed(int(seed))
+        rec["wind"] = describe_wind(opts)
         t0 = time.time()
         helper.run_simulation(sim, randomize_seed=False)
         summary = helper.get_summary(sim).to_dict()
@@ -773,7 +792,8 @@ def render_report(head_recs, base_recs, base_label, head_label, changed_motor_fi
             + " | ".join(cells) + f" | {'; '.join(flags) if flags else '✅'} |")
         # detail table
         detail.append(f"<details><summary><code>{r['file']}</code> · {sim} · motor {r.get('motor') or '–'}"
-                      f" ({r.get('motor_source', '')}{', ' + r['motor_file'] if r.get('motor_file') else ''})</summary>")
+                      + (f" · wind {r['wind']}" if r.get('wind') else "")
+                      + f" ({r.get('motor_source', '')}{', ' + r['motor_file'] if r.get('motor_file') else ''})</summary>")
         detail.append("")
         if b is None and base_label:
             detail.append("_New in this range (no base version)._")
@@ -825,7 +845,7 @@ def render_report(head_recs, base_recs, base_label, head_label, changed_motor_fi
     lines.append("|---|---|---|---:|---:|" + "---:|" * len(heads) + "---|")
     lines.extend(summary_rows)
     lines.append("")
-    wind = ("wind turbulence set to 0 for reproducibility (average wind kept)" if deterministic_wind
+    wind = ("wind turbulence set to 0 for reproducibility (wind speeds and profiles kept)" if deterministic_wind
             else "wind turbulence as saved in the file (results vary run to run)")
     lines.append(f"Same random seed before and after; {wind}.")
     if changed_motor_files:
@@ -1288,7 +1308,7 @@ def cmd_history(args):
     cache_dir = Path(args.cache).resolve() if args.cache else None
     if cache_dir:
         cache_dir.mkdir(parents=True, exist_ok=True)
-    cache_salt = f"s{cfg.seed}-w{int(cfg.deterministic_wind)}-m3"  # bump the suffix when metrics change
+    cache_salt = f"s{cfg.seed}-w{int(cfg.deterministic_wind)}-m4"  # bump the suffix when metrics or the run setup change (m4: multi-level wind honoured)
 
     def _strings(value):  # every string in a config entry (motor paths sit at different depths)
         if isinstance(value, str):
@@ -1608,18 +1628,17 @@ SITE_HTML = r"""<!doctype html>
      <aside class="ypanel" id="ypanel"></aside>
     </div>
     <p class="legend" id="finfo"></p>
-    <p class="legend">Plot any OpenRocket flight variable against another for the latest version of each selected simulation. Choose Y variables in the panel on the right; each unit gets its own axis (up to three per side), and clicking a plotted variable moves it to the other side. Line style shows the variable and color shows the simulation. Dotted vertical lines mark rail exit, burnout, apogee and parachute deployment. Drag or scroll to zoom, double-click to reset, and click a legend entry to hide it. <b>Previous version</b> adds the commit before as a faint dashed line. <b>Export CSV</b> downloads exactly what is plotted. Simulations run in OpenRocket 24.12 with wind turbulence off and a fixed random seed, so results are repeatable. To change the launch conditions, edit the simulation in the <code>.ork</code> file and push.</p>
+    <p class="legend">OpenRocket simulations run with wind turbulence at 0%: OpenRocket 24.12 draws turbulence from a random source the seed does not control, so results would otherwise differ from run to run.</p>
    </section>
    <section id="view-changelog" hidden>
     <div id="clog"></div>
-    <p class="legend">What changed in each design file at each commit, newest first, for the designs selected on the left (all designs if none are selected). The bullet list and the table of changed fields are generated from the <code>.ork</code> files themselves; parts are matched by OpenRocket's internal IDs, so renamed or moved parts are tracked. A quoted paragraph, when present, is a summary written by GitHub Copilot from the same changes. The colored chips show how each selected simulation's results changed at that commit.</p>
    </section>
    <section id="view-history">
     <div class="row" id="metrics"></div>
     <div class="chartbox"><div id="hplot" style="position:absolute;inset:10px"></div><div class="empty" id="empty" hidden>Select simulations in the list.</div></div>
     <div id="latest"></div>
     <p class="legend" id="jarvisnote" hidden></p>
-    <p class="legend">Each point is one committed version of a design, simulated in OpenRocket. <b>Absolute</b> shows the value for each version; <b>Δ line</b> shows the change from the previous version; <b>Δ bars</b> shows the same change as one bar per commit (green: increase, red: decrease). Hover over a point for the commit, author and message, and click it to open the commit on GitHub. Drag to zoom and double-click to reset. When Jarvis has numbers for the selected simulations, the <b>OpenRocket</b> and <b>Jarvis</b> buttons above the chart show or hide each one's lines. Jarvis is off until you turn it on. Select several simulations on the left to compare them. The page address updates as you select, so you can share a view by copying the link. Simulations run in OpenRocket 24.12 with wind turbulence off and a fixed random seed, so results are repeatable.</p>
+    <p class="legend">OpenRocket simulations run with wind turbulence at 0%: OpenRocket 24.12 draws turbulence from a random source the seed does not control, so results would otherwise differ from run to run.</p>
    </section>
    <section id="view-predictions" hidden></section>
    <section id="view-vision" hidden></section>
