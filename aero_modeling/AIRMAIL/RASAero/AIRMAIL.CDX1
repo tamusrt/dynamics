@@ -28,7 +28,7 @@
     </BodyTube>
     <BodyTube>
       <PartType>BodyTube</PartType>
-      <Length>27.2579</Length>
+      <Length>25.628</Length>
       <Diameter>6</Diameter>
       <LaunchLugDiameter>0</LaunchLugDiameter>
       <LaunchLugLength>0</LaunchLugLength>
@@ -36,7 +36,7 @@
       <RailGuideHeight>0</RailGuideHeight>
       <LaunchShoeArea>0</LaunchShoeArea>
       <Location>41.9999</Location>
-      <Color>Blue</Color>
+      <Color>Black</Color>
       <BoattailLength>0</BoattailLength>
       <BoattailRearDiameter>0</BoattailRearDiameter>
       <BoattailOffset>0</BoattailOffset>
@@ -51,7 +51,7 @@
       <RailGuideDiameter>0</RailGuideDiameter>
       <RailGuideHeight>0</RailGuideHeight>
       <LaunchShoeArea>0</LaunchShoeArea>
-      <Location>69.2578</Location>
+      <Location>67.6279</Location>
       <Color>Black</Color>
       <BoattailLength>4.15</BoattailLength>
       <BoattailRearDiameter>3.6</BoattailRearDiameter>
@@ -76,7 +76,7 @@
       <Length>4.15</Length>
       <Diameter>6</Diameter>
       <RearDiameter>3.6</RearDiameter>
-      <Location>167.3176</Location>
+      <Location>165.6877</Location>
       <Color>Blue</Color>
     </BoatTail>
     <Surface>Rough Camouflage Paint</Surface>
@@ -115,10 +115,10 @@
   <MachAlt />
   <SimulationList>
     <Simulation>
-      <SustainerEngine>ENGINE-2027-python  (TAMUSRT)</SustainerEngine>
-      <SustainerLaunchWt>136</SustainerLaunchWt>
+      <SustainerEngine>PER_MY_LAST-eng  (TAMUSRT)</SustainerEngine>
+      <SustainerLaunchWt>135</SustainerLaunchWt>
       <SustainerNozzleDiameter>0</SustainerNozzleDiameter>
-      <SustainerCG>101</SustainerCG>
+      <SustainerCG>99.67</SustainerCG>
       <SustainerIgnitionDelay>0</SustainerIgnitionDelay>
       <Booster1LaunchWt>0</Booster1LaunchWt>
       <Booster1SeparationDelay>0</Booster1SeparationDelay>
