@@ -59,13 +59,13 @@
       <Overhang>0</Overhang>
       <Fin>
         <Count>4</Count>
-        <Chord>16</Chord>
+        <Chord>14</Chord>
         <Span>7</Span>
-        <SweepDistance>4</SweepDistance>
-        <TipChord>5</TipChord>
+        <SweepDistance>13</SweepDistance>
+        <TipChord>4</TipChord>
         <Thickness>0.3</Thickness>
         <LERadius>0.0313</LERadius>
-        <Location>19</Location>
+        <Location>17</Location>
         <AirfoilSection>Double Wedge</AirfoilSection>
         <FX1>2.5</FX1>
         <FX3>0</FX3>
