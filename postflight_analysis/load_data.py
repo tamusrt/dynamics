@@ -49,8 +49,9 @@ COLUMN_MAP = {
     "gyro": ["Flight_Time_(s)", "Gyro_X", "Gyro_Y", "Gyro_Z", "Accel_X", "Accel_Y", "Accel_Z"],
     "thrust": ["Time", "Thrust (N)"],
     "ras": ["Flight Time Rounded (s)", "Thrust (lb)", "Accel (ft/sec^2)", "Weight (lb)"],
-    "ork": ["Time (s)","Altitude (m)","Total acceleration (m/s²)", "Angle of attack (°)", "Total velocity (m/s)","Stability margin calibers (​)", "Drag force (N)", "Drag coefficient (​)", "Air temperature (°C)", "Air pressure (mbar)"],
-    "set": ["timestamp (ns)", "sensors/thrust.value", "sensors/chamber_pressure.value", "sensors/injector_pressure.value", "sensors/run_tank_pressure.value"]
+    "ork": ["Time (s)","Altitude (m)","Total acceleration (m/s²)", "Angle of attack (°)", "Total velocity (m/s)","Stability margin calibers (​)", "Drag force (N)", "Drag coefficient (​)", "Air temperature (°C)", "Air pressure (mbar)", "Mass (g)"],
+    "set": ["timestamp (ns)", "sensors/thrust.value", "sensors/chamber_pressure.value", "sensors/injector_pressure.value", "sensors/run_tank_pressure.value"],
+    "ab": ["ax","ay","az","rollRate","yawRate",	"pitchRate","qW","qX","qY","qZ","pressure", "baroAlt","worldZAccel","ekfAltitude","ekfZVel", "baroTimestamp"]
 }
 
 # Alias groups: canonical short names -> raw column names.
@@ -101,7 +102,8 @@ ALIASES = {
         "ork_fd":"Drag force (N)", 
         "ork_cd":"Drag coefficient (​)",
         "ork_pressure":"Air pressure (mbar)",
-        "ork_temperature":"Air temperature (°C)"
+        "ork_temperature":"Air temperature (°C)",
+        "ork_mass":"Mass (g)"
     },
     "set": {
         "time": "timestamp (ns)",
@@ -109,7 +111,20 @@ ALIASES = {
         "chamber_pressure": "sensors/chamber_pressure.value",
         "injector_pressure": "sensors/injector_pressure.value",
         "run_tank_pressure": "sensors/run_tank_pressure.value"
-    }
+    },
+    "ab":{
+        "time":"baroTimestamp",
+        "ab_ax":"ax",
+        "ab_ay":"ay",
+        "ab_az":"az",
+        "ab_qw":"qW",
+        "ab_qx":"qX",
+        "ab_qy":"qY",
+        "ab_qz":"qZ",
+        "ab_pressure":"pressure",
+        "ab_ekf_vz":"ekfZVel",
+        "ab_altitude":"ekfAltitude",
+    },
 }
 
 # unit each alias column is stored in, per ALIASES group.
@@ -155,14 +170,31 @@ UNITS = {
         "ork_fd":"N", 
         "ork_cd":"dimensionless",
         "ork_pressure":"mbar",
-        "ork_temperature":"degC"
+        "ork_temperature":"degC",
+        "ork_mass":"g"
     },
     "set": {
         "thrust": "N",
         "chamber_pressure": "psi",
         "injector_pressure": "psi",
         "run_tank_pressure": "psi"
-    }
+    },
+    # The airbrakes board logs METRIC (apogee reads ~1614 in ekfAltitude = m, ekfZVel peaks
+    # ~165 = m/s, pad accel ~9.8 = m/s^2, pressure in hPa == mbar). These are only tags: to_imperial()
+    # in interpolate() does the actual conversion, so a wrong tag here silently scales everything
+    # downstream (velocity, gravity subtraction in ab_velocity, fd, fn, AoA).
+    "ab":{
+        "ab_ax":"m/s**2",
+        "ab_ay":"m/s**2",
+        "ab_az":"m/s**2",
+        "ab_qw":"dimensionless",
+        "ab_qx":"dimensionless",
+        "ab_qy":"dimensionless",
+        "ab_qz":"dimensionless",
+        "ab_pressure":"mbar",
+        "ab_ekf_vz": "m/s",
+        "ab_altitude": "m",
+    },
 }
 TIME_UNIT = "s"
 
@@ -180,7 +212,8 @@ TIME_ALIAS = {
     "thrust": "time",
     "ras": "time",
     "ork":"time",
-    "set": "time"
+    "set": "time",
+    "ab": "time"
 }
 ureg.define("psf = lbf / foot ** 2")
 # Define your target imperial unit for each physical dimension you expect to see.
@@ -382,7 +415,7 @@ def _magnitude(val):
     return val.magnitude if isinstance(val, ureg.Quantity) else val
 
 
-def interpolate(data):
+def interpolate(data, step=None):
     '''Interpolates every dataset onto a common, evenly-spaced time base
     (the finest step found across all datasets), then zero-pads the
     shorter ones so every ArrayBundle has the same length. 
@@ -407,16 +440,14 @@ def interpolate(data):
         raise ValueError("None of the given datasets have a 'time' column to align on")
     for bundle in timed.values():
         bundle.time = to_imperial(bundle.time)
-
     exclude = []
-    step = min(np.diff(_magnitude(bundle.time)).min() for bundle in timed.values() if bundle not in exclude)
 
+    if step is None:
+        step = min(np.diff(_magnitude(bundle.time)).min() for bundle in timed.values() if bundle not in exclude)
+        # step: user-supplied (seconds), else the finest native step
     for key, bundle in timed.items():
         time_val = _magnitude(bundle.time)
-        new_time = np.clip(
-            np.arange(time_val[0], time_val[-1] + step, step),
-            time_val[0], time_val[-1]
-        )
+        new_time = np.clip(np.arange(time_val[0], time_val[-1] + step * 1e-6, step),time_val[0], time_val[-1])
 
         interp_cols = {"time": new_time}
         units_here = {}

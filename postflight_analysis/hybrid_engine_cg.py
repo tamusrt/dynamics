@@ -1035,6 +1035,7 @@ sol_ignis ={
     "plumbing": {"dry_mass": 2.0, "offset": 34.0, "length": 2.0},
     "engine": {"length_in": 50.0, "offset_in": 0.0},
     }
+
 if __name__ == "__main__":
 
     sets = pd.read_csv('interp_set-5 full data - set-5 full data.csv', usecols=[0,2,4])
@@ -1042,11 +1043,9 @@ if __name__ == "__main__":
     p = np.asarray(sets['run_tank_pressure'], float)
     print(np.isnan(p).sum(), np.nanmin(p), np.nanmax(p))
     print((p < 12.7).sum(), "samples below the triple point")
-    #Ssets['time'], sets['run_tank_pressure'], sets['chamber_pressure'] = sets['time']*P_ATM_PSI, sets['run_tank_pressure']*P_ATM_PSI, sets['chamber_pressure']*P_ATM_PSI
-    # --- 2. hardware
     engine = build_engine(sol_ignis, sets['time'], pressure_psi=sets['run_tank_pressure'], chamber_pressure_psi=sets['chamber_pressure'])
-    arr = np.column_stack([sets['time'], engine.cg_at(sets['time'])])
-    df = pd.DataFrame(arr, columns=["time","cg"])
+    arr = np.column_stack([sets['time'], engine.cg_at(sets['time']), engine.mdot_at(sets['time']), engine.of_ratio_at(sets['time']), engine.mass_at(sets['time']), engine.dyer_mdot_array(sets['time']), engine.])
+    df = pd.DataFrame(arr, columns=["time","cg", "mdot", "of ratio", "mass"])
 
 
     df.to_csv("output.csv", index=False)

@@ -301,7 +301,37 @@ def build_solid(values: dict, t: np.array, df):
     engine = seng.SolidMotor(grain, hardware, offset_in=0)
     return engine 
 
-def calculate(data_dict, cutoff_dict, rocket=None):
+def _ab_pad_arrays(ab_bundle, dt):
+    '''Pre-launch rows of the airbrakes board as imperial arrays on the flight's sample spacing,
+    in the form faa.ab_smooth(pre=...) expects. Returns None if the board log has no usable
+    pre-launch segment. interpolate() hands pre_launch through untouched (still metric, native
+    rate), so it is converted and resampled here to match the series it calibrates noise for.'''
+    pre = getattr(ab_bundle, "pre_launch", None)
+    if pre is None or len(pre) < 20:
+        return None
+    def mag(name):
+        v = getattr(pre, name)
+        return np.asarray(ld.to_imperial(v).magnitude if hasattr(v, "magnitude") else v, float)
+    t_pre = mag("time")
+    t_pre, keep = np.unique(t_pre, return_index=True)       # np.interp needs strictly increasing x
+    grid = np.arange(t_pre[0], t_pre[-1], dt)
+    if len(grid) < 20:
+        return None
+    cols = {"qw": "ab_qw", "qx": "ab_qx", "qy": "ab_qy", "qz": "ab_qz",
+            "ax": "ab_ax", "ay": "ab_ay", "az": "ab_az"}
+    if "ab_ekf_vz" in pre.columns:
+        cols["v_up"] = "ab_ekf_vz"
+    return {k: np.interp(grid, t_pre, mag(c)[keep]) for k, c in cols.items()}
+
+
+def calculate(data_dict, cutoff_dict, rocket=None, smooth_ab=True, align_ab=True, ab_lag_s=None,
+              ab_smooth_kwargs=None, out_csv="calc_data.csv"):
+    '''smooth_ab : run the airbrakes board through faa.ab_smooth (Kalman/RTS) instead of raw accel.
+    align_ab  : shift every ab_* series so its vertical velocity lines up with the Flight's
+                (the two logs don't start at the same instant).
+    ab_lag_s  : fix the board lag in seconds (positive = board is late) instead of estimating it.
+    ab_smooth_kwargs : overrides for faa.ab_smooth, e.g. {'q_boost': 1e4, 'q_coast': 10}.
+    out_csv   : where the calc table is written (per-flight name when running all flights).'''
     calc_array = []
     calc = {}
     titles = [...]
@@ -340,11 +370,23 @@ def calculate(data_dict, cutoff_dict, rocket=None):
         ork_bundle = find_bundle("ork")
         ork_present = True
     except:
-        print("no o")
+        print("no ork data")
         ork_present = False
 
+    try:
+        ab_bundle = find_bundle("ab")
+        ab_present = True
+    except:
+        print("no airbreaks data")
+        ab_present = False
+
+    pre = getattr(accel_bundle, "pre_launch", None)
+    if pre is not None and len(pre) > 20:        # needs enough samples for the noise windows
+        t_pre = pre.time.magnitude
+        v_pre = pre.v_up.magnitude
     else:
-        t_pre = v_pre = np.array([])
+        raise ValueError("No pre-launch data in the accel file. acceleration() needs a pad "
+                        "segment to calibrate noise (v_pre cannot be empty).")
 
     time = accel_bundle.time.magnitude
     temperature = accel_bundle.temperature.magnitude
@@ -360,10 +402,8 @@ def calculate(data_dict, cutoff_dict, rocket=None):
         gy_accel = gyro_bundle.gy_accel.magnitude           # g_0
         gz_accel = gyro_bundle.gz_accel.magnitude           # g_0
         gyro_y = gyro_bundle.gy.magnitude
-
     if thrust_present:
         spec_thrust = thrust_bundle.spec_thrust.magnitude   # N
-
     if ras_present:
         thrust = ras_bundle.ras_thrust.magnitude            # lbf
         weight = ras_bundle.weight.magnitude                # lbf
@@ -377,7 +417,18 @@ def calculate(data_dict, cutoff_dict, rocket=None):
         ork_cd = ork_bundle.ork_cd.magnitude
         ork_pressure = ork_bundle.ork_pressure.magnitude
         ork_temperature = ork_bundle.ork_temperature.magnitude
-
+        weight = ork_bundle.ork_mass.magnitude
+    if ab_present:
+        ab_ax = ab_bundle.ab_ax.magnitude
+        ab_ay = ab_bundle.ab_ay.magnitude
+        ab_az = ab_bundle.ab_az.magnitude
+        ab_qw = ab_bundle.ab_qw.magnitude
+        ab_qx = ab_bundle.ab_qx.magnitude
+        ab_qy = ab_bundle.ab_qy.magnitude
+        ab_qz = ab_bundle.ab_qz.magnitude
+        ab_pressure = ab_bundle.ab_pressure.magnitude 
+        ab_ekf_vz = ab_bundle.ab_ekf_vz.magnitude
+        ab_altitude = ab_bundle.ab_altitude.magnitude if "ab_altitude" in ab_bundle.columns else None
 
     cutoff_dict["apogee"] = apogee = np.where(altitude >= max(altitude))[0][0]
     if thrust_present: cutoff_dict["coast"] = np.where(spec_thrust <= 5)[0][2]
@@ -399,17 +450,18 @@ def calculate(data_dict, cutoff_dict, rocket=None):
     calc["density"] = faa.density(pressure, temperature)
 
     # drag is the component along the relative wind
-    if ras_present:
-        calc["fdx"], calc["fdy"], calc["fdz"], calc["f_aero"] = faa.fd(spec_thrust, tilt, theta, weight, calc["ax"], calc["ay"], calc["az"])
-        calc["fd"], calc["lift"] = faa.wind_axes(calc["fdx"], calc["fdy"], calc["fdz"], v_cr, v_dr, v_up)
-        calc["cd"] = faa.cd(calc["fd"], calc["density"], calc["accel_v"])
-        calc["fnx"], calc["fny"], calc["fnz"], calc["fn"] = faa.fn1(tilt, theta, weight, calc["ax"], calc["ay"], calc["az"])
-        calc["cn"], calc["cna"] = faa.cna(calc["fn"], calc["density"], calc["accel_v"], calc["aoa"])
-    else: 
-        print("force values skipped")
+    calc["fdx"], calc["fdy"], calc["fdz"], calc["f_aero"] = faa.fd(spec_thrust, tilt, theta, weight, calc["ax"], calc["ay"], calc["az"])
+    calc["fd"], calc["lift"] = faa.wind_axes(calc["fdx"], calc["fdy"], calc["fdz"], v_cr, v_dr, v_up)
+    calc["cd"] = faa.cd(calc["fd"], calc["density"], calc["accel_v"])
+    calc["fnx"], calc["fny"], calc["fnz"], calc["fn"] = faa.fn1(tilt, theta, weight, calc["ax"], calc["ay"], calc["az"])
+    calc["cn"], calc["cna"] = faa.cna(calc["fn"], calc["density"], calc["accel_v"], calc["aoa"])
+    calc["tilt"] = tilt
+
     # fd() derived from this same curve returns that curve. the two independent
     # sources are the ras condition file and the motor spec curve.
-    calc["thrust_ras"] = thrust
+    if ras_present:
+        calc["thrust_ras"] = thrust
+    
     calc["thrust_spec"] = spec_thrust
     calc["altitude"] = altitude
     
@@ -433,9 +485,52 @@ def calculate(data_dict, cutoff_dict, rocket=None):
     else:
         print("skipping the ork")
     
+    if ab_present:
+        q = (ab_qw, ab_qx, ab_qy, ab_qz)
+        t_ab = ab_bundle.time.magnitude
+        axis = faa.body_axis_world(*q)
+        if smooth_ab:
+            # same kalman_smooth the Raven path uses, fusing the board's accelerometer with its EKF vz
+            # R is calibrated on the board's own pre-launch (pad) rows, same process as the Raven path
+            ab_pre = _ab_pad_arrays(ab_bundle, float(np.median(np.diff(t_ab))))
+            sm = faa.ab_smooth(t_ab, *q, ab_ax, ab_ay, ab_az, v_up=ab_ekf_vz, pre=ab_pre,
+                               **(ab_smooth_kwargs or {}))
+            vx, vy, vz = sm["v"]
+            awx, awy, awz = sm["a"]                            # coordinate acceleration (gravity removed)
+        else:
+            vx, vy, vz = faa.ab_velocity(*q, ab_ax, ab_ay, ab_az, t_ab, v_up=ab_ekf_vz)
+            awx, awy, awz = faa.rotate_to_world(*q, ab_ax, ab_ay, ab_az)
+            awz = awz - faa.G_FT                               # coordinate acceleration
 
+        calc["ab_tilt"] = faa.tilt_from_quat(*q)
+        calc["ab_accel_v"] = np.sqrt(vx**2 + vy**2 + vz**2)
+        calc["ab_flight_angle"], calc["ab_aoa"] = faa.ab_flight_angles(vx, vy, vz, axis)
+        off = faa.heading_offset(faa.ab_theta(vx, vy), theta, weights=calc["accel_v"] > 300)
+        calc["ab_theta"] = faa.ab_theta(vx, vy, off)
+        calc["ab_accel_total"] = np.sqrt(awx**2 + awy**2 + awz**2)
+        if ab_altitude is not None:
+            # board altitude is AGL from its own zero; put it on the Flight's (MSL) datum at t=0
+            calc["ab_altitude"] = ab_altitude - ab_altitude[0] + altitude[0]
+        th_body = np.degrees(np.arctan2(axis[:, 1], axis[:, 0]))
+
+        fdx, fdy, fdz, _ = faa.fd(spec_thrust, calc["ab_tilt"], th_body, weight, awx, awy, awz)
+        calc["ab_fd"], calc["ab_lift"] = faa.wind_axes(fdx, fdy, fdz, vx, vy, vz)
+        _, _, _, calc["ab_fn"] = faa.fn1(calc["ab_tilt"], th_body, weight, awx, awy, awz)
+
+        if align_ab:
+            # board t=0 and Raven t=0 are different launch-detect events: line the two up on
+            # vertical velocity (same quantity, scale/offset-free correlation) and shift every ab_*.
+            dt_s = float(np.median(np.diff(calc["time"])))
+            if ab_lag_s is None:
+                lag_n, lag_s = faa.estimate_lag(calc["time"], v_up, vz)
+            else:
+                lag_n, lag_s = int(round(ab_lag_s / dt_s)), ab_lag_s
+            print(f"[airbrakes] board lags Flight by {lag_s:+.3f} s ({lag_n:+d} samples); shifting ab_* series")
+            for key in [k for k in calc if k.startswith("ab_")]:
+                calc[key] = faa.shift_series(calc[key], lag_n)
+    print(calc)
     df = pd.DataFrame.from_dict(calc)   
-    df.to_csv(f"calc_data.csv", index=False)
+    df.to_csv(out_csv, index=False)
 
     return calc, cutoff_dict
 
@@ -462,6 +557,7 @@ SOURCE_LABELS = {
     'ork': 'OpenRocket',
     'ras': 'RAS',
     'spec': 'Motor spec',
+    'ab': 'Airbrakes board',
 }
 
 OVERLAY_ALIASES = {
@@ -558,6 +654,18 @@ def diagnostic_grid(column_specs, row_builders, row_labels=None, suptitle=None,
     return fig, axs
 
 
+def first_sustained_index(arr, threshold, hold=10):
+    """Index of the first sample after which `arr` stays >= threshold for
+    at least `hold` consecutive samples. Ignores brief noise spikes.
+    Returns 0 if never found (no masking applied)."""
+    arr = np.asarray(arr, float)
+    above = np.abs(arr) >= threshold
+    for i in range(len(above) - hold):
+        if above[i:i + hold].all():
+            return i
+    return 0
+
+
 def graph2(data, areas, build_data_fn=None, windows=(31, 51, 71, 91, 111),
            mach_min=0.08, start=15, ork_vel_min=20, flight_vel_min=20,
            hold=10, pct_err_denom_min=None):
@@ -576,17 +684,6 @@ def graph2(data, areas, build_data_fn=None, windows=(31, 51, 71, 91, 111),
     bands = {}
     if build_data_fn is not None:
         bands, band_apogee = compute_sensitivity_bands(build_data_fn, windows, band_keys)
-
-    def first_sustained_index(arr, threshold, hold=10):
-        """Index of the first sample after which `arr` stays >= threshold for
-        at least `hold` consecutive samples. Ignores brief noise spikes.
-        Returns 0 if never found (no masking applied)."""
-        arr = np.asarray(arr, float)
-        above = np.abs(arr) >= threshold
-        for i in range(len(above) - hold):
-            if above[i:i + hold].all():
-                return i
-        return 0
 
     # Liftoff indices per source: ork columns are masked unconditionally;
     # flight columns are only masked for velocity-DERIVED ANGLE quantities
@@ -627,13 +724,14 @@ def graph2(data, areas, build_data_fn=None, windows=(31, 51, 71, 91, 111),
 
     # ---- page 1: Basics --------------------------------------------------
     BASICS_LAYOUT = [
-        [('altitude', 'Altitude (ft)'), ('accel_v', 'Velocity (ft/s)')],
-        [('accel_total', 'Acceleration (ft/s²)'), ('aoa', 'AoA (°)')],
-        [('theta', 'Pitch (°)'), ('flight_angle', 'Flight Angle (°)')],
+    [('altitude', 'Altitude (ft)'), ('accel_v', 'Velocity (ft/s)')],
+    [('accel_total', 'Acceleration (ft/s²)'), ('aoa', 'AoA (°)')],
+    [('theta', 'Pitch (°)'), ('tilt', 'Tilt (°)')],
     ]
-
     def _basics_row_builder(row):
         def builder(ax, col):
+            if col >= len(BASICS_LAYOUT[row]):
+                ax.axis('off')
             key, lbl = BASICS_LAYOUT[row][col]
             overlays = {s: c for s, c in overlay_group(key, data).items() if c != key}
             plot_windowed(ax, t, mask(key), start, apogee, band=bands.get(key),
@@ -655,62 +753,116 @@ def graph2(data, areas, build_data_fn=None, windows=(31, 51, 71, 91, 111),
     )
 
     # ---- page 1b: Overlay Diagnostics -------------------------------------
-    # Raw / Parity / % Error, repeated across every quantity that has an
-    # OpenRocket overlay available (per the registry).
-    overlay_present = []
-    for k, lbl in [('altitude', 'Altitude (ft)'), ('accel_v', 'Velocity (ft/s)'),
-                    ('accel_total', 'Acceleration (ft/s²)'), ('aoa', 'AoA (°)')]:
-        ork_col = overlay_group(k, data).get('ork')
-        if ork_col:
-            overlay_present.append((k, ork_col, lbl))
+    # One figure per comparison source (OpenRocket, Airbrakes board): Raw / Parity / Error rows
+    # across every quantity both datasets have.
+    #   reference = the series treated as truth for the parity x-axis and the error denominator:
+    #     OpenRocket      -> the prediction is the reference (error = how far Flight is from the sim)
+    #     Airbrakes board -> Flight (Raven) is the reference (error = how far the board is from it)
+    OVERLAY_QUANTITIES = [('altitude', 'Altitude (ft)'), ('accel_v', 'Velocity (ft/s)'),
+                          ('accel_total', 'Acceleration (ft/s²)'), ('aoa', 'AoA (°)'),
+                          ('tilt', 'Tilt (°)')]
+    OVERLAY_REFERENCE = {'ork': 'other', 'ab': 'flight'}
+    ANGLE_KEYS = {'aoa', 'tilt'}            # error in degrees: a % of ~0° is meaningless
+    ABS_COMPARE = {('ab', 'aoa')}           # board AoA is an unsigned 3-D angle; Flight's is signed
+    DEFAULT_DENOM_MIN = {'altitude': 200, 'accel_v': 20, 'accel_total': 20}
 
-    fig1b = None
-    if overlay_present:
-        def _raw_row(ax, spec):
-            k, ok, lbl = spec
-            plot_windowed(ax, t, mask(k), start, apogee, label='Flight', alpha=0.85)
-            plot_windowed(ax, t, mask(ok), start, apogee, label='OpenRocket', alpha=0.85)
-            ax.set(xlabel='Time (s)', ylabel=lbl, title=lbl)
-            shade(ax, x_end=t[apogee])
-            ax.legend(fontsize=7)
+    def _overlay_arrays(src, k, col):
+        flight = mask(k)[start:apogee].copy()
+        other = mask(col)[start:apogee].copy()
+        if (src, k) in ABS_COMPARE:
+            flight = np.abs(flight)
+        return flight, other
 
-        def _parity_row(ax, spec):
-            k, ok, lbl = spec
-            flight = mask(k)[start:apogee]
-            ork = mask(ok)[start:apogee]
-            valid = np.isfinite(flight) & np.isfinite(ork)
-            ax.scatter(ork[valid], flight[valid], s=4, alpha=0.4)
-            if valid.any():
-                lims = [np.nanmin(ork[valid]), np.nanmax(ork[valid])]
-                ax.plot(lims, lims, 'k--', linewidth=1, label='y = x')
-            ax.set(xlabel=f'OpenRocket {lbl}', ylabel=f'Flight {lbl}')
-            ax.legend(fontsize=7)
+    def _overlay_names(src, k):
+        return ('Flight |AoA|' if (src, k) in ABS_COMPARE else 'Flight'), SOURCE_LABELS[src]
 
-        def _pct_err_row(ax, spec):
-            k, ok, lbl = spec
-            flight = mask(k)[start:apogee]
-            ork = mask(ok)[start:apogee]
-            tt = t[start:apogee]
-            denom = ork.copy()
-            denom_min = pct_err_denom_min.get(ok, 1e-6)
-            pct_err = np.divide(flight - ork, denom, out=np.full_like(denom, np.nan),
-                                 where=np.abs(denom) > denom_min) * 100
-            ax.plot(tt, pct_err, color='C3')
-            ax.axhline(0, color='black', linewidth=0.8)
-            ax.set(xlabel='Time (s)', ylabel='% error')
-            shade(ax, x_end=t[apogee])
+    def _unit_of(lbl):
+        return lbl.split('(')[-1].rstrip(')') if '(' in lbl else ''
 
-        fig1b, _ = diagnostic_grid(
-            column_specs=overlay_present,
-            row_builders=[_raw_row, _parity_row, _pct_err_row],
-            row_labels=['Raw', 'Parity', '% Error'],
-            suptitle='Overlay Diagnostics: Raw / Parity / % Error',
-            col_width=4.5, row_height=4.0, hspace=0.5, top_margin=0.92, left_margin=0.08,
+    def _raw_row(ax, spec):
+        src, k, col, lbl = spec
+        flight, other = _overlay_arrays(src, k, col)
+        f_lbl, o_lbl = _overlay_names(src, k)
+        tt = t[start:apogee]
+        ax.plot(tt, flight, color='C0', label=f_lbl, alpha=0.85)
+        ax.plot(tt, other, color='C1', label=o_lbl, alpha=0.85)
+        ax.set(xlabel='Time (s)', ylabel=lbl, title=lbl)
+        shade(ax, x_end=t[apogee])
+        ax.legend(fontsize=7)
+
+    def _parity_row(ax, spec):
+        src, k, col, lbl = spec
+        flight, other = _overlay_arrays(src, k, col)
+        f_lbl, o_lbl = _overlay_names(src, k)
+        if OVERLAY_REFERENCE[src] == 'flight':
+            ref, test, x_lbl, y_lbl = flight, other, f_lbl, o_lbl
+        else:
+            ref, test, x_lbl, y_lbl = other, flight, o_lbl, f_lbl
+        valid = np.isfinite(ref) & np.isfinite(test)
+        boost = np.arange(start, apogee) < coast
+        for sel, name, c in ((boost, 'boost', 'C0'), (~boost, 'coast', 'C2')):
+            m = valid & sel
+            if m.any():
+                ax.scatter(ref[m], test[m], s=4, alpha=0.4, color=c, label=name)
+        if valid.any():
+            lo = min(ref[valid].min(), test[valid].min())
+            hi = max(ref[valid].max(), test[valid].max())
+            pad = (hi - lo) * 0.03 or 1
+            ax.plot([lo, hi], [lo, hi], 'k--', linewidth=1, label='y = x')
+            ax.set_xlim(lo - pad, hi + pad)
+            ax.set_ylim(lo - pad, hi + pad)
+        ax.set_aspect('equal', adjustable='box')
+        u = _unit_of(lbl)
+        ax.set(xlabel=f'{x_lbl} ({u})', ylabel=f'{y_lbl} ({u})')
+        ax.legend(fontsize=7)
+
+    def _err_row(ax, spec):
+        src, k, col, lbl = spec
+        flight, other = _overlay_arrays(src, k, col)
+        ref, test = (flight, other) if OVERLAY_REFERENCE[src] == 'flight' else (other, flight)
+        tt = t[start:apogee]
+        if k in ANGLE_KEYS:
+            err, unit, ylab = test - ref, '°', 'error (°)'
+        else:
+            denom_min = pct_err_denom_min.get(col, pct_err_denom_min.get(k, DEFAULT_DENOM_MIN.get(k, 1e-6)))
+            err = np.divide(test - ref, ref, out=np.full_like(ref, np.nan),
+                            where=np.abs(ref) > denom_min) * 100
+            unit, ylab = '%', '% error'
+        ax.plot(tt, err, color='C3')
+        ax.axhline(0, color='black', linewidth=0.8)
+        ax.set(xlabel='Time (s)', ylabel=ylab)
+        shade(ax, x_end=t[apogee])
+        fin = err[np.isfinite(err)]
+        if fin.size:
+            lo, hi = np.percentile(fin, [1, 99])        # clip the odd spike so it can't flatten the trace
+            pad = (hi - lo) * 0.15 or 1
+            ax.set_ylim(min(lo, 0) - pad, max(hi, 0) + pad)
+            ax.text(0.02, 0.96, f'median {np.median(fin):+.1f}{unit}\nmean |err| {np.mean(np.abs(fin)):.1f}{unit}',
+                    transform=ax.transAxes, va='top', fontsize=7,
+                    bbox=dict(facecolor='white', alpha=0.7, edgecolor='none'))
+
+    fig1b = {}
+    for src in ('ork', 'ab'):
+        specs = []
+        for k, lbl in OVERLAY_QUANTITIES:
+            col = overlay_group(k, data).get(src)
+            if col:
+                specs.append((src, k, col, lbl))
+        if not specs:
+            continue
+        ref_name = 'Flight' if OVERLAY_REFERENCE[src] == 'flight' else SOURCE_LABELS[src]
+        fig1b[src], _ = diagnostic_grid(
+            column_specs=specs,
+            row_builders=[_raw_row, _parity_row, _err_row],
+            row_labels=['Raw', 'Parity', 'Error'],
+            suptitle=f'{SOURCE_LABELS[src]} vs Flight: Raw / Parity / Error (reference = {ref_name})',
+            col_width=4.2, row_height=3.8, hspace=0.5, top_margin=0.92, left_margin=0.07,
         )
+    fig1b = fig1b or None
 
     # ---- page 2: Forces ----------------------------------------------------
     page2_items = [
-        ('thrust_ras', 'Thrust (lbf)'), ('fd', 'Drag (lbf)'),
+        ('thrust_spec', 'Thrust (lbf)'), ('fd', 'Drag (lbf)'),
         ('fn', 'Normal Force (lbf)'), ('lift', 'Lift (lbf)')
     ]
 
@@ -774,12 +926,7 @@ def graph2(data, areas, build_data_fn=None, windows=(31, 51, 71, 91, 111),
             'label': 'CD', 'y_key': 'cd', 'y_label': 'CD',
             'x_specs': [('time', 'Time (s)', 'CD vs Time'),
                         ('vel_mach', 'Mach', 'CD vs Mach')],
-        },
-        {
-            'label': 'SM', 'y_key': 'sm', 'y_label': 'SM (cal)',
-            'x_specs': [('time', 'Time (s)', 'SM vs Time'),
-                        ('vel_mach', 'Mach', 'SM vs Mach')],
-        },
+        }
     ]
 
     def _study_row_builder(row_cfg):
@@ -805,48 +952,87 @@ def graph2(data, areas, build_data_fn=None, windows=(31, 51, 71, 91, 111),
     plt.show()
     return fig1, fig1b, fig2
 
-def main():
-    print(f"    .\n   .'.\n   |o|   Welcome to Comparinator!™\n  .'o'.  \033[3mFor all your comparing needs\033[0m\n  |.-.|\n  '   '\n   ( )\n    )\n   ( )")
-    
-    rockets = available_rockets()
-    if not rockets:
-        raise SystemExit(f"No rocket folders found under {BASE_DIR}")
-    notes = {r: "" for r in rockets}
-    rocket_name = _choose("Available rockets:", rockets, notes)
+ALL_FLIGHTS = "ALL FLIGHTS"
 
-    key = rocket_name.strip().lower()
 
-    flights = available_flights(rocket_name)
-    if not flights:
-        raise SystemExit(f"No flight folders found for {rocket_name} under {BASE_DIR}")
-    labels = {f: _flight_label(f) for f in flights}
-    flight = _choose(f"Flights on record for {rocket_name}:", flights, labels)
+def graph_all_flights(results, start=15, mach_min=0.08, flight_vel_min=20, hold=10):
+    """Overlay every flight of one rocket on the core quantities.
+    results: {flight_folder: (data, areas)} as returned by calculate().
+    Solid line = Flight (Raven); dashed = the airbrakes board for that flight, where present."""
+    panels = [('altitude', 'Altitude (ft)'), ('accel_v', 'Velocity (ft/s)'),
+              ('accel_total', 'Acceleration (ft/s²)'), ('aoa', 'AoA (°)')]
+    fig, axs = plt.subplots(2, 3, figsize=(17, 9), squeeze=False)
+    axs = axs.ravel()
+    fig.suptitle(f'All flights ({len(results)})', fontweight='bold')
 
-    engine_name = rocket_name
-    engine_key = engine_name.strip().lower()
-    if engine_key not in ROCKET_ENGINES:
-        raise ValueError(f"Unknown engine '{engine_name}'. Known: {list(ROCKET_ENGINES)}")
-    
-    folder = Path(BASE_DIR) / rocket_name / flight   # match load()'s own folder construction
+    for n, (flight, (data, areas)) in enumerate(results.items()):
+        color = f'C{n % 10}'
+        label = _flight_label(flight) or flight
+        apogee, t = areas['apogee'], np.asarray(data['time'])
+        lift = first_sustained_index(data['accel_v'], flight_vel_min, hold=hold) if 'accel_v' in data else 0
+        for ax, (key, lbl) in zip(axs, panels):
+            for col, ls, lw, lab in ((key, '-', 1.4, label), (f'ab_{key}', '--', 0.9, None)):
+                if col not in data:
+                    continue
+                y = np.asarray(data[col], float).copy()
+                if key == 'aoa':
+                    y[:lift] = np.nan
+                ax.plot(t[start:apogee], y[start:apogee], color=color, ls=ls, lw=lw, label=lab)
+            ax.set(xlabel='Time (s)', ylabel=lbl, title=lbl)
+        # CD vs Mach
+        if 'cd' in data and 'vel_mach' in data:
+            mach, cd = np.asarray(data['vel_mach'])[start:apogee], np.asarray(data['cd'])[start:apogee]
+            ok = (mach >= mach_min) & np.isfinite(cd)
+            axs[4].scatter(mach[ok], cd[ok], s=3, alpha=0.4, color=color)
+        # drag force vs time
+        if 'fd' in data:
+            axs[5].plot(t[start:apogee], np.asarray(data['fd'], float)[start:apogee], color=color, lw=1.2)
+    axs[4].set(xlabel='Mach', ylabel='CD', title='CD vs Mach')
+    axs[5].set(xlabel='Time (s)', ylabel='Drag (lbf)', title='Drag')
+    axs[0].legend(fontsize=8)
+    fig.tight_layout(rect=(0, 0, 1, 0.96))
+    plt.show()
+    return fig
+
+
+def _build_engine(engine_key, interpolated_data, find_bundle):
+    """Build the engine for this rocket from its ROCKET_ENGINES config (hybrid or solid)."""
+    cfg_all, kind = ROCKET_ENGINES[engine_key]
+    if kind == "hybrid":
+        of_case = "high_of"                                  # pick the O/F case in one place
+        cfg = cfg_all[of_case]
+        thrust_bundle = find_bundle(interpolated_data, "thrust")
+        set_bundle = find_bundle(interpolated_data, "set")
+        time = set_bundle['time'].magnitude
+        thrust = thrust_bundle['spec_thrust'].magnitude
+        pressure = set_bundle['run_tank_pressure'].magnitude
+        _, t_end = heng.burn_window_from_thrust(time, thrust)
+        keep = time <= t_end
+        return build_hybrid(cfg, time[keep], pressure[keep], thrust[keep])
+    if kind == "solid":
+        thrust_bundle = find_bundle(interpolated_data, "thrust")
+        accel_bundle = find_bundle(interpolated_data, "accel")
+        return build_solid(cfg_all, accel_bundle['time'], thrust_bundle['spec_thrust'])
+    return None                                              # e.g. "liquid": no builder yet
+
+
+def run_flight(rocket_name, flight, engine_key, tag=""):
+    """Full pipeline for one flight folder: load -> resolve duplicate files -> interpolate ->
+    build engine -> calculate(). Returns (graph_values, cutoff_dict). `tag` prefixes the
+    debug CSVs so flights don't overwrite each other."""
+    folder = Path(BASE_DIR) / rocket_name / flight
     data = ld.load(rocket_name, flight)
+    print("loaded:", {k: v.group for k, v in data.items()})  # before resolve_duplicates
     data = resolve_duplicates(data, folder)
+    print("after resolve:", list(data))
 
-    
     def find_bundle(data, substr):
-        matches = [v for k, v in data.items() if substr in k.lower()]
-        if not matches:
-            raise KeyError(f"No dataset found containing '{substr}' in its key")
-        return matches[0]
+        return ld.w_by_group(data, substr)
 
-    flight_dir = Path(BASE_DIR) / rocket_name / flight
-    candidates = [f for f in flight_dir.iterdir() if f.name.lower().endswith('.xml')]
-    geometry_present = True
-    if not candidates:
-        #raise FileNotFoundError(f"No suitable XML files found in {flight_dir}")
-        geometry_present = False
+    candidates = [f for f in folder.iterdir() if f.name.lower().endswith('.xml')]
     if len(candidates) > 1:
-        raise ValueError(f"Multiple suitable XML files found in {flight_dir}: {candidates}")
-    
+        raise ValueError(f"Multiple suitable XML files found in {folder}: {candidates}")
+
     for key, bundle in data.items():
         for col in bundle.columns:
             val = getattr(bundle, col)
@@ -859,33 +1045,67 @@ def main():
     for entry in interpolated_data:
         bundle = interpolated_data[entry]
         df = pd.DataFrame({col: getattr(bundle, col) for col in bundle.columns})
-        df.to_csv(f"interp_{entry}.csv", index=False)
+        df.to_csv(f"{tag}interp_{entry}.csv", index=False)
 
-    
-    if ROCKET_ENGINES[engine_key][1] == "hybrid":
-        of_case = "high_of"                                  # pick the O/F case in one place
-        cfg = ROCKET_ENGINES[engine_key][0][of_case]
+    # The engine only feeds the CG/inertia/stability path, which needs rocket geometry that
+    # calculate() isn't given yet (rocket=None). So it's optional: no config or missing files
+    # just means no engine, and the flight still runs.
+    engine_used = None
+    if engine_key in ROCKET_ENGINES:
+        try:
+            engine_used = _build_engine(engine_key, interpolated_data, find_bundle)
+        except Exception as e:
+            print(f"[engine] skipped for {flight}: {type(e).__name__}: {e}")
+    else:
+        print(f"[engine] no config for '{engine_key}'; running without engine/geometry")
+    #rocket = geo.Rocket.from_file(candidates[0], engine=engine_used)
 
-        thrust_bundle = find_bundle(interpolated_data, "thrust")  # fix meeeeeeee, but the intention is to initialize the engine component
-        set_bundle = find_bundle(interpolated_data, "set")
+    return calculate(interpolated_data, cutoff_dict, out_csv=f"{tag}calc_data.csv")
 
-        time = set_bundle['time'].magnitude 
-        thrust = thrust_bundle['spec_thrust'].magnitude
-        pressure = set_bundle['run_tank_pressure'].magnitude
 
-        _, t_end = heng.burn_window_from_thrust(time, thrust)
-        keep = time <= t_end
-        engine_used = build_hybrid(cfg, time[keep], pressure[keep], thrust[keep])
-    elif ROCKET_ENGINES[engine_key][1] == "solid":
-        thrust_bundle = find_bundle(interpolated_data, "thrust")
-        spec_thrust = thrust_bundle['spec_thrust']
-        accel_bundle = find_bundle(interpolated_data, "accel")
-        nonzero_idx = np.flatnonzero(np.asarray(spec_thrust.magnitude))
-        burnout = nonzero_idx[-1] + 1 if nonzero_idx.size else len(spec_thrust)
-        engine_used = build_solid(ROCKET_ENGINES[engine_key][0], accel_bundle['time'], thrust_bundle['spec_thrust'])
-    rocket = geo.Rocket.from_file(candidates[0], engine=engine_used)
-    graph_values, cutoff_dict = calculate(interpolated_data, cutoff_dict)
-    graph2(graph_values, cutoff_dict)
+def main(per_flight_diagnostics=False):
+    """per_flight_diagnostics: in ALL FLIGHTS mode, also open the full graph2() pages for every
+    flight (one set of windows per flight). Off by default: you just get the overlay figure."""
+    print(f"    .\n   .'.\n   |o|   Welcome to Comparinator!™\n  .'o'.  \033[3mFor all your comparing needs\033[0m\n  |.-.|\n  '   '\n   ( )\n    )\n   ( )")
+
+    rockets = available_rockets()
+    if not rockets:
+        raise SystemExit(f"No rocket folders found under {BASE_DIR}")
+    notes = {r: "" for r in rockets}
+    rocket_name = _choose("Available rockets:", rockets, notes)
+
+    engine_key = rocket_name.strip().lower()   # may not be in ROCKET_ENGINES; that's fine
+
+    flights = available_flights(rocket_name)
+    if not flights:
+        raise SystemExit(f"No flight folders found for {rocket_name} under {BASE_DIR}")
+    labels = {f: _flight_label(f) for f in flights}
+    labels[ALL_FLIGHTS] = f"({len(flights)} flights, overlaid)"
+    choice = _choose(f"Flights on record for {rocket_name}:", flights + [ALL_FLIGHTS], labels)
+
+    if choice != ALL_FLIGHTS:
+        graph_values, cutoff_dict = run_flight(rocket_name, choice, engine_key)
+        graph2(graph_values, cutoff_dict)
+        return
+
+    results, failed = {}, {}
+    for f in flights:
+        print(f"\n===== {f} =====")
+        try:
+            results[f] = run_flight(rocket_name, f, engine_key, tag=f"{f}_")
+        except Exception as e:                      # one bad flight shouldn't kill the batch
+            failed[f] = f"{type(e).__name__}: {e}"
+            print(f"Skipping {f}: {failed[f]}")
+    if failed:
+        print("\nSkipped flights:")
+        for f, why in failed.items():
+            print(f"  {f}: {why}")
+    if not results:
+        raise SystemExit("No flights could be processed.")
+    if per_flight_diagnostics:
+        for f, (graph_values, cutoff_dict) in results.items():
+            graph2(graph_values, cutoff_dict)
+    graph_all_flights(results)
 
 
 if __name__ == "__main__":
