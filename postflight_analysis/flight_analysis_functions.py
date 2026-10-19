@@ -28,6 +28,274 @@ def angle(v_up, v_dr, v_cr, tilt):
     aoa = tilt - ang
     return ang, aoa
 
+def tilt_from_quat(qW, qX, qY, qZ):
+    """Angle (deg) between the rocket's long axis (body z) and world vertical.
+    Quaternion is body->world, and 1 - 2(x^2 + y^2) is the vertical
+    component of body z."""
+    q = np.stack([qW, qX, qY, qZ], axis=-1).astype(float)
+    q /= np.linalg.norm(q, axis=-1, keepdims=True)
+    _, x, y, _ = q.T
+    return np.degrees(np.arccos(np.clip(1 - 2*(x*x + y*y), -1, 1)))
+
+import numpy as np
+
+G_FT = 32.174  # ft/s^2, same value faa uses
+
+
+def _unit_quat(qw, qx, qy, qz):
+    q = np.stack([qw, qx, qy, qz], axis=-1).astype(float)
+    n = np.linalg.norm(q, axis=-1, keepdims=True)
+    return q / np.maximum(n, 1e-12)
+
+
+def rotate_to_world(qw, qx, qy, qz, vx, vy, vz):
+    """Rotate body-frame vectors into the world frame (quaternion is body->world)."""
+    q = _unit_quat(qw, qx, qy, qz)
+    w, u = q[..., :1], q[..., 1:]
+    v = np.stack([vx, vy, vz], axis=-1).astype(float)
+    t = 2 * np.cross(u, v)
+    out = v + w * t + np.cross(u, t)
+    return out[..., 0], out[..., 1], out[..., 2]
+
+
+def body_axis_world(qw, qx, qy, qz):
+    """Unit vector of the rocket's long axis (body z) in the world frame, shape (..., 3)."""
+    w, x, y, z = _unit_quat(qw, qx, qy, qz).T
+    return np.stack([2*(x*z + w*y), 2*(y*z - w*x), 1 - 2*(x*x + y*y)], axis=-1)
+
+
+def tilt_from_quat(qw, qx, qy, qz):
+    """Angle (deg) between the long axis and vertical -- the `tilt` fd()/axial_unit() expect."""
+    axis = body_axis_world(qw, qx, qy, qz)
+    return np.degrees(np.arccos(np.clip(axis[..., 2], -1, 1)))
+
+
+def _cumtrapz(y, t):
+    dt = np.diff(t)[:, None]
+    out = np.zeros_like(y, dtype=float)
+    out[1:] = np.cumsum(0.5 * (y[1:] + y[:-1]) * dt, axis=0)
+    return out
+
+
+def ab_velocity(qw, qx, qy, qz, ax, ay, az, t, v_up=None, g=G_FT):
+    """World-frame velocity (vx, vy, vz) from the board's body-frame accelerometer.
+
+    ax, ay, az: body-frame specific force as the board reports it (gravity included),
+    in ft/s^2.  Rotated to world, gravity removed, integrated from t[0] with v=0.
+    If v_up (the EKF vertical velocity) is given it replaces the integrated vz, since the
+    EKF fuses the barometer and doesn't drift. Horizontal components are integrated only,
+    so they drift slowly and their heading is the board's arbitrary world frame."""
+    wx, wy, wz = rotate_to_world(qw, qx, qy, qz, ax, ay, az)
+    a_world = np.stack([wx, wy, wz - g], axis=-1)
+    v = _cumtrapz(a_world, np.asarray(t, float))
+    if v_up is not None:
+        v[:, 2] = v_up
+    return v[:, 0], v[:, 1], v[:, 2]
+
+
+def ab_flight_angles(vx, vy, vz, axis, eps=1e-9):
+    """(flight_angle, aoa) in degrees.
+    flight_angle: velocity direction off vertical (same definition as faa.angle).
+    aoa: true 3-D angle between the long axis and the velocity vector."""
+    v = np.stack([vx, vy, vz], axis=-1)
+    speed = np.linalg.norm(v, axis=-1)
+    vhat = v / np.maximum(speed, eps)[..., None]
+    flight_angle = np.degrees(np.arccos(np.clip(vz / np.maximum(speed, eps), -1, 1)))
+    aoa = np.degrees(np.arccos(np.clip(np.sum(axis * vhat, axis=-1), -1, 1)))
+    return flight_angle, aoa
+
+
+def ab_theta(vx, vy, offset_deg=0.0):
+    """Azimuth of the horizontal velocity (same as faa.theta), plus a heading offset
+    to rotate the board's arbitrary world frame onto the Raven's cross-range/down-range frame."""
+    th = np.degrees(np.arctan2(vy, vx)) + offset_deg
+    return (th + 180.0) % 360.0 - 180.0
+
+
+def heading_offset(theta_ab, theta_ref, weights=None):
+    """Circular mean of (theta_ref - theta_ab) in degrees; use over the fast part of boost."""
+    d = np.radians(np.asarray(theta_ref, float) - np.asarray(theta_ab, float))
+    w = np.ones_like(d) if weights is None else np.asarray(weights, float)
+    ok = np.isfinite(d) & np.isfinite(w)
+    return float(np.degrees(np.arctan2(np.sum(w[ok]*np.sin(d[ok])), np.sum(w[ok]*np.cos(d[ok])))))
+
+def shift_series(arr, lag_samples):
+    '''out[i] = arr[i + lag_samples], NaN where that index falls off either end.
+    Positive lag_samples moves the series EARLIER in time.'''
+    arr = np.asarray(arr, float)
+    n = len(arr)
+    if lag_samples == 0:
+        return arr.copy()
+    out = np.full(n, np.nan)
+    if abs(lag_samples) >= n:
+        return out
+    if lag_samples > 0:
+        out[:n - lag_samples] = arr[lag_samples:]
+    else:
+        out[-lag_samples:] = arr[:n + lag_samples]
+    return out
+
+
+def estimate_lag(t, ref, other, max_lag_s=2.0, t_window=(0.0, 10.0), min_overlap=20):
+    '''How late `other` runs relative to `ref`, as (lag_samples, lag_seconds). Positive means
+    other's features (burnout, peak velocity) happen later than ref's.
+
+    Picks the lag that maximises the Pearson correlation between ref[i] and other[i + lag] over
+    t_window. Correlation is scale- and offset-free, so a velocity trace that reads 10% low (the
+    board EKF) or an altitude on a different datum still lines up on SHAPE. Use two series of the
+    same quantity (e.g. both vertical velocities). Assumes a uniform time grid (post-interpolate).'''
+    t = np.asarray(t, float); ref = np.asarray(ref, float); other = np.asarray(other, float)
+    n = len(t)
+    dt = float(np.median(np.diff(t)))
+    i0 = int(np.searchsorted(t, t_window[0])); i1 = min(int(np.searchsorted(t, t_window[1])), n)
+    L = int(round(max_lag_s / dt))
+    best_lag, best_c = 0, -np.inf
+    for lag in range(-L, L + 1):
+        lo, hi = max(i0, -lag), min(i1, n - lag)
+        if hi - lo < min_overlap:
+            continue
+        a, b = ref[lo:hi], other[lo + lag:hi + lag]
+        ok = np.isfinite(a) & np.isfinite(b)
+        if ok.sum() < min_overlap:
+            continue
+        a, b = a[ok] - a[ok].mean(), b[ok] - b[ok].mean()
+        denom = np.sqrt((a * a).sum() * (b * b).sum())
+        if denom <= 0:
+            continue
+        c = float((a * b).sum() / denom)
+        if c > best_c:
+            best_c, best_lag = c, lag
+    return best_lag, best_lag * dt
+
+
+def ab_burnout_index(ax, ay, az, frac=0.5):
+    '''Board-side burnout: first sample after the peak specific force where |a| falls below
+    `frac` of that peak. Independent of the thrust file, so it still works if the board log and
+    the thrust curve start at different instants.'''
+    amag = np.sqrt(np.asarray(ax, float)**2 + np.asarray(ay, float)**2 + np.asarray(az, float)**2)
+    sm = np.convolve(amag, np.ones(5) / 5, mode='same')   # one spike shouldn't count as burnout
+    pk = int(np.argmax(sm))
+    below = np.flatnonzero(sm[pk:] < frac * sm[pk])
+    return pk + int(below[0]) if below.size else len(amag) - 1
+
+
+def _leading_pad_len(a_world, thresh, hold=5):
+    '''Samples at the start of a world-frame accel array (gravity removed) before it first stays
+    above `thresh` for `hold` samples. Used as the pad segment when the board log has no
+    pre-launch rows of its own.'''
+    mag = np.linalg.norm(a_world, axis=-1)
+    above = mag >= thresh
+    for i in range(len(above) - hold + 1):
+        if above[i:i + hold].all():
+            return i
+    return len(above)
+
+
+def _pad_r_series(v_pad_src, v, fallback_window, fallback_floor, label, min_pad=20):
+    '''Noise-variance series for `v`, calibrated on a pad segment the same way the Raven path does
+    (build_r_series_from_pad: trim to the true flat pad, pick the detrend window that reproduces
+    the pad variance, floor at the pad variance). Falls back to the old fixed-window estimate and
+    hand floor if there is no usable pad. Returns (r_series, info_or_None).'''
+    if v_pad_src is not None and len(v_pad_src) >= min_pad:
+        try:
+            r, info = build_r_series_from_pad(np.asarray(v_pad_src, float), np.asarray(v, float),
+                                              verbose=False)
+            onset = info['onset_idx']
+            if np.isfinite(info['r_floor']) and (onset is None or onset >= min_pad):
+                print(f"[airbrakes] {label}: pad noise var={info['r_floor']:.4g}, "
+                      f"window={info['window']}, onset_idx={onset}")
+                return r, info
+            print(f"[airbrakes] {label}: pad too short after trimming (onset_idx={onset}); using fallback")
+        except Exception as e:
+            print(f"[airbrakes] {label}: pad calibration failed ({e}); using fallback")
+    else:
+        print(f"[airbrakes] {label}: no pad segment; using fallback")
+    r = np.maximum(estimate_measurement_noise_series(np.asarray(v, float), window=fallback_window),
+                   fallback_floor)
+    return r, None
+
+
+def ab_smooth(t, qw, qx, qy, qz, ax, ay, az, v_up=None, burnout_idx=None,
+              q_boost=3e4, q_coast=1e2, r_v_boost=2500.0, r_v_coast=1.0, r_v_horizontal=1e4,
+              ekf_settle_s=2.0, noise_window=41, r_a_floor=None, g=G_FT, pre=None):
+    '''Kalman/RTS-smoothed world-frame velocity and coordinate acceleration for the airbrakes
+    board, using the same kalman_smooth() as the Raven path (state [v, a], boost/coast Q switch).
+
+    Unlike the Raven path, where only velocity is measured, the board gives BOTH an accelerometer
+    and an EKF vertical velocity, and kalman_smooth() can fuse the two:
+      - a  : body specific force rotated to world, gravity removed, ft/s^2 (r_a = rolling residual
+             variance, so boost vibration is automatically distrusted more than quiet coast)
+      - v  : z uses the board EKF velocity (v_up); x/y have no velocity sensor, so they use the
+             integrated accel with a huge r_v and are effectively accel-driven.
+    The EKF velocity LAGS and under-reads during boost and for ~2 s after burnout (it is itself a
+    filtered estimate), so it gets a large r_v_boost until burnout + ekf_settle_s, then a tight
+    r_v_coast, where it anchors drift. Inputs must already be ft, ft/s, ft/s^2.
+
+    q_boost / q_coast are NOT run through calibrate_q(): that scores velocity innovations, and the
+    EKF velocity is already smooth, so it would pick a Q far too small to follow the burnout step.
+    Tune them against the residual (raw - smoothed) accel instead. Defaults (3e4 / 1e2) were picked
+    on the 0.15 s burnout fall time: higher Q passes boost vibration, lower Q (<=1e4) starts to blur
+    the burnout step. Smoother traces -> lower q_boost / q_coast; sharper burnout -> raise q_boost.
+
+    Measurement noise (R) is calibrated against the pad the same way as the Raven path: the pad
+    segment is trimmed to where the sensor is truly still (trim_to_true_pad), the detrend window is
+    chosen so the rolling estimate reproduces the pad variance, and R is floored at that variance.
+    This is done per world-frame accel axis and for the EKF vertical velocity.
+      pre : dict of PRE-LAUNCH board arrays in the same units as the flight inputs (ft, ft/s,
+            ft/s^2) and on the same sample spacing, keys 'qw','qx','qy','qz','ax','ay','az' and
+            optionally 'v_up'. If None, the leading pre-motion samples of this log are used instead;
+            if there are too few of those, it falls back to the old fixed-window estimate.
+      r_a_floor : extra hand floor on accel R. None (default) = pad variance only when a pad is
+            available, otherwise 1.0 as before.
+
+    Returns {'v': (vx, vy, vz), 'a': (awx, awy, awz), 'burnout_idx': int, 'noise': {label: info}}.'''
+    t = np.asarray(t, float)
+    wx, wy, wz = rotate_to_world(qw, qx, qy, qz, ax, ay, az)
+    a_raw = np.stack([wx, wy, wz - g], axis=-1)
+    if burnout_idx is None:
+        burnout_idx = ab_burnout_index(ax, ay, az)
+    v_raw = _cumtrapz(a_raw, t)
+    settle = burnout_idx + int(round(ekf_settle_s / float(np.median(np.diff(t)))))
+
+    # pad segments: pre-launch rows if given, else the quiet start of this log
+    pad_a, pad_vup = None, None
+    if pre is not None:
+        pwx, pwy, pwz = rotate_to_world(pre['qw'], pre['qx'], pre['qy'], pre['qz'],
+                                        pre['ax'], pre['ay'], pre['az'])
+        pad_a = np.stack([pwx, pwy, pwz - g], axis=-1)
+        pad_vup = pre.get('v_up')
+    else:
+        n_pad = _leading_pad_len(a_raw, thresh=0.5 * g)
+        if n_pad >= 20:
+            pad_a = a_raw[:n_pad]
+            pad_vup = None if v_up is None else np.asarray(v_up, float)[:n_pad]
+            print(f"[airbrakes] no pre-launch rows; using first {n_pad} samples of the log as the pad")
+    a_floor = 1.0 if r_a_floor is None else r_a_floor
+
+    noise = {}
+    v_out, a_out = [], []
+    for i in range(3):
+        a_i = a_raw[:, i]
+        r_a, info = _pad_r_series(None if pad_a is None else pad_a[:, i], a_i,
+                                  noise_window, a_floor, f"accel {'xyz'[i]}")
+        if info is not None and r_a_floor is not None:
+            r_a = np.maximum(r_a, r_a_floor)
+        noise[f"a{'xyz'[i]}"] = info
+        if i == 2 and v_up is not None:
+            v_meas = np.asarray(v_up, float)
+            r_v = np.full(len(t), r_v_coast)
+            r_v[:settle] = r_v_boost
+            r_pad, info_v = _pad_r_series(pad_vup, v_meas, noise_window, 0.0, "ekf vz")
+            noise["vz"] = info_v
+            r_v = np.maximum(r_v, r_pad)
+        else:
+            v_meas, r_v = v_raw[:, i], r_v_horizontal
+        vs, as_ = kalman_smooth(t, v_meas, a=a_i, r_v=r_v, r_a=r_a,
+                                q_boost=q_boost, q_coast=q_coast, burnout_idx=burnout_idx)
+        v_out.append(vs); a_out.append(as_)
+    return {'v': tuple(v_out), 'a': tuple(a_out), 'burnout_idx': burnout_idx, 'noise': noise}
+
+
 def magnitude(*args):
     args = np.array(args)
     return np.sqrt(sum(args**2))
@@ -509,8 +777,8 @@ def kalman_smooth(t, v, a=None, r_v=1.0, r_a=1.0, q_boost=4000.0, q_coast=50.0,
                  second sensor to fuse; a[k] = NaN means "no reading at k"
     r_v        : velocity measurement-noise variance. Scalar or array of len(t)
                  (use build_r_series() for the array form).
-    r_a        : acceleration measurement-noise variance (scalar; extend to an
-                 array the same way as r_v if that sensor's noise also varies).
+    r_a        : acceleration measurement-noise variance. Scalar or array of len(t),
+                 same as r_v.
     q_boost    : process-noise variance (accel allowed to change per unit
                  time) before `burnout_idx`. Tune against real thrust-curve
                  sharpness -- too small and the boost peak gets smeared/lagged.
@@ -531,6 +799,7 @@ def kalman_smooth(t, v, a=None, r_v=1.0, r_a=1.0, q_boost=4000.0, q_coast=50.0,
     v = np.asarray(v, float)
     a = np.full(n, np.nan) if a is None else np.asarray(a, float)
     r_v_arr = np.full(n, r_v, float) if np.isscalar(r_v) else np.asarray(r_v, float)
+    r_a_arr = np.full(n, r_a, float) if np.isscalar(r_a) else np.asarray(r_a, float)
     burnout_idx = n if burnout_idx is None else burnout_idx
 
     dt = np.diff(t, prepend=t[0] - (t[1] - t[0]))  # dt[k] = step INTO sample k
@@ -560,7 +829,7 @@ def kalman_smooth(t, v, a=None, r_v=1.0, r_a=1.0, q_boost=4000.0, q_coast=50.0,
         if np.isfinite(v[k]):
             rows.append([1.0, 0.0]); zs.append(v[k]); rs.append(r_v_arr[k])
         if np.isfinite(a[k]):
-            rows.append([0.0, 1.0]); zs.append(a[k]); rs.append(r_a)
+            rows.append([0.0, 1.0]); zs.append(a[k]); rs.append(r_a_arr[k])
         if rows:                                    # update
             H, z, R = np.array(rows), np.array(zs), np.diag(rs)
             S = H @ P @ H.T + R
