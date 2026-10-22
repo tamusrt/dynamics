@@ -282,6 +282,22 @@ test('the sidebar shows the History metric on the history tab and apogee elsewhe
   run({ tab: 'flight', fx: 'time', fy: 'altitude', sel: enc([A]) });
   assert(els.navcap.textContent.startsWith('latest apogee'), els.navcap.textContent);
 });
+test('the latest-values table is collapsible and remembers its state; the sidebar caption is just the metric', () => {
+  const store = {};
+  global.localStorage = { getItem: k => (k in store ? store[k] : null), setItem: (k, v) => { store[k] = String(v); } };
+  try {
+    run({ tab: 'history', metric: 'apogee', view: 'abs', sel: enc([A]) });
+    assert(!els.navcap.textContent.includes('color'), els.navcap.textContent);
+    assert.strictEqual(els.latestbox.hidden, false);
+    assert(els.latestsum.textContent.startsWith('Latest values') && els.latestsum.textContent.includes('1 simulation'), els.latestsum.textContent);
+    assert.strictEqual(els.latestbox.open, undefined, 'nothing stored: the page leaves the markup default (open)');
+    els.latestbox.open = false; els.latestbox.ontoggle();
+    assert.strictEqual(store.or_ci_latest_open, '0');
+    run({ tab: 'history', metric: 'apogee', view: 'abs', sel: enc([A, B]) });
+    assert.strictEqual(els.latestbox.open, false, 'a collapsed table stays collapsed on the next load');
+    assert(els.latestsum.textContent.includes('2 simulations'), els.latestsum.textContent);
+  } finally { delete global.localStorage; }
+});
 test('each simulation is shown with its motor in brackets, while links and data keep the plain name', () => {
   const labels = simRows.filter(r => r.className === 'sim').map(r => [r.dataset.id, r.children.find(c => c.className === 'label').textContent]);
   for (const [id, text] of labels) {

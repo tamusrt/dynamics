@@ -114,6 +114,9 @@ SECONDARY_METRICS = [
     ("max_stability_pct", "Max stability", "% L", 1),
     ("reference_diameter_m", "Reference diameter", "m", 4),
     ("rocket_length_m", "Rocket length", "m", 3),
+    # thrust-to-weight ratio, thrust / (mass x local gravity) with OpenRocket's instantaneous mass
+    ("twr_off_rod", "TWR off rod", "", 2),
+    ("twr_burn_avg", "Mean TWR over burn", "", 2),
 ]
 CHART_TITLES = {
     "apogee": "Apogee",
@@ -181,6 +184,7 @@ def spec_for(key: str, units: str = "metric"):
 # stability event.
 STABILITY_MIN_SPEED_MS = 30.0
 R_AIR = 287.05  # J/(kg K)
+G0 = 9.80665    # m/s², fallback when OpenRocket's gravity series is missing
 
 
 # ----------------------------------------------------------------------------
@@ -480,6 +484,42 @@ def derived_metrics(helper, sim, summary: dict) -> dict:
     return out
 
 
+def twr_metrics(helper, sim) -> dict:
+    """Thrust-to-weight ratio, thrust / (m g) with OpenRocket's instantaneous mass and local gravity:
+    at launch-rod departure, and its time average from first ignition to last burnout."""
+    import numpy as np
+    from orlab import FlightDataType as F, FlightEvent as E
+    out = {"twr_off_rod": math.nan, "twr_burn_avg": math.nan}
+    try:
+        ts = helper.get_timeseries(sim, [F.TYPE_TIME, F.TYPE_THRUST_FORCE, F.TYPE_MASS, F.TYPE_GRAVITY])
+        t = np.asarray(ts[F.TYPE_TIME], float)
+        thrust = np.asarray(ts[F.TYPE_THRUST_FORCE], float)
+        mass = np.asarray(ts[F.TYPE_MASS], float)
+        g = np.asarray(ts[F.TYPE_GRAVITY], float)
+        g = np.where(np.isnan(g) | (g <= 0), G0, g)
+        with np.errstate(invalid="ignore", divide="ignore"):
+            twr = thrust / (mass * g)
+        ok = ~np.isnan(t) & ~np.isnan(twr)
+        t, twr = t[ok], twr[ok]
+        if t.size < 2:
+            return out
+        events = helper.get_events(sim)
+        t_rod = events.get(E.LAUNCHROD, [None])[0]
+        if t_rod is not None and t[0] <= t_rod <= t[-1]:
+            out["twr_off_rod"] = float(np.interp(t_rod, t, twr))
+        ign, burn = events.get(E.IGNITION, []), events.get(E.BURNOUT, [])
+        if ign and burn and max(burn) > min(ign):
+            t0, t1 = float(min(ign)), float(max(burn))
+            # resample onto the burn window so both end points land exactly on the events
+            inner = t[(t > t0) & (t < t1)]
+            tt = np.concatenate(([t0], inner, [t1]))
+            integrate = getattr(np, "trapezoid", None) or np.trapz
+            out["twr_burn_avg"] = float(integrate(np.interp(tt, t, twr), tt) / (t1 - t0))
+    except Exception:
+        pass
+    return out
+
+
 # Flight variables that are constant or bookkeeping; left out of the website's flight plots.
 _SERIES_SKIP = {"computation_time", "time_step", "reference_area", "reference_length"}
 SERIES_DESCENT_STRIDE = 1    # after apogee keep every Nth sample (1 = full fidelity; the site's CSV export relies on it)
@@ -669,6 +709,7 @@ def _run_one(helper, cfg, snap, root, ork_rel, base_rec, info, fcfg, scfg, sim, 
         summary["min_stability_cal_raw"] = summary.get("min_stability_cal")
         summary["max_stability_cal_raw"] = summary.get("max_stability_cal")
         summary.update(derived_metrics(helper, sim, summary))
+        summary.update(twr_metrics(helper, sim))
         # stability as % of rocket length: calibers x (reference diameter / overall length) x 100
         try:
             fc = sim.getActiveConfiguration()
@@ -1308,7 +1349,7 @@ def cmd_history(args):
     cache_dir = Path(args.cache).resolve() if args.cache else None
     if cache_dir:
         cache_dir.mkdir(parents=True, exist_ok=True)
-    cache_salt = f"s{cfg.seed}-w{int(cfg.deterministic_wind)}-m4"  # bump the suffix when metrics or the run setup change (m4: multi-level wind honoured)
+    cache_salt = f"s{cfg.seed}-w{int(cfg.deterministic_wind)}-m5"  # bump the suffix when metrics or the run setup change (m5: TWR metrics)
 
     def _strings(value):  # every string in a config entry (motor paths sit at different depths)
         if isinstance(value, str):
@@ -1591,6 +1632,8 @@ SITE_HTML = r"""<!doctype html>
   th:first-child, td:first-child { text-align:left; }
   th { color:var(--muted); font-weight:600; }
   td .sw { display:inline-block; width:10px; height:10px; border-radius:3px; margin-right:6px; vertical-align:middle; }
+  .latestbox { margin-top:14px; } .latestbox summary { cursor:pointer; color:var(--muted); font-size:12.5px; user-select:none; }
+  .latestbox table { margin-top:8px; }
   td .d { color:var(--muted); font-size:11px; margin-left:4px; } td .d.up { color:var(--up); } td .d.down { color:var(--down); }
   .legend { color:var(--muted); font-size:12px; margin-top:14px; }
   a { color:var(--accent); }
@@ -1636,7 +1679,7 @@ SITE_HTML = r"""<!doctype html>
    <section id="view-history">
     <div class="row" id="metrics"></div>
     <div class="chartbox"><div id="hplot" style="position:absolute;inset:10px"></div><div class="empty" id="empty" hidden>Select simulations in the list.</div></div>
-    <div id="latest"></div>
+    <details id="latestbox" class="latestbox" open><summary id="latestsum">Latest values</summary><div id="latest"></div></details>
     <p class="legend" id="jarvisnote" hidden></p>
     <p class="legend">OpenRocket simulations run with wind turbulence at 0%: OpenRocket 24.12 draws turbulence from a random source the seed does not control, so results would otherwise differ from run to run.</p>
    </section>
@@ -1779,7 +1822,7 @@ function buildNav() {
 function navMetric() { return state.tab === 'history' ? state.metric : 'apogee'; }   // the sidebar numbers follow the History metric; elsewhere they are apogee
 function refreshNav() {
   const key = navMetric(), spec = specOf(key);
-  const cap = document.getElementById('navcap'); if (cap) cap.textContent = `latest ${spec.label.toLowerCase()}${spec.unit ? ' (' + spec.unit + ')' : ''} · color shows the last change`;
+  const cap = document.getElementById('navcap'); if (cap) cap.textContent = `latest ${spec.label.toLowerCase()}${spec.unit ? ' (' + spec.unit + ')' : ''}`;
   for (const row of nav.querySelectorAll('.sim')) {
     const a = ALL.find(x => x.id === row.dataset.id);
     row.querySelector('input').checked = state.sel.has(a.id);
@@ -1917,11 +1960,17 @@ function draw() {
   Plotly.react(hplot, traces, layout, plotConfig(`${delta ? 'delta_' : ''}${state.metric}`)); openCommit(hplot);
 }
 
-// ---- latest-values table ----
+// ---- latest-values table (collapsible; the open/closed state is remembered per browser) ----
+const LATEST_KEY = 'or_ci_latest_open';
+const latestBox = document.getElementById('latestbox');
+try { if (localStorage.getItem(LATEST_KEY) === '0') latestBox.open = false; } catch (e) { /* no storage: open by default */ }
+latestBox.ontoggle = () => { try { localStorage.setItem(LATEST_KEY, latestBox.open ? '1' : '0'); } catch (e) { /* not kept */ } };
 function drawTable() {
   const box = document.getElementById('latest');
   const rows = ALL.filter(a => state.sel.has(a.id));
+  latestBox.hidden = !rows.length;
   if (!rows.length) { box.innerHTML = ''; return; }
+  document.getElementById('latestsum').textContent = `Latest values · ${rows.length} simulation${rows.length === 1 ? '' : 's'}`;
   const specs = visibleMetrics().map(m => specOf(m.key));
   let h = '<table><thead><tr><th>Simulation</th>' + specs.map(m => `<th>${m.label}${m.unit ? ' (' + m.unit + ')' : ''}</th>`).join('') + '<th>Latest version</th></tr></thead><tbody>';
   for (const a of rows) {
