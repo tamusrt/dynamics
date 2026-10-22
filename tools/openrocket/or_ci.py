@@ -125,7 +125,11 @@ CHART_TITLES = {
     "stability_off_rod_cal": "Off-the-rail stability",
     "min_stability_cal": "Minimum stability",
     "max_stability_cal": "Maximum stability",
+    "twr_off_rod": "Off-the-rail TWR",
+    "twr_burn_avg": "Mean TWR over burn",
 }
+# Secondary metrics that also get a button and a table column on the Pages site's History tab.
+SITE_EXTRA_KEYS = ["twr_off_rod", "twr_burn_avg"]
 # stability margin in calibers (CP-CG)/D or as a percentage of rocket length (CP-CG)/L*100;
 # both are stored, "stability_units" in the config picks which one the reports show
 STABILITY_PAIRS = {"stability_off_rod_cal": "stability_off_rod_pct", "min_stability_cal": "min_stability_pct",
@@ -2396,7 +2400,7 @@ def write_site(series: dict, site_dir: Path, units: str, repo_url: str, files_ve
     import datetime as dt
     import hashlib
     import shutil
-    site_keys = PRIMARY_KEYS + list(STABILITY_PAIRS.values())
+    site_keys = PRIMARY_KEYS + list(STABILITY_PAIRS.values()) + SITE_EXTRA_KEYS
     designs, flights, flight_vars, motors = {}, {}, {}, {}
     site_dir.mkdir(parents=True, exist_ok=True)
     shutil.rmtree(site_dir / "flights", ignore_errors=True)   # stale simulations must not linger
