@@ -21,7 +21,7 @@ engine_comments = PER_MY_LAST
 
 # ENGINE GEOMETRY (mm)
 engine_outer_diameter_mm = 152.4
-nozzle_throat_diameter_mm = 34.798
+nozzle_throat_diameter_mm = 36.576
 nozzle_exit_diameter_mm = 73.66
 
 # OUTPUT LOCATION
