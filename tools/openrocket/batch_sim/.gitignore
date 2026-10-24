@@ -1,0 +1,13 @@
+
+# Personal designs, generated variants, and results
+*.ork
+*.csv
+ork_variants/
+trade_study_analysis/
+*_trade_study/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/

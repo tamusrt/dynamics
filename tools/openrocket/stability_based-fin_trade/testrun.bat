@@ -1,0 +1,1 @@
+fin_sweep.py --base "..\..\..\aero_modeling\AIRMAIL\OpenRocket\AIRMAIL.ork" --height 5.5:8.5:0.5 --root 10:18:2 --tip 2:10:2 --sweep 6:18:2 --maximum-stability 25 --minimum-stability 10 --worst-stability 9 --workers 16 --jar "..\batch_sim\OpenRocket-24.12.jar" --motor "..\..\..\aero_modeling\AIRMAIL\Thrust_Curves\PER_MY_LAST.rse"

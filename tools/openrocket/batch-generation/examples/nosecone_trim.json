@@ -1,0 +1,10 @@
+{
+  "_comment": "Nose cone length trade study -- reproduces nosecone_trade_study_length/OpenRocket Files (SolInvictus_<N>Trim.ork, N = 1..20 in).",
+  "base": "../../nosecone_trade_study_length/OpenRocket Files/SolInvictus.ork",
+  "out_dir": "../output/nosecone_trim",
+  "name_template": "{base}_{trim}Trim",
+  "unit": "in",
+  "vary": ["nosecone.trim=1:20:1"],
+  "clear_mass_override": true,
+  "preserve_nose_volume": false
+}

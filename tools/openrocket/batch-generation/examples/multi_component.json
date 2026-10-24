@@ -1,0 +1,69 @@
+{
+  "_comment": "Everything at once: two reference designs, fins + nose shape (linked shape/parameter) + tube length + payload mass.",
+  "base": [
+    "../../pdr_fin_refinement/AIRMAIL.ork",
+    "../../pdr_fin_refinement/optimal.ork"
+  ],
+  "out_dir": "../output/multi_component",
+  "unit": "in",
+  "mass_unit": "lb",
+  "vary": [
+    {
+      "target": "fins.sweepangle",
+      "values": [
+        45,
+        50,
+        55
+      ],
+      "label": "sweep"
+    },
+    {
+      "target": "fins.height",
+      "range": [
+        7,
+        9,
+        1
+      ],
+      "label": "span"
+    },
+    {
+      "target": "nosecone.shape",
+      "values": [
+        "haack",
+        "ogive",
+        "haack"
+      ],
+      "link": "nose",
+      "label": "shape"
+    },
+    {
+      "target": "nosecone.shapeparameter",
+      "values": [
+        0,
+        1,
+        0.333
+      ],
+      "link": "nose",
+      "label": "shapep"
+    },
+    {
+      "target": "@Fiberglass Tube.length",
+      "op": "+=",
+      "linspace": [
+        0,
+        6,
+        3
+      ],
+      "label": "tubeplus"
+    },
+    {
+      "target": "@Payload.mass",
+      "values": [
+        4.4,
+        5.5
+      ],
+      "label": "payload"
+    }
+  ],
+  "preserve_nose_volume": true
+}

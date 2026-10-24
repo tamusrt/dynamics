@@ -1,0 +1,13 @@
+{
+  "_comment": "Fin planform sweep -- the same grid as pdr_fin_refinement/Batch Creation/Batch3 (fin GUI). Filenames match the old GUI's output.",
+  "base": "../../pdr_fin_refinement/AIRMAIL.ork",
+  "out_dir": "../output/fin_sweep",
+  "prefix": "Airmail",
+  "unit": "in",
+  "vary": [
+    "fins.rootchord=10:16:1",
+    "fins.tipchord=4:8:1",
+    "fins.height=5:9:1",
+    "fins.sweeplength=4:12:1"
+  ]
+}

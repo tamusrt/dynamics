@@ -4,6 +4,7 @@ A small toolkit for running OpenRocket trade studies without clicking through th
 
 | Script | What it does |
 |---|---|
+| `openrocket_variant_generator.py` | GUI (tkinter, no extra installs). Load a base `.ork`, sweep nose cone trim and transition length, fore diameter, and position, and write one `.ork` per combination |
 | `batch_simulate.py` | Runs every simulation saved in every `.ork` in a folder, with no GUI, and writes one summary CSV row per simulation (apogee, max velocity, max acceleration, time to apogee, flight time, stability) |
 | `analyze_trade_study.py` | Parses the design traits from each filename, ranks the results, and plots how each trait affects apogee (or another metric) relative to the baseline |
 
@@ -12,10 +13,11 @@ A small toolkit for running OpenRocket trade studies without clicking through th
 ## Typical workflow
 
 ```
-# 1. Generate variants from a base design (separate)
+# 1. Generate variants from a base design (opens a GUI)
+python openrocket_variant_generator.py
 
 # 2. Simulate them all
-python batch_simulate.py --input-dir ork_variants --jar "OpenRocket-24.12.jar" --output-csv results.csv
+python batch_simulate.py --input-dir ork_variants --jar "C:\path\to\OpenRocket-24.12.jar" --output-csv results.csv
 
 # 3. Rank and plot
 python analyze_trade_study.py --results-csv results.csv --output-dir trade_study_analysis
@@ -45,8 +47,18 @@ You need a JDK, not just a JRE. OpenRocket's recent versions (23.09, 24.12) need
 - Windows: run the installer, make sure "Set JAVA_HOME" and "Add to PATH" are checked.
 - Verify: open a new terminal and run `java -version` — it should print 17 or higher.
 
+### 2. Get the OpenRocket engine jar
 
-### 2. Install Python packages
+You need the raw `.jar`, not just the installer/exe (the installer bundles its own private JRE that Python can't reach into).
+
+- Releases page: https://github.com/openrocket/openrocket/releases (grab the `.jar` asset from the latest release, e.g. 24.12)
+- Or, once `orlab` is installed (step 3), it can fetch and verify one for you:
+  ```
+  python -m orlab fetch
+  ```
+  Note the path it downloads to — you'll pass it to this script with `--jar`.
+
+### 3. Install Python packages
 
 From this folder:
 
@@ -85,6 +97,8 @@ python batch_simulate.py --input-dir "C:\path\to\ork_files" --jar "C:\path\to\Op
 - `--verbose` prints full error tracebacks for any simulation that fails, instead of just a one-line summary.
 - Progress prints to the terminal as it goes, and the CSV is written incrementally, so you can open it in Excel/Sheets while the batch is still running (or safely Ctrl+C and keep the partial results).
 
+- `--motor PATH` flies the given `.eng`/`.rse` thrust curve in every simulation instead of the motor saved in each `.ork`. Use it when the files fail with `empty MotorInstance`: headless OpenRocket only loads its built-in motors, not the custom thrust curves the GUI finds through your preferences.
+
 - `--workers N` sets how many parallel worker processes to run, each with its own JVM. The default is based on your CPU count. `--workers 1` runs serially.
 
 ## Output columns
@@ -100,12 +114,28 @@ python batch_simulate.py --input-dir "C:\path\to\ork_files" --jar "C:\path\to\Op
 | `time_to_apogee_s` | Time from launch to apogee |
 | `flight_time_s` | Total simulated flight time |
 | `min_stability_cal` / `max_stability_cal` | Min / max stability margin (calibers) from OpenRocket's own stability time series, over the ascent only (launch to apogee). Post-apogee values are excluded because after recovery deployment OpenRocket reports stability of the separated sections (nonsense like -20 cal) |
+| `first_stability_cal` | First non-NaN stability margin (calibers) of the ascent |
+| `max_aoa_deg` | Max angle of attack (degrees), launch to apogee |
 | `status` | `OK`, `LOAD_ERROR`, `NO_SIMULATIONS`, or `SIM_ERROR` |
 | `notes` | Error detail or other notes, when relevant |
 
 A row with `status = NO_SIMULATIONS` means that `.ork` file has a rocket design but no simulation was ever set up/saved for it in the GUI — there's nothing for this script to run until you open it once, configure a motor/simulation, and save.
 
+## Generating variants (`openrocket_variant_generator.py`)
 
+```
+python openrocket_variant_generator.py
+```
+
+1. **Base .ork file:** load your design. The tool reads its actual component list (nose cone, body tubes, any existing transition).
+2. **Insertion points:** tick one or more junctions between adjacent body components where a new transition should go.
+3. **Parameters:** enter comma-separated sweep values for nose cone trim (in; `0` = untrimmed), transition length (in), and transition fore diameter (in). The aft diameter is matched automatically to the next component. Optional checkboxes:
+   - also generate trim-only variants (no transition)
+   - include an unmodified copy of the base file (the baseline for analysis)
+   - preserve transition-side and/or nose-trim internal volume by lengthening body tubes to compensate
+4. **Output:** choose a folder (default `./ork_variants`) and click **Generate Batch**.
+
+Files are named `<Base>_<X>Trim_<F>-<A>_<L>Trans_<Section>.ork`, and only the segments that changed are included. For example, `MyRocket_2Trim_4.5-6_10Trans_AV.ork` has a 2" nose trim and a 10" transition from 4.5" to 6" diameter, placed after the `AV` section. See the script's docstring for how mass and volume are handled.
 
 ## Analyzing results (`analyze_trade_study.py`)
 

@@ -213,8 +213,10 @@ FIELDNAMES = [
     "max_acceleration_g",
     "time_to_apogee_s",
     "flight_time_s",
+    "first_stability_cal",
     "min_stability_cal",
     "max_stability_cal",
+    "max_aoa_deg",
     "status",
     "notes",
 ]
@@ -230,7 +232,7 @@ def _error_row(ork_path, sim_idx, status, notes):
         "max_velocity_ms": "", "max_velocity_mph": "",
         "max_acceleration_ms2": "", "max_acceleration_g": "",
         "time_to_apogee_s": "", "flight_time_s": "",
-        "min_stability_cal": "", "max_stability_cal": "",
+        "first_stability_cal": "", "min_stability_cal": "", "max_stability_cal": "", "max_aoa_deg": "",
         "status": status,
         "notes": notes,
     }
@@ -240,9 +242,11 @@ def _round_or_blank(value, ndigits, scale=1.0):
     return round(float(value) * scale, ndigits) if not math.isnan(value) else ""
 
 
-def simulate_file(helper, FlightDataType, FlightEvent, ork_path: Path, verbose=False):
+def simulate_file(helper, FlightDataType, FlightEvent, ork_path: Path, verbose=False, motor=None):
     """
-    Load one .ork file and run every simulation saved in it.
+    Load one .ork file and run every simulation saved in it. If `motor` is a
+    .eng/.rse path, every simulation flies that thrust curve instead of the
+    motor saved in the file.
     Returns (rows, log_lines, ok_count, error_count). Never raises.
     Log lines are returned rather than printed so parallel workers don't
     interleave their output.
@@ -271,6 +275,8 @@ def simulate_file(helper, FlightDataType, FlightEvent, ork_path: Path, verbose=F
         try:
             sim = doc.getSimulation(sim_idx)
             sim_name = str(_safe_call(sim, "getName", default=f"sim_{sim_idx}"))
+            if motor:
+                helper.set_motor(sim, motor)
             motor_cfg = _get_motor_config_name(sim)
 
             helper.run_simulation(sim)
@@ -283,6 +289,7 @@ def simulate_file(helper, FlightDataType, FlightEvent, ork_path: Path, verbose=F
                     FlightDataType.TYPE_VELOCITY_Z,
                     FlightDataType.TYPE_ACCELERATION_TOTAL,
                     FlightDataType.TYPE_STABILITY,
+                    FlightDataType.TYPE_AOA,
                 ],
             )
 
@@ -304,12 +311,19 @@ def simulate_file(helper, FlightDataType, FlightEvent, ork_path: Path, verbose=F
                 if math.isfinite(s) and (t_apogee is None or t <= t_apogee)
             ]
 
+            aoas = [
+                a for t, a in zip(times, data[FlightDataType.TYPE_AOA])
+                if math.isfinite(a) and (t_apogee is None or t <= t_apogee)
+            ]
+
             apogee_m = max(altitudes) if altitudes else float("nan")
             max_v = max(velocities) if velocities else float("nan")
             max_a = max(accels) if accels else float("nan")
             flight_time = times[-1] if times else float("nan")
             min_stab = min(stabilities) if stabilities else float("nan")
             max_stab = max(stabilities) if stabilities else float("nan")
+            first_stab = stabilities[0] if stabilities else float("nan")
+            max_aoa = math.degrees(max(aoas)) if aoas else float("nan")
 
             notes = ""
             if math.isnan(apogee_m):
@@ -328,8 +342,10 @@ def simulate_file(helper, FlightDataType, FlightEvent, ork_path: Path, verbose=F
                 "max_acceleration_g": _round_or_blank(max_a, 2, MS2_TO_G),
                 "time_to_apogee_s": round(t_apogee, 2) if t_apogee is not None else "",
                 "flight_time_s": _round_or_blank(flight_time, 2),
+                "first_stability_cal": _round_or_blank(first_stab, 2),
                 "min_stability_cal": _round_or_blank(min_stab, 2),
                 "max_stability_cal": _round_or_blank(max_stab, 2),
+                "max_aoa_deg": _round_or_blank(max_aoa, 2),
                 "status": "OK",
                 "notes": notes,
             })
@@ -371,13 +387,13 @@ def _worker_init(jar_path):
         _WORKER["init_error"] = traceback.format_exc()
 
 
-def _worker_simulate_file(ork_path_str, verbose):
+def _worker_simulate_file(ork_path_str, verbose, motor=None):
     ork_path = Path(ork_path_str)
     if "init_error" in _WORKER:
         log = [f"    Worker failed to start OpenRocket:\n{_WORKER['init_error']}"]
         return [_error_row(ork_path, "", "WORKER_ERROR", "Worker JVM failed to start")], log, 0, 1
     return simulate_file(
-        _WORKER["helper"], _WORKER["FlightDataType"], _WORKER["FlightEvent"], ork_path, verbose
+        _WORKER["helper"], _WORKER["FlightDataType"], _WORKER["FlightEvent"], ork_path, verbose, motor
     )
 
 
@@ -387,7 +403,7 @@ def _default_workers():
 
 
 def run_batch(input_dir: Path, output_csv: Path, recursive: bool, jar_path, limit=None,
-              verbose=False, workers=None):
+              verbose=False, workers=None, motor=None):
     orkit, which = _import_orkit()
     print(f"Using wrapper package: {which}")
 
@@ -430,7 +446,7 @@ def run_batch(input_dir: Path, output_csv: Path, recursive: bool, jar_path, limi
         if workers == 1:
             _worker_init(jar_path)
             for idx, ork_path in enumerate(ork_files):
-                emit(idx, ork_path, _worker_simulate_file(str(ork_path), verbose))
+                emit(idx, ork_path, _worker_simulate_file(str(ork_path), verbose, motor))
         else:
             # Results are written in input-file order (same CSV as a serial
             # run): finished files are buffered until all earlier ones are in.
@@ -444,7 +460,7 @@ def run_batch(input_dir: Path, output_csv: Path, recursive: bool, jar_path, limi
             )
             try:
                 futures = {
-                    executor.submit(_worker_simulate_file, str(p), verbose): i
+                    executor.submit(_worker_simulate_file, str(p), verbose, motor): i
                     for i, p in enumerate(ork_files)
                 }
                 for fut in as_completed(futures):
@@ -485,7 +501,17 @@ def main():
     parser.add_argument("--workers", type=int, default=None,
                         help=f"Number of parallel worker processes, each with its own JVM "
                              f"(default: {_default_workers()}; 1 = run serially)")
+    parser.add_argument("--motor", default=None,
+                        help="Thrust curve file (.eng/.rse) to fly in every simulation, instead of the "
+                             "motor saved in each .ork (use when headless OpenRocket can't find it)")
     args = parser.parse_args()
+
+    motor = None
+    if args.motor:
+        motor = str(Path(args.motor).expanduser().resolve())
+        if not Path(motor).is_file():
+            print(f"ERROR: motor file {motor} not found.", file=sys.stderr)
+            sys.exit(1)
 
     input_dir = Path(args.input_dir).expanduser().resolve()
     if not input_dir.is_dir():
@@ -508,6 +534,7 @@ def main():
         limit=args.limit,
         verbose=args.verbose,
         workers=args.workers,
+        motor=motor,
     )
 
 
