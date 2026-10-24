@@ -12,7 +12,7 @@
     </NoseCone>
     <BodyTube>
       <PartType>BodyTube</PartType>
-      <Length>12</Length>
+      <Length>6</Length>
       <Diameter>6</Diameter>
       <LaunchLugDiameter>0</LaunchLugDiameter>
       <LaunchLugLength>0</LaunchLugLength>
@@ -28,15 +28,31 @@
     </BodyTube>
     <BodyTube>
       <PartType>BodyTube</PartType>
-      <Length>25.628</Length>
+      <Length>19</Length>
       <Diameter>6</Diameter>
       <LaunchLugDiameter>0</LaunchLugDiameter>
       <LaunchLugLength>0</LaunchLugLength>
       <RailGuideDiameter>0</RailGuideDiameter>
       <RailGuideHeight>0</RailGuideHeight>
       <LaunchShoeArea>0</LaunchShoeArea>
-      <Location>41.9999</Location>
-      <Color>Black</Color>
+      <Location>35.9999</Location>
+      <Color>Blue</Color>
+      <BoattailLength>0</BoattailLength>
+      <BoattailRearDiameter>0</BoattailRearDiameter>
+      <BoattailOffset>0</BoattailOffset>
+      <Overhang>0</Overhang>
+    </BodyTube>
+    <BodyTube>
+      <PartType>BodyTube</PartType>
+      <Length>6.628</Length>
+      <Diameter>6</Diameter>
+      <LaunchLugDiameter>0</LaunchLugDiameter>
+      <LaunchLugLength>0</LaunchLugLength>
+      <RailGuideDiameter>0</RailGuideDiameter>
+      <RailGuideHeight>0</RailGuideHeight>
+      <LaunchShoeArea>0</LaunchShoeArea>
+      <Location>54.9999</Location>
+      <Color>Blue</Color>
       <BoattailLength>0</BoattailLength>
       <BoattailRearDiameter>0</BoattailRearDiameter>
       <BoattailOffset>0</BoattailOffset>
@@ -51,8 +67,8 @@
       <RailGuideDiameter>0</RailGuideDiameter>
       <RailGuideHeight>0</RailGuideHeight>
       <LaunchShoeArea>0</LaunchShoeArea>
-      <Location>67.6279</Location>
-      <Color>Black</Color>
+      <Location>61.6279</Location>
+      <Color>Blue</Color>
       <BoattailLength>4.15</BoattailLength>
       <BoattailRearDiameter>3.6</BoattailRearDiameter>
       <BoattailOffset>0</BoattailOffset>
@@ -60,14 +76,14 @@
       <Fin>
         <Count>4</Count>
         <Chord>14</Chord>
-        <Span>6.8</Span>
+        <Span>7.185</Span>
         <SweepDistance>13</SweepDistance>
         <TipChord>4</TipChord>
         <Thickness>0.3</Thickness>
-        <LERadius>0.0313</LERadius>
+        <LERadius>0</LERadius>
         <Location>17</Location>
-        <AirfoilSection>Double Wedge</AirfoilSection>
-        <FX1>2.5</FX1>
+        <AirfoilSection>Subsonic NACA</AirfoilSection>
+        <FX1>0</FX1>
         <FX3>0</FX3>
       </Fin>
     </BodyTube>
@@ -76,27 +92,27 @@
       <Length>4.15</Length>
       <Diameter>6</Diameter>
       <RearDiameter>3.6</RearDiameter>
-      <Location>165.6877</Location>
+      <Location>159.6877</Location>
       <Color>Blue</Color>
     </BoatTail>
-    <Surface>Rough Camouflage Paint</Surface>
+    <Surface>Camouflage Paint</Surface>
     <CP>0</CP>
-    <ModifiedBarrowman>True</ModifiedBarrowman>
-    <Turbulence>True</Turbulence>
+    <ModifiedBarrowman>False</ModifiedBarrowman>
+    <Turbulence>False</Turbulence>
     <SustainerNozzle>0</SustainerNozzle>
     <Booster1Nozzle>0</Booster1Nozzle>
     <Booster2Nozzle>0</Booster2Nozzle>
     <UseBooster1>False</UseBooster1>
     <UseBooster2>False</UseBooster2>
-    <Comments>2027 IREC rocket Preliminary design - 10/08/2026</Comments>
+    <Comments>2027 IREC Rocket Design</Comments>
   </RocketDesign>
   <LaunchSite>
-    <Altitude>2950</Altitude>
-    <Pressure>29.83</Pressure>
+    <Altitude>0</Altitude>
+    <Pressure>13.24</Pressure>
     <RodAngle>4</RodAngle>
     <RodLength>32.8</RodLength>
-    <Temperature>92.18</Temperature>
-    <WindSpeed>11.46</WindSpeed>
+    <Temperature>92.19</Temperature>
+    <WindSpeed>18</WindSpeed>
   </LaunchSite>
   <Recovery>
     <Altitude1>0</Altitude1>
@@ -116,9 +132,9 @@
   <SimulationList>
     <Simulation>
       <SustainerEngine>PER_MY_LAST-eng  (TAMUSRT)</SustainerEngine>
-      <SustainerLaunchWt>136</SustainerLaunchWt>
-      <SustainerNozzleDiameter>0</SustainerNozzleDiameter>
-      <SustainerCG>99.23</SustainerCG>
+      <SustainerLaunchWt>136.13</SustainerLaunchWt>
+      <SustainerNozzleDiameter>4</SustainerNozzleDiameter>
+      <SustainerCG>99.2</SustainerCG>
       <SustainerIgnitionDelay>0</SustainerIgnitionDelay>
       <Booster1LaunchWt>0</Booster1LaunchWt>
       <Booster1SeparationDelay>0</Booster1SeparationDelay>
@@ -132,16 +148,17 @@
       <Booster2NozzleDiameter>0</Booster2NozzleDiameter>
       <IncludeBooster2>False</IncludeBooster2>
       <FlightTime>0</FlightTime>
-      <TimetoApogee>45.37839</TimetoApogee>
-      <MaxAltitude>33176.29</MaxAltitude>
-      <MaxVelocity>1731.424</MaxVelocity>
+      <TimetoApogee>65.50558</TimetoApogee>
+      <MaxAltitude>64646.44</MaxAltitude>
+      <MaxVelocity>2210.808</MaxVelocity>
       <OptimumWt>0</OptimumWt>
       <OptimumMaxAlt>0</OptimumMaxAlt>
     </Simulation>
     <Simulation>
-      <SustainerLaunchWt>134.0265</SustainerLaunchWt>
-      <SustainerNozzleDiameter>0</SustainerNozzleDiameter>
-      <SustainerCG>107.7592</SustainerCG>
+      <SustainerEngine>PER_MY_LAST-eng  (TAMUSRT)</SustainerEngine>
+      <SustainerLaunchWt>136.13</SustainerLaunchWt>
+      <SustainerNozzleDiameter>4</SustainerNozzleDiameter>
+      <SustainerCG>99.2</SustainerCG>
       <SustainerIgnitionDelay>0</SustainerIgnitionDelay>
       <Booster1LaunchWt>0</Booster1LaunchWt>
       <Booster1SeparationDelay>0</Booster1SeparationDelay>
@@ -155,39 +172,16 @@
       <Booster2NozzleDiameter>0</Booster2NozzleDiameter>
       <IncludeBooster2>False</IncludeBooster2>
       <FlightTime>0</FlightTime>
-      <TimetoApogee>0</TimetoApogee>
-      <MaxAltitude>0</MaxAltitude>
-      <MaxVelocity>0</MaxVelocity>
+      <TimetoApogee>67.98611</TimetoApogee>
+      <MaxAltitude>69311.13</MaxAltitude>
+      <MaxVelocity>2209.575</MaxVelocity>
       <OptimumWt>0</OptimumWt>
       <OptimumMaxAlt>0</OptimumMaxAlt>
     </Simulation>
     <Simulation>
-      <SustainerLaunchWt>134.0265</SustainerLaunchWt>
+      <SustainerLaunchWt>136.1331</SustainerLaunchWt>
       <SustainerNozzleDiameter>0</SustainerNozzleDiameter>
-      <SustainerCG>107.7592</SustainerCG>
-      <SustainerIgnitionDelay>0</SustainerIgnitionDelay>
-      <Booster1LaunchWt>0</Booster1LaunchWt>
-      <Booster1SeparationDelay>0</Booster1SeparationDelay>
-      <Booster1IgnitionDelay>0</Booster1IgnitionDelay>
-      <Booster1CG>0</Booster1CG>
-      <Booster1NozzleDiameter>0</Booster1NozzleDiameter>
-      <IncludeBooster1>False</IncludeBooster1>
-      <Booster2LaunchWt>0</Booster2LaunchWt>
-      <Booster2Delay>0</Booster2Delay>
-      <Booster2CG>0</Booster2CG>
-      <Booster2NozzleDiameter>0</Booster2NozzleDiameter>
-      <IncludeBooster2>False</IncludeBooster2>
-      <FlightTime>0</FlightTime>
-      <TimetoApogee>0</TimetoApogee>
-      <MaxAltitude>0</MaxAltitude>
-      <MaxVelocity>0</MaxVelocity>
-      <OptimumWt>0</OptimumWt>
-      <OptimumMaxAlt>0</OptimumMaxAlt>
-    </Simulation>
-    <Simulation>
-      <SustainerLaunchWt>134.0265</SustainerLaunchWt>
-      <SustainerNozzleDiameter>0</SustainerNozzleDiameter>
-      <SustainerCG>107.7592</SustainerCG>
+      <SustainerCG>99.1955</SustainerCG>
       <SustainerIgnitionDelay>0</SustainerIgnitionDelay>
       <Booster1LaunchWt>0</Booster1LaunchWt>
       <Booster1SeparationDelay>0</Booster1SeparationDelay>
