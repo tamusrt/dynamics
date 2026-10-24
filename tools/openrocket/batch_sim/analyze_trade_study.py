@@ -10,7 +10,8 @@ Takes the results CSV produced by batch_simulate.py (one row per rocket file
      apogee, with the unmodified baseline rocket called out for reference.
 
 FILENAME CONVENTION THIS SCRIPT ASSUMES (as described for this trade study)
-    "SolInvictus"      -- the unmodified baseline rocket, no other segments
+    "<Base>"           -- the unmodified baseline rocket, no other segments
+                           (e.g. "MyRocket"; auto-detected, or set --baseline-name)
     "_<x>Trim"         -- x = inches removed from the nosecone length
     "_<x>-6"           -- x = diameter (in) of the fore side of the transition
                            (aft side fixed at 6")
@@ -20,19 +21,18 @@ FILENAME CONVENTION THIS SCRIPT ASSUMES (as described for this trade study)
 
 Segments are underscore-separated and matched independently in any order, and
 any subset can be present (a file doesn't have to touch every trait) -- so
-"SolInvictus_2Trim_AftBay.ork" and "SolInvictus_1.5Trans_4-6_Fins.ork" both
+"MyRocket_2Trim_AftBay.ork" and "MyRocket_1.5Trans_4-6_Fins.ork" both
 parse fine. Whatever segment doesn't match a known numeric pattern is treated
 as the "section" label.
 
 IMPORTANT -- CHECK THIS FIRST
-    Filename parsing is guessed from your description, not verified against
-    your real filenames. Every run writes `parsed_traits_debug.csv` with one
+    Filename parsing is regex-based and may not match your own naming if it
+    deviates from the convention above. Every run writes `parsed_traits_debug.csv` with one
     row per input file showing exactly what was extracted. Open that file
     FIRST and confirm it looks right before trusting the ranking/plots --
     especially if any row shows unparsed_segments non-empty, or a trait you
     expected to see is blank. If something's off, paste a few real filenames
-    back and the regexes below (see `parse_traits`) can be corrected in
-    seconds.
+    the regexes below (see `parse_traits`) are easy to adjust.
 
 MULTIPLE SIMULATIONS PER FILE
     If a source .ork file has more than one simulation in your results CSV,
@@ -79,6 +79,13 @@ COLOR_BASELINE = "#eb6834"   # orange -- categorical slot 2, reserved for the on
 COLOR_BASELINE_LINE = "#c3c2b7"
 COLOR_INCREASE = "#2a78d6"   # blue -- delta-mode bars/points above baseline
 COLOR_DECREASE = "#e34948"   # red -- categorical slot 8, delta-mode bars/points below baseline
+
+# Above this many variants, per-item text labels (filenames next to bars on
+# the ranking chart, or next to points on the trait scatter charts) stop
+# being useful detail and start being unreadable clutter/overlap -- past
+# this count they're hidden and color/position carry the story instead. The
+# full names are always available in the CSVs regardless.
+MAX_LABELED_VARIANTS = 50
 
 
 def filename_stem(path_str: str) -> str:
@@ -163,7 +170,7 @@ def parse_traits(stem: str, baseline_name: str) -> dict:
 def make_variant_label(rocket_base: str, is_baseline: bool, stem: str) -> str:
     """
     A short, human-readable, per-row-unique label for charts. All variants in
-    a trade study typically share the same rocket_base (e.g. "SolInvictus"),
+    a trade study typically share the same rocket_base (e.g. "MyRocket"),
     so labeling bars/points with rocket_base alone would make every row look
     identical -- this strips that common prefix and shows just the modified
     segments instead.
@@ -194,6 +201,16 @@ def load_results(results_csv: Path) -> pd.DataFrame:
         print("ERROR: no successful (status=OK) rows to analyze.", file=sys.stderr)
         sys.exit(1)
     return df
+
+
+def detect_baseline_name(df: pd.DataFrame) -> str:
+    """
+    Guess the baseline stem as the most common leading filename segment --
+    every variant in a trade study shares it (e.g. "MyRocket" for
+    "MyRocket_2Trim_AftBay.ork").
+    """
+    bases = df["source_file"].apply(filename_stem).str.split("_").str[0]
+    return bases.mode().iloc[0]
 
 
 def add_trait_columns(df: pd.DataFrame, baseline_name: str) -> pd.DataFrame:
@@ -244,6 +261,8 @@ def make_ranking_chart(agg_df: pd.DataFrame, metric_label: str, metric_col: str,
     much easier to see at a glance than uniformly-colored bars would.
     """
     ranked = agg_df.sort_values(metric_col, ascending=True)
+    n = len(ranked)
+    show_labels = n <= MAX_LABELED_VARIANTS
 
     def bar_color(is_baseline, value):
         if is_baseline:
@@ -254,15 +273,32 @@ def make_ranking_chart(agg_df: pd.DataFrame, metric_label: str, metric_col: str,
 
     colors = [bar_color(b, v) for b, v in zip(ranked["is_baseline"], ranked[metric_col])]
 
-    height = max(4, 0.28 * len(ranked) + 1.2)
+    if show_labels:
+        height = max(4, 0.28 * n + 1.2)
+    else:
+        # No per-bar text labels to make room for -- a much shorter, denser
+        # chart stays readable (and doesn't force endless scrolling) even
+        # with hundreds of variants.
+        height = min(max(4, 0.09 * n + 1.2), 14)
     fig, ax = plt.subplots(figsize=(9, height))
     fig.patch.set_facecolor(COLOR_SURFACE)
     ax.set_facecolor(COLOR_SURFACE)
 
-    ax.barh(ranked["variant_label"] + ranked["_label_suffix"], ranked[metric_col], color=colors, height=0.65)
+    if show_labels:
+        ax.barh(ranked["variant_label"] + ranked["_label_suffix"], ranked[metric_col], color=colors, height=0.65)
+    else:
+        ax.barh(range(n), ranked[metric_col], color=colors, height=0.9)
+        ax.set_yticks([])
+        ax.set_ylabel(f"{n} variants, ranked", color=COLOR_INK_SECONDARY, fontsize=9)
 
     ax.set_xlabel(metric_label, color=COLOR_INK)
-    ax.set_title(f"Rocket ranking by {metric_label}", color=COLOR_INK, fontsize=13, loc="left")
+    title = f"Rocket ranking by {metric_label}"
+    if not show_labels:
+        title += f"  ({n} variants, labels hidden)"
+    ax.set_title(title, color=COLOR_INK, fontsize=13, loc="left")
+    if not show_labels:
+        ax.text(1.0, 1.0, "full names in the ranking CSV", transform=ax.transAxes,
+                 fontsize=8, color=COLOR_MUTED, ha="right", va="bottom")
     ax.tick_params(colors=COLOR_INK_SECONDARY, labelsize=8)
     ax.grid(axis="x", color=COLOR_GRID, linewidth=0.8, zorder=0)
     ax.set_axisbelow(True)
@@ -317,13 +353,21 @@ def make_trait_scatter(agg_df: pd.DataFrame, trait_col: str, trait_label: str, m
         ax.axhline(baseline_val, color=COLOR_BASELINE_LINE, linestyle="--", linewidth=1, zorder=1, label="Baseline")
         ax.scatter([], [], color=COLOR_BASELINE, s=60, label="Baseline")
 
-    for _, row in subset.iterrows():
-        ax.annotate(row["variant_label"], (row[trait_col], row[metric_col]),
-                    fontsize=7, color=COLOR_INK_SECONDARY, xytext=(4, 4), textcoords="offset points")
+    show_labels = len(subset) <= MAX_LABELED_VARIANTS
+    if show_labels:
+        for _, row in subset.iterrows():
+            ax.annotate(row["variant_label"], (row[trait_col], row[metric_col]),
+                        fontsize=7, color=COLOR_INK_SECONDARY, xytext=(4, 4), textcoords="offset points")
 
     ax.set_xlabel(trait_label, color=COLOR_INK)
     ax.set_ylabel(metric_label, color=COLOR_INK)
-    ax.set_title(f"{trait_label}: effect on outcome", color=COLOR_INK, fontsize=13, loc="left")
+    title = f"{trait_label}: effect on outcome"
+    if not show_labels:
+        title += f"  ({len(subset)} points, labels hidden)"
+    ax.set_title(title, color=COLOR_INK, fontsize=13, loc="left")
+    if not show_labels:
+        ax.text(1.0, 1.0, "full names in the ranking CSV", transform=ax.transAxes,
+                 fontsize=8, color=COLOR_MUTED, ha="right", va="bottom")
     ax.tick_params(colors=COLOR_INK_SECONDARY, labelsize=8)
     ax.grid(color=COLOR_GRID, linewidth=0.8, zorder=0)
     ax.set_axisbelow(True)
@@ -407,7 +451,9 @@ def main():
     ], help="Which column to rank/plot by (default: apogee_ft)")
     parser.add_argument("--agg", default="mean", choices=["mean", "max", "min"],
                          help="How to combine multiple simulations per file for ranking/trait plots (default: mean)")
-    parser.add_argument("--baseline-name", default="SolInvictus", help="Filename stem (no segments) identifying the unmodified baseline")
+    parser.add_argument("--baseline-name", default=None,
+                        help="Filename stem (no segments) identifying the unmodified baseline "
+                             "(default: the most common leading filename segment, e.g. 'MyRocket')")
     parser.add_argument("--scale", default="auto", choices=["auto", "delta", "absolute"],
                          help="Chart scaling: 'delta' plots change vs baseline (default when a baseline is found -- "
                               "makes small differences much easier to see than raw values), 'absolute' plots raw "
@@ -419,6 +465,9 @@ def main():
     out_dir.mkdir(parents=True, exist_ok=True)
 
     df = load_results(results_csv)
+    if args.baseline_name is None:
+        args.baseline_name = detect_baseline_name(df)
+        print(f"Using baseline name '{args.baseline_name}' (auto-detected; override with --baseline-name).")
     df = add_trait_columns(df, args.baseline_name)
 
     debug_cols = [
@@ -494,6 +543,11 @@ def main():
         print(f"Wrote {section_path}")
 
     # --- Charts ---
+    if len(agg_df) > MAX_LABELED_VARIANTS:
+        print(f"\n{len(agg_df)} variants is more than {MAX_LABELED_VARIANTS} -- individual file-name labels are "
+              f"hidden on the ranking chart and trait scatter charts for readability. Full names remain in "
+              f"{per_file_path.name} and {overall_path.name}.")
+
     agg_note = f" ({args.agg} of {agg_df['_sim_count'].max()} sim(s)/file)" if agg_df["_sim_count"].max() > 1 else ""
 
     use_delta = baseline_metric is not None and args.scale != "absolute"
