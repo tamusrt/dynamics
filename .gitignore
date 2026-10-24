@@ -23,3 +23,6 @@ node_modules/
 aero_modeling/**/JARVIS/alpha/
 .edith_cache/
 .predictions_cache/
+
+*.fig
+*.jar
