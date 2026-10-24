@@ -19,7 +19,7 @@ All length inputs are in inches. Apogee is reported in feet.
 
 ```powershell
 python fin_sweep.py --base path\to\REF.ork --motor path\to\motor.eng --height 5.5:8.5:0.5 `
-    --maximum-stability 25 --minimum-stability 10 --worst-stability 8
+    --maximum-stability 25 --minimum-stability 10 --worst-stability 9
 ```
 
 | Option | Default | Meaning |
