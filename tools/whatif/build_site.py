@@ -446,8 +446,7 @@ def small_change(kept: dict | None, now: dict | None, limits: dict) -> str | Non
             if value is None or value > limit:
                 return None
             worst[name] = max(worst[name], value)
-    return (f"OpenRocket's apogee moved by at most {worst['apogee']:.2f} m and its stability by at most "
-            f"{worst['stability']:.3f} cal")
+    return f"apogee by \u2264{worst['apogee']:.2f} m, stability by \u2264{worst['stability']:.3f} cal"
 
 
 def find_reusable(cache: Path, parts: dict) -> tuple[str, dict] | None:
@@ -584,8 +583,8 @@ def main(argv: list[str] | None = None) -> int:
             if found and why:
                 reuse = found[0]
                 skipped.append({"rocket": build["key"], "kept": reuse, "text": (
-                    f"{build['ork_path'].name} changed, but {why}, "
-                    "so the JARVIS predictions, VISION and EDITH were not flown again: they show the previous version of the design.")})
+                    f"{build['ork_path'].name} changed too little ({why}) to re-fly JARVIS, VISION and EDITH; "
+                    "they show the previous design.")})
         if name and restore_cached(build, cache, name):
             print(f"  from cache ({name})", flush=True)
             # the kept by_commit.json may lack commits the history gained since (the key only has the newest version)

@@ -125,10 +125,10 @@ CHART_TITLES = {
     "max_mach": "Max Mach",
     "max_dynamic_pressure_kpa": "Max-Q",
     "stability_off_rod_cal": "Off-the-rail stability",
-    "min_stability_cal": "Minimum stability",
-    "max_stability_cal": "Maximum stability",
+    "min_stability_cal": "Min stability",
+    "max_stability_cal": "Max stability",
     "twr_off_rod": "Off-the-rail TWR",
-    "twr_burn_avg": "Mean TWR over burn",
+    "twr_burn_avg": "Mean TWR",
 }
 # Secondary metrics that also get a button and a table column on the Pages site's History tab.
 SITE_EXTRA_KEYS = ["twr_off_rod", "twr_burn_avg"]
@@ -1593,7 +1593,7 @@ SITE_HTML = r"""<!doctype html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>OpenRocket performance history</title>
+<title>Rocket performance</title>
 <link rel="icon" href="favicon.ico" sizes="any">
 <link rel="icon" type="image/png" sizes="32x32" href="favicon-32x32.png">
 <link rel="icon" type="image/png" sizes="16x16" href="favicon-16x16.png">
@@ -1651,17 +1651,17 @@ SITE_HTML = r"""<!doctype html>
   .row { display:flex; flex-wrap:wrap; gap:6px; align-items:center; margin-bottom:10px; }
   .row .spacer { flex:1; }
   .toggle { color:var(--muted); display:flex; align-items:center; gap:5px; }
-  .clfile { font-size:15px; margin:22px 0 6px; border-bottom:1px solid var(--line); padding-bottom:4px; }
-  .entry { background:var(--card); border:1px solid var(--line); border-radius:8px; padding:10px 14px; margin:10px 0; }
-  .entry .ehead { color:var(--muted); font-size:12.5px; } .entry .ehl { font-weight:600; margin:4px 0; }
-  .entry ul { margin:6px 0 6px 18px; padding:0; } .entry li { margin:2px 0; }
+  .clfile { font-size:15px; margin:22px 0 6px; border-bottom:1px solid var(--line); padding-bottom:4px; } .clfile:first-child { margin-top:4px; }
+  .entry { background:var(--card); border:1px solid var(--line); border-radius:8px; padding:8px 12px; margin:8px 0; }
+  .entry .ehead { color:var(--muted); font-size:12.5px; } .entry .ehl { font-weight:600; margin:4px 0; } .entry .ehl.muted { font-weight:normal; color:var(--muted); }
+  .entry ul { margin:4px 0 4px 18px; padding:0; } .entry li { margin:2px 0; }
   .entry blockquote { margin:8px 0; padding:6px 12px; border-left:3px solid var(--accent); background:var(--bg); border-radius:0 6px 6px 0; }
   .entry details { margin-top:6px; } .entry summary { cursor:pointer; color:var(--muted); font-size:12.5px; }
   .entry table { margin-top:6px; font-size:12px; } .entry td, .entry th { text-align:left; white-space:normal; }
   .chips { display:flex; flex-wrap:wrap; gap:6px; margin-top:4px; }
   .chip { font-size:12px; border:1px solid var(--line); border-radius:12px; padding:2px 9px; background:var(--bg); }
   .chip .up { color:var(--up); } .chip .down { color:var(--down); }
-  .tabs { display:flex; gap:4px; }
+  .tabs { display:flex; flex-wrap:wrap; gap:4px; }
   .tabs button { font-size:13px; padding:4px 12px; }
   .tabs a { font-size:13px; padding:4px 12px; border-radius:6px; border:1px solid var(--line); background:var(--bg); color:var(--fg); text-decoration:none; }
   .tabs a:hover { border-color:var(--accent); }
@@ -1672,7 +1672,7 @@ SITE_HTML = r"""<!doctype html>
   .fwrap > .chartbox { flex:1 1 auto; min-width:0; }
   .ypanel { flex:none; width:250px; display:flex; flex-direction:column; background:var(--card); border:1px solid var(--line); border-radius:8px; padding:8px 10px; overflow:auto; font-size:12.5px; }
   .ypanel h3 { font-size:12px; color:var(--muted); font-weight:600; margin:8px 0 4px; text-transform:uppercase; letter-spacing:.03em; }
-  .ypanel .hint { color:var(--muted); font-size:11.5px; margin:0 0 4px; }
+  .ypanel .xsel { width:100%; margin:0 0 4px; }
   .yvar { display:flex; align-items:center; gap:6px; padding:4px 6px; border-radius:6px; cursor:pointer; }
   .yvar:hover { background:var(--hover); }
   .yvar svg { flex:none; color:var(--fg); }
@@ -1689,7 +1689,7 @@ SITE_HTML = r"""<!doctype html>
   .ycheck { display:flex; align-items:center; gap:7px; padding:3px 6px; border-radius:6px; cursor:pointer; }
   .ycheck:hover { background:var(--hover); } .ycheck input { margin:0; accent-color:var(--accent); flex:none; }
   .ycheck[hidden] { display:none; }   /* display:flex above would otherwise beat the hidden attribute */
-  .ycheck .lbl { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; } .ycheck .sidetag { color:var(--muted); font-size:11px; }
+  .ycheck .lbl { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   .chartbox { flex:1 1 auto; min-height:320px; position:relative; background:var(--card); border:1px solid var(--line); border-radius:8px; padding:10px; }
   .empty { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; color:var(--muted); pointer-events:none; }
   .empty[hidden] { display:none; }   /* an author display rule would otherwise beat the hidden attribute */
@@ -1716,7 +1716,7 @@ SITE_HTML = r"""<!doctype html>
   <div class="tabs"><button id="tab-history">History</button><button id="tab-flight">Flight plots</button><button id="tab-changelog">Changelog</button><button id="tab-predictions">JARVIS predictions</button><button id="tab-vision">VISION</button><button id="tab-vehicles">Vehicles</button><button id="tab-edith" hidden>EDITH</button></div>
   <span class="sub" id="sub"></span>
   <span class="hctl">
-    <label class="sub" id="units-label">units <select id="units"><option value="metric">metric (m, m/s, kPa)</option><option value="imperial">imperial (ft, ft/s, psi)</option></select></label>
+    <label class="sub" id="units-label">units <select id="units"><option value="metric">metric</option><option value="imperial">imperial</option></select></label>
     <label class="sub" id="stab-label">stability <select id="stab"><option value="cal">calibers</option><option value="pct">% of body length</option></select></label>
   </span>
 </header>
@@ -1731,7 +1731,6 @@ SITE_HTML = r"""<!doctype html>
      <aside class="ypanel" id="ypanel"></aside>
     </div>
     <p class="legend" id="finfo"></p>
-    <p class="legend">OpenRocket simulations run with wind turbulence at 0%: OpenRocket 24.12 draws turbulence from a random source the seed does not control, so results would otherwise differ from run to run.</p>
    </section>
    <section id="view-changelog" hidden>
     <div id="clog"></div>
@@ -1740,8 +1739,7 @@ SITE_HTML = r"""<!doctype html>
     <div class="row" id="metrics"></div>
     <div class="chartbox"><div id="hplot" style="position:absolute;inset:10px"></div><div class="empty" id="empty" hidden>Select simulations in the list.</div></div>
     <details id="latestbox" class="latestbox" open><summary id="latestsum">Latest values</summary><div id="latest"></div></details>
-    <p class="legend" id="jarvisnote" hidden></p>
-    <p class="legend">OpenRocket simulations run with wind turbulence at 0%: OpenRocket 24.12 draws turbulence from a random source the seed does not control, so results would otherwise differ from run to run.</p>
+    <p class="legend">Wind turbulence is set to 0% so results repeat from run to run.</p>
    </section>
    <section id="view-predictions" hidden></section>
    <section id="view-vision" hidden></section>
@@ -1884,7 +1882,7 @@ function buildNav() {
     const name = document.createElement('span'); name.className = 'name'; name.textContent = short(file); name.title = file;
     const ras = rasOf(file), shape = rasLines(ras), info = shape ? [rasIcon(file, ras, shape, 'This design')] : [];
     const mini = document.createElement('span'); mini.className = 'mini'; mini.textContent = `${Object.keys(sims).length}`;
-    const all = document.createElement('button'); all.textContent = 'all'; all.title = 'Select every simulation of this design';
+    const all = document.createElement('button'); all.textContent = 'all';
     all.onclick = e => { e.stopPropagation(); const ids = ALL.filter(a => a.file === file).map(a => a.id); const every = ids.every(id => state.sel.has(id)); ids.forEach(id => every ? state.sel.delete(id) : state.sel.add(id)); update(); };
     head.append(caret, name, ...info, mini, all); head.onclick = () => d.classList.toggle('closed');
     const list = document.createElement('div'); list.className = 'sims';
@@ -1905,7 +1903,7 @@ function buildNav() {
 function navMetric() { return state.tab === 'history' ? state.metric : 'apogee'; }   // the sidebar numbers follow the History metric; elsewhere they are apogee
 function refreshNav() {
   const key = navMetric(), spec = specOf(key);
-  const cap = document.getElementById('navcap'); if (cap) cap.textContent = `latest ${spec.label.toLowerCase()}${spec.unit ? ' (' + spec.unit + ')' : ''}`;
+  const cap = document.getElementById('navcap'); if (cap) cap.textContent = `latest ${spec.label.toLowerCase()}`;
   for (const o of rasIcons.values()) o.el.title = rasTitle(o);
   for (const row of nav.querySelectorAll('.sim')) {
     const a = ALL.find(x => x.id === row.dataset.id);
@@ -1978,14 +1976,6 @@ function jarvisSeries(a, key) {   // Jarvis's number for each version it was flo
   const pts = a.rows.filter(r => by[r.sha] && by[r.sha][key] != null).map(r => ({ r, v: by[r.sha][key] * f, o: orv.has(r.sha) ? orv.get(r.sha) : null }));
   return pts.map((p, i) => Object.assign(p, { d: i ? p.v - pts[i - 1].v : null }));
 }
-function jarvisNote() {
-  const box = document.getElementById('jarvisnote'), on = state.tab === 'history' && state.jarvis && jarvisShown();
-  box.hidden = !on; if (!on) return;
-  const notes = new Set(); let skipped = 0;
-  for (const a of ALL) if (state.sel.has(a.id) && jarvisOf(a)) { const d = JARVIS.designs[a.file]; notes.add(d.note); skipped += d.skipped || 0; }
-  box.textContent = 'Dashed lines are Jarvis\'s fast estimate (a simplified, quicker version of the simulation on the JARVIS predictions tab), run on every version. ' + [...notes].filter(Boolean).join(' ') + '. It should follow OpenRocket\'s trend from version to version; it is not expected to match every number.'
-    + (skipped ? ` ${skipped} older version${skipped > 1 ? 's' : ''} could not be flown.` : '');
-}
 const dirColor = (d, tol) => d == null || Math.abs(d) < tol ? css('--flat') : d > 0 ? css('--up') : css('--down');
 
 // one bar per commit, height and colour = change from the previous version of that simulation
@@ -1999,7 +1989,7 @@ function drawBars(spec, unit) {
   }
   const order = [...commits.values()].sort((x, y) => x.t - y.t);
   empty.hidden = order.length > 0;
-  empty.textContent = series.length ? 'Only one version so far: nothing to take a difference of.' : 'Select simulations in the list.';
+  empty.textContent = series.length ? 'Only one version so far.' : 'Select simulations in the list.';
   if (!order.length) { Plotly.purge(hplot); return; }
   const labels = order.map(r => `${r.date.slice(5)} ${r.short}`);
   const traces = series.map(({ a, pts }) => {
@@ -2143,15 +2133,6 @@ function buildFlightControls() {
     b.onclick = () => { state.fx = x; state.fys = fys.map(f => ({ ...f })); state.fapo = apo; update(); }; pre.appendChild(b);
   }
   const row = document.getElementById('fcontrols'); row.innerHTML = '';
-  const keys = fvarKeys();
-  const addSelect = (text, value, first, onpick) => {
-    const l = document.createElement('span'); l.className = 'lbl'; l.textContent = text; row.appendChild(l);
-    const s = document.createElement('select');
-    if (first) { const o = document.createElement('option'); o.value = ''; o.textContent = first; s.appendChild(o); }
-    for (const k of keys) { const o = document.createElement('option'); o.value = k; o.textContent = axisText(fvar(k)); s.appendChild(o); }
-    s.value = value; s.onchange = () => { onpick(s.value); update(); }; row.appendChild(s);
-  };
-  addSelect('X', state.fx, '', v => state.fx = v);
   const sp = document.createElement('span'); sp.className = 'spacer'; row.appendChild(sp);
   const addCheck = (text, checked, onpick) => { const l = document.createElement('label'); l.className = 'toggle';
     const c = document.createElement('input'); c.type = 'checkbox'; c.checked = checked; c.onchange = () => { onpick(c.checked); update(); };
@@ -2168,11 +2149,15 @@ function dashIcon(dash) {
   l.setAttribute('stroke', 'currentColor'); l.setAttribute('stroke-width', '2'); if (DASH_SVG[dash]) l.setAttribute('stroke-dasharray', DASH_SVG[dash]);
   s.appendChild(l); return s;
 }
-function buildYPanel() {   // plotted variables by axis side (click to move, x to remove), then a checkmark for every variable
+function buildYPanel() {   // the X variable, the plotted variables by axis side (click to move, x to remove), then a checkmark for every variable
   const panel = document.getElementById('ypanel'); panel.innerHTML = '';
+  const xh = document.createElement('h3'); xh.textContent = 'X axis';
+  const xs = document.createElement('select'); xs.className = 'xsel';
+  for (const k of fvarKeys()) { const o = document.createElement('option'); o.value = k; o.textContent = axisText(fvar(k)); xs.appendChild(o); }
+  xs.value = state.fx; xs.onchange = () => { state.fx = xs.value; update(); };
+  panel.append(xh, xs);
   const plotted = document.createElement('div'); plotted.className = 'plotted';
-  const hint = document.createElement('p'); hint.className = 'hint'; hint.textContent = `Click a plotted variable to move it to the other axis. Up to ${MAX_AXES} units per side.`; plotted.appendChild(hint);
-  for (const [side, title] of [['l', 'Left axes'], ['r', 'Right axes']]) {
+  for (const [side, title] of state.fys.length ? [['l', 'Left axes'], ['r', 'Right axes']] : []) {   // nothing plotted: no axis lists
     const h = document.createElement('h3'); h.textContent = title; plotted.appendChild(h);
     const here = state.fys.filter(f => f.side === side);
     if (!here.length) { const n = document.createElement('div'); n.className = 'none'; n.textContent = 'none'; plotted.appendChild(n); continue; }
@@ -2185,10 +2170,10 @@ function buildYPanel() {   // plotted variables by axis side (click to move, x t
       row.append(dashIcon(dashOf(f.key)), lbl, arrow, x); row.onclick = () => { flipY(f.key); update(); }; plotted.appendChild(row);
     }
   }
-  panel.appendChild(plotted);
+  if (state.fys.length) panel.appendChild(plotted);
   const hrow = document.createElement('div'); hrow.className = 'hrow';
   const h = document.createElement('h3'); h.textContent = `Y variables (${state.fys.length} of ${Object.keys(FVARS).length})`;
-  const clear = document.createElement('button'); clear.className = 'clear'; clear.textContent = 'Clear'; clear.title = 'Untick every Y variable'; clear.disabled = !state.fys.length;
+  const clear = document.createElement('button'); clear.className = 'clear'; clear.textContent = 'Untick all'; clear.disabled = !state.fys.length;
   clear.onclick = () => { state.fys = []; update(); };
   hrow.append(h, clear); panel.appendChild(hrow);
   const filter = document.createElement('input'); filter.className = 'filter'; filter.type = 'search'; filter.placeholder = 'filter\u2026'; filter.value = yFilter;
@@ -2201,7 +2186,6 @@ function buildYPanel() {   // plotted variables by axis side (click to move, x t
     cb.onchange = () => { cb.checked ? addY(k) : removeY(k); update(); };
     const lbl = document.createElement('span'); lbl.className = 'lbl'; lbl.textContent = axisText(V); lbl.title = axisText(V);
     row.append(cb, lbl);
-    if (f) { const s = document.createElement('span'); s.className = 'sidetag'; s.textContent = f.side === 'l' ? 'left' : 'right'; row.appendChild(s); }
     rows.push([row, axisText(V).toLowerCase()]); all.appendChild(row);
   }
   const applyFilter = () => { yFilter = filter.value; const q = yFilter.trim().toLowerCase(); for (const [row, text] of rows) row.hidden = !!q && !text.includes(q); };
@@ -2222,15 +2206,15 @@ function flightPoints(ver, xk, yk, xf, yf) {   // -> {x:[], y:[], t:[]} in displ
 function drawFlight() {
   const sel = ALL.filter(a => state.sel.has(a.id)); sel.forEach(a => ensureFlight(a.id));
   const X = fvar(state.fx), { axes, of } = axisPlan(), Y0 = state.fys.length ? fvar(state.fys[0].key) : null;
-  const traces = [], notes = [], shapes = [], annotations = [];
+  const traces = [], notes = [], shapes = [], annotations = [], shown = [];
   if (flightNote) { notes.push(flightNote); flightNote = ''; }
-  const hover = (label, V) => `${label}<br>${V.label}: %{y:.5g}${V.unit ? ' ' + V.unit : ''}<br>${X.label}: %{x:.5g}${X.unit ? ' ' + X.unit : ''}<br>t = %{customdata:.2f} s<extra></extra>`;
+  const hover = (label, V) => `${label}<br>${V.label}: %{y:.5g}${V.unit ? ' ' + V.unit : ''}<br>${X.label}: %{x:.5g}${X.unit ? ' ' + X.unit : ''}` + (X.key === 'time' ? '' : '<br>t = %{customdata:.2f} s') + '<extra></extra>';
   let si = 0;
   for (const a of sel) {
     const fl = FLIGHTS[a.id], col = colorOf.get(a.id);
     if (!fl) { notes.push(`${simLabel(a)}: ${(DATA.flights || {})[a.id] ? 'loading\u2026' : 'no flight data (simulation failed or motor unresolved)'}`); continue; }
     const vers = versionsShown(fl);
-    notes.push(`${simLabel(a)}: ${vers.map(v => `${v.short} (${v.date})`).join(' vs ')}`);
+    shown.push({ a, vers });
     vers.forEach((ver, vi) => {
       for (const f of state.fys) {
         const V = fvar(f.key), p = flightPoints(ver, X.key, V.key, X.factor, V.factor); if (!p.x.length) continue;
@@ -2239,7 +2223,7 @@ function drawFlight() {
         traces.push({ type: 'scatter', mode: 'lines', name, legendgroup: a.id, legendgrouptitle: sel.length > 1 ? { text: simLabel(a) } : undefined,
                       x: p.x, y: p.y, customdata: p.t, yaxis: of.get(f.key).id,
                       line: { color: col, width: vi ? 1.5 : 2, dash: vi ? 'dot' : dashOf(f.key) }, opacity: vi ? 0.55 : 1,
-                      hovertemplate: hover(`${simLabel(a)} \u00b7 ${name}`, V) });
+                      hovertemplate: hover(simLabel(a) + (vi ? ' \u00b7 previous ' + ver.short : ''), V) });
       }
       if (vi) return;   // event lines for the latest version only
       // events as vertical lines at the X value the flight had at that instant, labelled along the top; independent of the Y axes
@@ -2251,11 +2235,15 @@ function drawFlight() {
         const x = xcol[best] * X.factor;
         shapes.push({ type: 'line', xref: 'x', yref: 'paper', x0: x, x1: x, y0: 0, y1: 1, line: { color: col, width: 1, dash: 'dot' }, opacity: 0.7 });
         annotations.push({ x, xref: 'x', y: 1, yref: 'paper', yanchor: 'top', yshift: -2 - 13 * si, text, showarrow: false, font: { size: 11, color: col },
-                           xanchor: 'left', xshift: 3, hovertext: `${simLabel(a)} \u00b7 ${text}<br>t = ${te.toFixed(2)} s<br>${X.label}: ${+x.toPrecision(5)}${X.unit ? ' ' + X.unit : ''}` });
+                           xanchor: 'left', xshift: 3, hovertext: `${simLabel(a)} \u00b7 ${text}<br>t = ${te.toFixed(2)} s` + (X.key === 'time' ? '' : `<br>${X.label}: ${+x.toPrecision(5)}${X.unit ? ' ' + X.unit : ''}`) });
       }
     });
     si++;
   }
+  // the versions plotted: one note when every ticked simulation is at the same commit (the usual case), else one per simulation
+  const one = shown.length && shown.every(x => x.vers.length === 1 && x.vers[0].short === shown[0].vers[0].short);
+  if (one) notes.push(`Latest version ${shown[0].vers[0].short} (${shown[0].vers[0].date})`);
+  else for (const { a, vers } of shown) notes.push(`${simLabel(a)}: ${vers.map(v => `${v.short} (${v.date})`).join(' vs ')}`);
   finfo.textContent = notes.join('   |   ');
   fempty.hidden = traces.length > 0; fempty.textContent = !sel.length ? 'Select simulations in the list.' : !state.fys.length ? 'Tick a Y variable in the panel on the right.' : 'Loading flight data\u2026';
   if (!traces.length) { if (window.Plotly) Plotly.purge(fplot); return; }
@@ -2336,17 +2324,19 @@ function drawChangelog() {
   const files = Object.keys(log).filter(f => !ticked.size || ticked.has(f));
   let h = '';
   for (const f of files) {
-    h += `<h2 class="clfile">${esc(f)}</h2>`;
+    h += `<h2 class="clfile" title="${esc(f)}">${esc(short(f))}</h2>`;
     if (!log[f].length) { h += '<p class="legend">Only one version so far.</p>'; continue; }
     for (const e of log[f]) {
       const link = DATA.repo && e.sha ? `<a href="${DATA.repo}/commit/${e.sha}" target="_blank">${esc(e.short)}</a>` : esc(e.short);
-      const rows = (e.rows[state.units] || []);
+      const rows = (e.rows[state.units] || []), lines = e.empty ? [] : (e.lines[state.units] || []);
+      // the field table only when the bullets do not already list every field: a truncated bullet, or a component or simulation added or removed
+      const partial = lines.some(l => /\+\d+ more$/.test(l) || /^(Added|Removed) /.test(l) || /^Simulation \*\*.*\*\* (added|removed)$/.test(l));
       h += `<div class="entry"><div class="ehead">${esc(e.date)} · ${link} · ${esc(e.author)} · <i>${esc(e.message)}</i></div>`
-        + `<div class="ehl">${esc(e.headline)}</div>`
+        + (e.empty ? `<div class="ehl muted">${esc(e.headline)}</div>` : lines.length === 1 ? '' : `<div class="ehl">${esc(e.headline)}</div>`)   // a one-bullet entry needs no count above it
         + (e.narration ? `<blockquote title="Written by GitHub Copilot from the structured diff below">${esc(e.narration)}</blockquote>` : '')
-        + (e.empty ? '' : '<ul>' + (e.lines[state.units] || []).map(l => `<li>${bold(l)}</li>`).join('') + '</ul>')
+        + (lines.length ? '<ul>' + lines.map(l => `<li>${bold(l)}</li>`).join('') + '</ul>' : '')
         + `<div class="chips">${changeChips(f, e)}</div>`
-        + (rows.length ? `<details><summary>All changed fields (${rows.length})</summary><table><thead><tr><th>Component</th><th>Field</th><th>Before</th><th>After</th></tr></thead><tbody>`
+        + (rows.length && partial ? `<details><summary>All changed fields (${rows.length})</summary><table><thead><tr><th>Component</th><th>Field</th><th>Before</th><th>After</th></tr></thead><tbody>`
             + rows.map(r => `<tr><td>${esc(r[0])}</td><td>${esc(r[1])}</td><td>${esc(r[2])}</td><td>${esc(r[3])}</td></tr>`).join('') + '</tbody></table></details>' : '')
         + '</div>';
     }
@@ -2357,10 +2347,9 @@ function drawChangelog() {
 const TABS = { history: 'tab-history', flight: 'tab-flight', changelog: 'tab-changelog', predictions: 'tab-predictions', vision: 'tab-vision', vehicles: 'tab-vehicles', edith: 'tab-edith' };
 // Predictions (Jarvis) and Vision (see FRAMES) are pages built by tools/whatif/build_site.py. They open inside this page, in frames, so
 // the tabs above keep working. The frame is made the first time its tab opens, so nothing loads before it is wanted.
-const FRAMES_MISSING = { predictions: 'The Predictions page has not been built yet. It appears here after the next successful run of the GitHub Action on main (see tools/whatif/README.md).',
-                         vision: 'Vision has not been built yet. It appears here together with the Predictions page, after the next successful run of the GitHub Action on main.',
-                         vehicles: 'The Vehicles page has not been built yet. It is made by the vehicles job of the GitHub Action (tools/openrocket/vehicles/build_vehicles.py) and appears here after the next successful run on main.',
-                         edith: 'The EDITH page has not been built. EDITH is only built when the repository variable FLIGHT_SIM_REF is EDITH (see tools/whatif/README.md).' };
+const NOT_BUILT = 'This page has not been built yet. It appears after the next successful workflow run on main.';
+const FRAMES_MISSING = { predictions: NOT_BUILT, vision: NOT_BUILT, vehicles: NOT_BUILT,
+                         edith: 'This page has not been built. EDITH only runs when the repository variable FLIGHT_SIM_REF is EDITH.' };
 const frames = {};
 function frameHash() { return 'embed=1&units=' + state.units + '&stab=' + state.stab; }
 // ---- the amber note: this push's design change was too small to fly the Predictions, VISION and EDITH again ----
@@ -2373,7 +2362,7 @@ function showSkipNote(s) {
   const text = document.getElementById('sn-text'); text.textContent = '';
   text.appendChild(document.createTextNode(s.rockets.map(r => r.text).join(' ') + ' '));
   if (s.rerun_url) { const a = document.createElement('a'); a.href = s.rerun_url; a.target = '_blank'; a.rel = 'noopener';
-    a.textContent = 'Re-run them anyway (Run workflow, tick "rebuild")'; text.appendChild(a); }
+    a.textContent = 'Re-run anyway (Run workflow \u2192 tick rebuild)'; text.appendChild(a); }
   box.hidden = false;
   document.getElementById('sn-close').onclick = () => { box.hidden = true; try { localStorage.setItem(key, '1'); } catch (e) { /* not kept */ } };
 }
@@ -2420,7 +2409,6 @@ function update() {
   if (state.tab === 'flight') { buildFlightControls(); drawFlight(); }
   else if (state.tab === 'changelog') drawChangelog();
   else if (state.tab === 'history') { buildMetrics(); draw(); drawTable(); }
-  jarvisNote();
   if (framed) showFrame(state.tab);
   const shown = state.tab === 'flight' ? fplot : state.tab === 'history' ? hplot : null;
   if (shown && shown.data && Plotly.Plots) requestAnimationFrame(() => Plotly.Plots.resize(shown));

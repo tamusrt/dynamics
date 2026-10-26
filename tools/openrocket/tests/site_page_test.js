@@ -158,7 +158,7 @@ test('the panel lists every variable with a checkbox, the filter hides rows, Cle
   assert.strictEqual(ticked.length, 1); assert.strictEqual(ticked[0].children[1].textContent, 'Altitude (m)');
   const filter = els.ypanel.children.find(c => c.className === 'filter'); filter.value = 'mass'; filter.oninput();
   assert.deepStrictEqual(all.children.filter(r => !r.hidden).map(r => r.children[1].textContent), ['Mass (kg)']);
-  const clear = els.ypanel.children.find(c => c.className === 'hrow').children[1]; assert.strictEqual(clear.textContent, 'Clear'); clear.onclick();
+  const clear = els.ypanel.children.find(c => c.className === 'hrow').children[1]; assert.strictEqual(clear.textContent, 'Untick all'); clear.onclick();
   assert.deepStrictEqual(P.state.fys, []);
   assert.strictEqual(els.ypanel.children.find(c => c.className === 'filter').value, 'mass', 'filter text survives the rebuild');
 });
@@ -358,11 +358,10 @@ test('Jarvis is off by default, the toggle shows and hides the dashed lines, the
   run({ tab: 'history', jarvis: '1', metric: 'apogee', view: 'abs', sel: enc([A]) });
   P.setJarvis(jarvisFor(A, 1.1));
   const btn = () => els.metrics.children.find(b => b.id === 'jarvis-toggle');
-  assert(btn() && btn().className === 'on'); assert.strictEqual(els.jarvisnote.hidden, false);
-  assert(els.jarvisnote.textContent.includes('Dashed lines are Jarvis') && els.jarvisnote.textContent.includes('IGNIS_2027.rse') && els.jarvisnote.textContent.includes('2 older versions'), els.jarvisnote.textContent);
+  assert(btn() && btn().className === 'on');
   assert(/jarvis=1/.test(hash), hash);
   btn().onclick();
-  assert.strictEqual(last().traces.length, 1); assert(!/jarvis=/.test(hash), hash); assert.strictEqual(btn().className, ''); assert.strictEqual(els.jarvisnote.hidden, true);
+  assert.strictEqual(last().traces.length, 1); assert(!/jarvis=/.test(hash), hash); assert.strictEqual(btn().className, '');
   run({ tab: 'history', metric: 'apogee', view: 'abs', sel: enc([A]) });
   P.setJarvis(jarvisFor(A, 1.1));
   assert.strictEqual(P.state.jarvis, false, 'Jarvis is off by default'); assert.strictEqual(last().traces.length, 1);
@@ -392,7 +391,7 @@ test('Jarvis is left out of the bars, and for designs it has no numbers for', ()
   run({ tab: 'history', jarvis: '1', metric: 'apogee', view: 'dbar', sel: enc([A]) });
   P.setJarvis(jarvisFor(A, 1.1));
   assert(last().traces.every(t => t.type === 'bar')); assert.strictEqual(last().traces.length, 1);
-  assert(!els.metrics.children.some(b => b.id === 'jarvis-toggle') && els.jarvisnote.hidden === true);
+  assert(!els.metrics.children.some(b => b.id === 'jarvis-toggle'));
   run({ tab: 'history', jarvis: '1', metric: 'apogee', view: 'abs', sel: enc([A, B]) });
   P.setJarvis(jarvisFor(A, 1.1));
   assert.strictEqual(last().traces.length, 3, 'A: OpenRocket and Jarvis, B: OpenRocket only');
