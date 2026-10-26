@@ -146,8 +146,7 @@ def main() -> int:
         rows_b = data["designs"][FILE_B]["Simulation 1"]
         assert [r["ok"] for r in rows_b] == [True, False], "a failed version must be marked not ok"
         assert len(data["changelog"][FILE_A]) == 2
-        demos = sorted(f.name for f in (site / "vehicles").glob("*.html"))
-        assert demos == ["sideview.html", "specsheet.html", "threed.html", "tree.html"], demos   # the Vehicles tab's static demo pages
+        assert not (site / "vehicles").exists(), "the Vehicles page is built by its own job, not by write_site"
         assert data["motors"] == {FILE_A: {"best": "a.rse", "worst": "a.rse"}},             f"each simulation is labelled with the motor file its newest version flew, and only then: {data['motors']}"
         page = (site / "index.html").read_text(encoding="utf-8")
         for icon in ("favicon.ico", "favicon-32x32.png", "favicon-16x16.png", "apple-touch-icon.png", "site.webmanifest"):

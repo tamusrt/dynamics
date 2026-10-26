@@ -460,20 +460,20 @@ test('both tabs are always there, and each opens a frame inside this page', () =
   assert(!els.layout.classList.contains('wide') && !els.main.classList.contains('frame'), 'the history tab has its list back');
   assert.strictEqual(els['units-label'].hidden, false); assert.strictEqual(Object.keys(P.frames).length, 0, 'nothing is loaded before its tab is opened');
 });
-test('the Vehicles demo tab frames the chosen demo page; the dropdown and the URL switch it', () => {
-  run({ tab: 'vehicles', sel: enc([A]) });
+test('the Vehicles tab frames the built vehicles page and hands it the units chosen here', () => {
+  run({ tab: 'vehicles', units: 'metric', stab: 'cal', sel: enc([A]) });
   assert(html.includes('id="tab-vehicles"'));
   assert.strictEqual(els['view-vehicles'].hidden, false); assert.strictEqual(els['view-history'].hidden, true);
   assert(els.layout.classList.contains('wide') && els.main.classList.contains('frame'), 'fills the page like the other framed tabs');
-  assert.deepStrictEqual(els.vehsel.children.map(o => o.value), ['sideview', 'specsheet', 'tree', 'threed']);
-  assert.strictEqual(els.vehsel.value, 'sideview');
-  assert.strictEqual(els.vehframe.children.length, 1); assert.strictEqual(els.vehframe.children[0].src, 'vehicles/sideview.html');
-  els.vehsel.value = 'threed'; els.vehsel.onchange();
-  assert.strictEqual(els.vehframe.children[0].src, 'vehicles/threed.html'); assert(/tab=vehicles/.test(hash) && /veh=threed/.test(hash), hash);
-  run({ tab: 'vehicles', veh: 'tree', sel: enc([A]) });
-  assert.strictEqual(els.vehframe.children[0].src, 'vehicles/tree.html'); assert.strictEqual(els.vehsel.value, 'tree');
-  run({ tab: 'vehicles', veh: 'nonsense', sel: enc([A]) });
-  assert.strictEqual(els.vehframe.children[0].src, 'vehicles/sideview.html', 'an unknown demo name falls back to the first');
+  const f = els['view-vehicles'].children[0];
+  assert.strictEqual(f.tag, 'iframe'); assert.strictEqual(f.src, 'vehicles/index.html#embed=1&units=metric&stab=cal');
+  assert(/tab=vehicles/.test(hash), hash);
+  // a units change in the header reaches the frame through its hash, keeping the page's own params
+  f.loaded = true; f.contentWindow = { location: { hash: '#embed=1&units=metric&stab=cal&design=AIRMAIL&sel=abc' } };
+  P.state.units = 'imperial'; P.update();
+  const got = new URLSearchParams(f.contentWindow.location.hash.slice(1));
+  assert.strictEqual(got.get('units'), 'imperial'); assert.strictEqual(got.get('design'), 'AIRMAIL'); assert.strictEqual(got.get('sel'), 'abc');
+  P.frameMissing('vehicles'); assert(els['view-vehicles'].children[0].textContent.includes('has not been built'), 'a missing page explains itself');
 });
 test('units and stability chosen in this page reach the Predictions frame', () => {
   run({ tab: 'predictions', units: 'imperial', stab: 'pct', sel: enc([A]) });

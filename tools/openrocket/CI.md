@@ -166,6 +166,16 @@ To build the site locally (open `or_ci_results/site/index.html` in a browser):
 python tools/openrocket/or_ci.py history --config aero_modeling/sim_config.json --cache .or_ci_cache --site or_ci_results/site
 ```
 
+### Vehicles tab
+
+Every design's geometry and dimensions as they are in its `.ork`, for people who don't use OpenRocket: a true-scale side view with dimension lines, a component tree beside it (search, keyboard, click or hover to highlight the part in the drawing), and a Dimensions panel for the selected part: position from the nose tip, length, diameters, wall thickness, and mass with where it comes from (an OpenRocket override, a mass component, or computed from the geometry and the material density, the same way OpenRocket does; the computed values agree with OpenRocket's to within 1%). An *Advanced info* checkbox shows the raw OpenRocket fields. Units follow the header's units dropdown.
+
+It is built by `tools/openrocket/vehicles/build_vehicles.py` from the `.ork` files listed in `sim_config.json`, through `ork_geometry.py`, a standard-library parser that resolves OpenRocket's positioning rules (sequential body components, parts placed top/bottom/middle/after relative to their parent, "auto" radii) into absolute positions. No Java, no OpenRocket, no network: the `vehicles` job of the workflow runs it in parallel with the simulations and finishes in under a minute; the `site` job merges the result into `site/vehicles/`. Lengths exclude motor overhang, so a design's overall length here can be shorter than OpenRocket's figure with the motor fitted. To build it locally:
+
+```
+python tools/openrocket/vehicles/build_vehicles.py --config aero_modeling/sim_config.json --out or_ci_results/site/vehicles
+```
+
 ## Tests
 
 The site page has a regression test that needs no OpenRocket, Java or network:
@@ -176,7 +186,7 @@ python tools/openrocket/tests/test_site.py
 
 `test_site.py` builds a site from a synthetic history (two designs, a failed version, undefined samples, a commit message with a script tag) through `or_ci.write_site`, then `site_page_test.js` runs the page's own JavaScript in a stub DOM. Every call the page makes to Plotly is checked structurally (x, y and customdata of equal length, axes that exist, no unfilled placeholders), and the tests assert values against the flight data files: unit conversion, axis assignment and the three-per-side limit, event lines, legend grouping, the stability toggle, the URL hash, presets and the CSV export, plus the History views and the Changelog. With `npm install` run in `tools/openrocket/` (jsdom and the same Plotly build the page loads), the six-axis flight layout and the history charts are also rendered through the real Plotly.
 
-The workflow runs it as the `page-test` job on every push that touches `or_ci.py` or the tests, and the Pages deployment waits for it, so a broken page never reaches the site (the simulation report is not held up). Run it locally before pushing any change to the page template; a change in behaviour that is intended needs its assertion updated in the same commit.
+`tools/openrocket/tests/test_vehicles.py` checks the geometry parser on every configured `.ork` (lengths, radii, masses), builds the Vehicles page into a temporary folder and runs `vehicles_page_test.js` on it (units from the hash, selection, advanced info). The workflow runs both as the `page-test` job on every push that touches `or_ci.py` or the tests, and the Pages deployment waits for it, so a broken page never reaches the site (the simulation report is not held up). Run it locally before pushing any change to the page template; a change in behaviour that is intended needs its assertion updated in the same commit.
 
 ## Manual runs
 

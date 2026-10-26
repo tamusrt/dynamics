@@ -1621,8 +1621,6 @@ SITE_HTML = r"""<!doctype html>
   main.frame { padding:0; overflow:hidden; }
   main.frame iframe { flex:1 1 auto; width:100%; height:100%; border:0; display:block; background:var(--bg); }
   .framemsg { margin:24px 16px; color:var(--muted); }
-  main > section > .vehbar { flex:none; margin:0; padding:8px 16px 6px; border-bottom:1px solid var(--line); }
-  main > section > #vehframe { flex:1 1 auto; min-height:0; display:flex; }
   nav { border-right:1px solid var(--line); background:var(--card); padding:10px 8px; overflow:auto; }
   main { padding:14px 16px 24px; min-width:0; min-height:0; overflow:auto; display:flex; flex-direction:column; }
   main > section { display:flex; flex-direction:column; flex:1; min-height:0; }
@@ -1715,7 +1713,7 @@ SITE_HTML = r"""<!doctype html>
 </div>
 <header>
   <h1>Rocket performance</h1>
-  <div class="tabs"><button id="tab-history">History</button><button id="tab-flight">Flight plots</button><button id="tab-changelog">Changelog</button><button id="tab-predictions">JARVIS predictions</button><button id="tab-vision">VISION</button><button id="tab-vehicles">Vehicles (demo)</button><button id="tab-edith" hidden>EDITH</button></div>
+  <div class="tabs"><button id="tab-history">History</button><button id="tab-flight">Flight plots</button><button id="tab-changelog">Changelog</button><button id="tab-predictions">JARVIS predictions</button><button id="tab-vision">VISION</button><button id="tab-vehicles">Vehicles</button><button id="tab-edith" hidden>EDITH</button></div>
   <span class="sub" id="sub"></span>
   <span class="hctl">
     <label class="sub" id="units-label">units <select id="units"><option value="metric">metric (m, m/s, kPa)</option><option value="imperial">imperial (ft, ft/s, psi)</option></select></label>
@@ -1747,10 +1745,7 @@ SITE_HTML = r"""<!doctype html>
    </section>
    <section id="view-predictions" hidden></section>
    <section id="view-vision" hidden></section>
-   <section id="view-vehicles" hidden>
-    <div class="row vehbar"><span class="lbl">Demo</span><select id="vehsel"></select><span class="lbl">Four ways of showing a vehicle's geometry as it is in its OpenRocket file, for review. Static snapshots of the designs on 2026-10-26; not rebuilt on push yet.</span></div>
-    <div id="vehframe"></div>
-   </section>
+   <section id="view-vehicles" hidden></section>
    <section id="view-edith" hidden></section>
   </main>
 </div>
@@ -1772,11 +1767,10 @@ for (const [file, sims] of Object.entries(DATA.designs)) for (const [sim, rows] 
 const VIEWS = [['abs', 'Absolute'], ['dline', 'Δ line'], ['dbar', 'Δ bars']];
 const DEFAULTS = () => ({ metric: DATA.metrics[0].key, view: 'abs', units: DATA.default_units || 'metric', stab: DATA.default_stability || 'cal',
                           fx: 'altitude', fys: [{ key: 'stability', side: 'l' }], fapo: true });   // fys: Y variables in order, side l|r
-const state = Object.assign(DEFAULTS(), { sel: new Set(), tab: 'history', fprev: false, jarvis: false, openrocket: true, veh: 'sideview' });   // Jarvis's lines are off until asked for
+const state = Object.assign(DEFAULTS(), { sel: new Set(), tab: 'history', fprev: false, jarvis: false, openrocket: true });   // Jarvis's lines are off until asked for
 const FVARS = DATA.flight_vars || {};
-const FRAMES = { predictions: 'predictions/index.html', vision: 'predictions/viewer/index.html', edith: 'predictions/edith/index.html', vehicles: 'vehicles/' };   // pages shown inside this one
-// the Vehicles tab: static demo pages (tools/openrocket/vehicle_demo, copied to site/vehicles/), chosen with a dropdown
-const VEHICLE_DEMOS = [['sideview', 'Side view drawing'], ['specsheet', 'Spec sheet'], ['tree', 'Component tree'], ['threed', '3D viewer']];
+const FRAMES = { predictions: 'predictions/index.html', vision: 'predictions/viewer/index.html', edith: 'predictions/edith/index.html',
+                 vehicles: 'vehicles/index.html' };   // pages shown inside this one (vehicles: built by tools/openrocket/vehicles/build_vehicles.py)
 // EDITH (the many-flight simulation) is only built for the EDITH branch of flight_sim, so its tab stays hidden until its page is there (see showEdithTab)
 // Y variables travel in the URL as 'altitude,velocity_total:r' (':r' = right axis)
 const parseFys = s => s.split(',').map(x => { const [key, side] = x.split(':'); return { key, side: side === 'r' ? 'r' : 'l' }; }).filter(f => FVARS[f.key]);
@@ -1824,7 +1818,6 @@ function readHash() {
   if (p.get('units') === 'metric' || p.get('units') === 'imperial') state.units = p.get('units');
   if (p.get('stab') === 'cal' || p.get('stab') === 'pct') state.stab = p.get('stab');
   state.tab = ['flight', 'changelog', 'predictions', 'vision', 'edith', 'vehicles'].includes(p.get('tab')) ? p.get('tab') : 'history';
-  if (VEHICLE_DEMOS.some(d => d[0] === p.get('veh'))) state.veh = p.get('veh');
   if (FVARS[p.get('fx')]) state.fx = p.get('fx');
   if (p.has('fy')) { const fys = parseFys(p.get('fy')); if (FVARS[p.get('fy2')]) fys.push({ key: p.get('fy2'), side: 'r' }); state.fys = fys; }   // fy2: old links
   if (p.has('apo')) state.fapo = p.get('apo') !== '0';
@@ -1839,7 +1832,6 @@ function readHash() {
 function writeHash() {
   const p = new URLSearchParams(), d = DEFAULTS();
   p.set('tab', state.tab);
-  if (state.tab === 'vehicles' && state.veh !== 'sideview') p.set('veh', state.veh);
   if (state.units !== d.units) p.set('units', state.units);
   if (state.stab !== d.stab) p.set('stab', state.stab);
   if (state.tab === 'flight') {
@@ -2367,6 +2359,7 @@ const TABS = { history: 'tab-history', flight: 'tab-flight', changelog: 'tab-cha
 // the tabs above keep working. The frame is made the first time its tab opens, so nothing loads before it is wanted.
 const FRAMES_MISSING = { predictions: 'The Predictions page has not been built yet. It appears here after the next successful run of the GitHub Action on main (see tools/whatif/README.md).',
                          vision: 'Vision has not been built yet. It appears here together with the Predictions page, after the next successful run of the GitHub Action on main.',
+                         vehicles: 'The Vehicles page has not been built yet. It is made by the vehicles job of the GitHub Action (tools/openrocket/vehicles/build_vehicles.py) and appears here after the next successful run on main.',
                          edith: 'The EDITH page has not been built. EDITH is only built when the repository variable FLIGHT_SIM_REF is EDITH (see tools/whatif/README.md).' };
 const frames = {};
 function frameHash() { return 'embed=1&units=' + state.units + '&stab=' + state.stab; }
@@ -2400,26 +2393,12 @@ function syncFrame(name) {   // units and stability are chosen in this page's he
     if (p.toString() !== here) f.contentWindow.location.hash = p.toString();
   } catch (e) { /* a frame we may not look into (a file opened from disk): it keeps its own choice */ }
 }
-const SYNCED = ['predictions', 'edith'];   // the framed pages that follow the units chosen above
-function showVehicleDemo() {   // the dropdown picks which demo page sits in the frame
-  const sel = document.getElementById('vehsel');
-  if (!sel.children.length) {
-    for (const [key, name] of VEHICLE_DEMOS) { const o = document.createElement('option'); o.value = key; o.textContent = name; sel.appendChild(o); }
-    sel.onchange = () => { state.veh = sel.value; update(); };
-  }
-  sel.value = state.veh;
-  const src = FRAMES.vehicles + state.veh + '.html', holder = document.getElementById('vehframe');
-  if (frames.vehicles && frames.vehicles.dataset.src === src) return;
-  holder.innerHTML = '';
-  const f = document.createElement('iframe'); f.title = 'Vehicle demo: ' + VEHICLE_DEMOS.find(d => d[0] === state.veh)[1]; f.src = src; f.dataset.src = src;
-  frames.vehicles = f; holder.appendChild(f);
-}
+const SYNCED = ['predictions', 'edith', 'vehicles'];   // the framed pages that follow the units chosen above
 function showFrame(tab) {
-  if (tab === 'vehicles') return showVehicleDemo();
   if (frames[tab]) { if (SYNCED.includes(tab)) syncFrame(tab); return; }
   const holder = document.getElementById('view-' + tab); holder.innerHTML = '';
   const f = document.createElement('iframe');
-  f.title = tab === 'vision' ? 'VISION: the simulated flight in 3D' : tab === 'edith' ? 'EDITH: the many-flight simulation' : 'JARVIS predictions';
+  f.title = tab === 'vision' ? 'VISION: the simulated flight in 3D' : tab === 'edith' ? 'EDITH: the many-flight simulation' : tab === 'vehicles' ? 'Vehicles: geometry and dimensions from the OpenRocket files' : 'JARVIS predictions';
   f.src = FRAMES[tab] + (SYNCED.includes(tab) ? '#' + frameHash() : '');
   f.onload = () => { f.loaded = true; if (SYNCED.includes(tab)) syncFrame(tab); };
   frames[tab] = f; holder.appendChild(f);
@@ -2530,11 +2509,6 @@ def write_site(series: dict, site_dir: Path, units: str, repo_url: str, files_ve
     (site_dir / "index.html").write_text(SITE_HTML.replace("__DATA__", data), encoding="utf-8")
     (site_dir / "data.json").write_text(json.dumps(payload, indent=1), encoding="utf-8")
     (site_dir / ".nojekyll").write_text("", encoding="utf-8")
-    demo = Path(__file__).resolve().parent / "vehicle_demo"   # the Vehicles tab: static demo pages, copied as they are
-    if demo.is_dir():
-        (site_dir / "vehicles").mkdir(exist_ok=True)
-        for f in demo.glob("*.html"):
-            shutil.copy(f, site_dir / "vehicles" / f.name)
     for icon in SITE_ICONS.iterdir():   # the browser-tab icon and the home-screen icons the page links to
         if icon.is_file():
             shutil.copyfile(icon, site_dir / icon.name)

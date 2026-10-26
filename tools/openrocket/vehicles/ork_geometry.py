@@ -10,7 +10,9 @@ Output (all lengths in metres, x measured from the nose tip, aft positive):
                     "profile": [[x, r], ...]          (nosecone / transition outer line, x absolute),
                     "fins": {"count", "root", "tip", "sweep", "span", "thickness", "cant", "points": [[x_rel, y], ...]},
                     "radius": r, "inner_radius": r      (inner tubes, couplers, rings, bulkheads, masses),
-                    "mass": kg | null, "fields": {raw leaf fields of the element} } ... ]
+                    "mass": kg | null, "mass_source": "override" | "component" | "material" | null,
+                    "mass_override": kg | null, "mass_computed": kg | null (geometry x material density, as OpenRocket does),
+                    "fields": {raw leaf fields of the element, incl. material, material_type, material_density} } ... ]
 }
 Positioning follows OpenRocket: body components (nose cone, body tubes, transitions) stack nose to tail;
 other parts sit relative to their parent by method top / bottom / middle / absolute; "auto" radii inherit
@@ -54,6 +56,8 @@ def leaf_fields(el):
         if c.tag in ("subcomponents", "finpoints", "motormount", "appearance", "insideappearance", "material"):
             if c.tag == "material":
                 out["material"] = (c.text or "").strip()
+                out["material_type"] = c.get("type", "bulk")
+                out["material_density"] = c.get("density", "")
             continue
         if len(c) == 0 and c.text is not None and c.text.strip():
             out[c.tag] = c.text.strip() + ("".join(f" ({k}={v})" for k, v in c.attrib.items()) if c.attrib else "")
@@ -93,12 +97,72 @@ def nose_profile(shape, param, L, R, n=40):
     return pts
 
 
+def polygon_area(pts):
+    """Shoelace area of a planform polygon."""
+    a = 0.0
+    for (x0, y0), (x1, y1) in zip(pts, pts[1:] + pts[:1]):
+        a += x0 * y1 - x1 * y0
+    return abs(a) / 2
+
+
+def shell_volume(profile, t):
+    """Volume of a body of revolution with outer line `profile` [[x, r], ...] and wall thickness t (None = filled)."""
+    vo = vi = 0.0
+    for (x0, r0), (x1, r1) in zip(profile, profile[1:]):
+        dx = x1 - x0
+        vo += math.pi * dx * (r0 * r0 + r0 * r1 + r1 * r1) / 3      # frustum
+        if t is not None:
+            s0, s1 = max(r0 - t, 0.0), max(r1 - t, 0.0)
+            vi += math.pi * dx * (s0 * s0 + s0 * s1 + s1 * s1) / 3
+    return vo - vi
+
+
+def computed_mass(c, rec, el):
+    """Mass from geometry x material density, as OpenRocket computes it when no override is set.
+    -> kg, or None when the part has no computable mass (mass components, rail buttons, unknown materials)."""
+    f = rec["fields"]
+    try:
+        rho = float(f.get("material_density", ""))
+    except ValueError:
+        return None
+    mtype = f.get("material_type", "bulk")
+    kind = c.tag
+    fl = lambda v, d=0.0: v if isinstance(v, float) else d
+    if kind in ("bodytube", "innertube", "tubecoupler", "launchlug"):
+        R = fl(rec.get("r_aft")) if kind == "bodytube" else fl(rec.get("radius"))
+        t = fl(rec.get("thickness")) if kind == "bodytube" else (R - fl(rec.get("inner_radius"), R))
+        if kind == "innertube" and rec.get("inner_radius") is None:
+            t = fl(num(el, "thickness", 0.0))
+        return math.pi * (R * R - max(R - t, 0.0) ** 2) * fl(rec.get("length")) * rho
+    if kind in ("nosecone", "transition"):
+        filled = (el.findtext("filled") or "false").strip() == "true"
+        t = None if filled else fl(rec.get("thickness"))
+        return shell_volume(rec["profile"], t) * rho
+    if kind == "bulkhead":
+        return math.pi * fl(rec.get("radius")) ** 2 * fl(rec.get("length")) * rho
+    if kind in ("centeringring", "engineblock"):
+        ro, ri = fl(rec.get("radius")), fl(rec.get("inner_radius"))
+        return math.pi * (ro * ro - ri * ri) * fl(rec.get("length")) * rho
+    if "fins" in rec and rec["fins"].get("points"):
+        fins = rec["fins"]
+        area = polygon_area(fins["points"]) + fl(fins.get("tab_length")) * fl(fins.get("tab_height"))
+        return fins["count"] * area * fl(fins.get("thickness")) * rho
+    if kind == "parachute" and mtype == "surface":
+        d = fl(num(el, "diameter", 0.0))
+        return math.pi * (d / 2) ** 2 * rho
+    if kind == "streamer" and mtype == "surface":
+        return fl(num(el, "stripwidth", 0.0)) * fl(num(el, "striplength", 0.0)) * rho
+    if kind == "shockcord" and mtype == "line":
+        return fl(num(el, "cordlength", 0.0)) * rho
+    return None
+
+
 def parse(path: Path) -> dict:
     with zipfile.ZipFile(path) as zf:
         names = zf.namelist()
         root = ET.fromstring(zf.read("rocket.ork" if "rocket.ork" in names else names[0]))
     rocket = root.find("rocket")
-    comps = []
+    comps, _elements = [], []
     cursor = {"x": 0.0, "r": 0.0}   # where the next body component starts, and the radius it inherits
 
     def walk(el, parent, depth, body_order):
@@ -112,7 +176,9 @@ def parse(path: Path) -> dict:
                    "parent": parent["id"] if parent else None, "depth": depth, "external": c.tag in BODY or c.tag in FINS,
                    "fields": leaf_fields(c)}
             m = num(c, "overridemass")
-            rec["mass"] = m if isinstance(m, float) else (num(c, "mass") if isinstance(num(c, "mass"), float) else None)
+            rec["mass_override"] = m if isinstance(m, float) else None
+            rec["mass"] = rec["mass_override"] if rec["mass_override"] is not None else (num(c, "mass") if isinstance(num(c, "mass"), float) else None)
+            rec["mass_source"] = "override" if rec["mass_override"] is not None else ("component" if rec["mass"] is not None else None)
             off = c.find("axialoffset")
             if off is None:
                 off = c.find("position")
@@ -121,7 +187,7 @@ def parse(path: Path) -> dict:
             rec["offset"] = {"method": method, "value": value}
             if c.tag == "stage":
                 rec.update(x0=cursor["x"], x1=None, length=None)
-                comps.append(rec)
+                comps.append(rec); _elements.append(c)
                 walk(c, rec, depth + 1, body_order)
                 rec["x1"] = cursor["x"]; rec["length"] = rec["x1"] - rec["x0"]
                 continue
@@ -162,10 +228,11 @@ def parse(path: Path) -> dict:
                 if c.tag == "transition":
                     rec["shape"] = (c.findtext("shape") or "").strip()
                 cursor["x"] = rec["x1"]; cursor["r"] = r_aft if isinstance(r_aft, float) else cursor["r"]
-                comps.append(rec)
+                comps.append(rec); _elements.append(c)
                 walk(c, rec, depth + 1, body_order)
                 continue
             # everything else sits inside / on its parent
+            auto_r = False
             if c.tag in FINS:
                 if c.tag == "freeformfinset":
                     pts = [[float(p.get("x")), float(p.get("y"))] for p in c.find("finpoints")]
@@ -189,7 +256,11 @@ def parse(path: Path) -> dict:
                 rec["fins"] = {"count": int(num(c, "fincount", 6) or 6), "root": L, "span": 2 * (num(c, "outerradius", 0.0) if isinstance(num(c, "outerradius"), float) else (parent.get("r_aft") or 0.0)), "points": []}
             elif c.tag in ("masscomponent", "parachute", "streamer", "shockcord"):
                 L = num(c, "packedlength", 0.0) or 0.0
-                rec["radius"] = num(c, "packedradius", 0.0) or 0.0
+                pr = num(c, "packedradius", 0.0)
+                if not isinstance(pr, float):   # "auto": as wide as the inside of the parent
+                    fl = lambda v: v if isinstance(v, float) else 0.0
+                    pr = max((fl(parent.get("r_aft")) or fl(parent.get("radius"))) - fl(parent.get("thickness")), 0.0) if parent else 0.0
+                rec["radius"] = pr
             elif c.tag == "railbutton":
                 L = num(c, "outerdiameter", 0.0) or 0.0
             else:  # innertube, tubecoupler, centeringring, bulkhead, engineblock, launchlug
@@ -197,7 +268,8 @@ def parse(path: Path) -> dict:
                 ro = num(c, "outerradius")
                 fl = lambda v: v if isinstance(v, float) else 0.0   # "auto" or missing -> 0
                 pr = (fl(parent.get("r_aft")) or fl(parent.get("radius"))) - fl(parent.get("thickness")) if parent else 0.0
-                rec["radius"] = pr if ro == "auto" or not isinstance(ro, float) else ro
+                auto_r = ro == "auto" or not isinstance(ro, float)
+                rec["radius"] = pr if auto_r else ro
                 ri = num(c, "innerradius")
                 rec["inner_radius"] = (rec["radius"] - fl(num(c, "thickness", 0.0))) if not isinstance(ri, float) else ri
                 if c.tag in ("centeringring", "bulkhead", "engineblock") and ri == "auto":
@@ -214,11 +286,26 @@ def parse(path: Path) -> dict:
             else:  # after
                 x0 = px1 + value
             rec.update(x0=x0, x1=x0 + L, length=L)
+            if auto_r and parent and parent.get("kind") in ("nosecone", "transition") and parent.get("profile"):
+                # an "auto" radius inside a nose cone or transition follows the parent's inside radius at the part's own station
+                xm, prof = x0, parent["profile"]   # OpenRocket reads the parent radius at the part's front
+                r_here = prof[0][1] if xm <= prof[0][0] else prof[-1][1] if xm >= prof[-1][0] else next(
+                    r0 + (r1 - r0) * (xm - xa) / (xb - xa) if xb > xa else r0
+                    for (xa, r0), (xb, r1) in zip(prof, prof[1:]) if xa <= xm <= xb)
+                was = rec["radius"]
+                rec["radius"] = max(r_here - (parent.get("thickness") if isinstance(parent.get("thickness"), float) else 0.0), 0.0)
+                if rec.get("inner_radius") is not None and was:
+                    rec["inner_radius"] = max(rec["inner_radius"] - (was - rec["radius"]), 0.0)
             rec["radial_position"] = num(c, "radialposition", 0.0)
-            comps.append(rec)
+            comps.append(rec); _elements.append(c)
             walk(c, rec, depth + 1, body_order)
 
     walk(rocket, None, 0, [])
+    for rec, el in zip(comps, _elements):
+        mc = computed_mass(el, rec, el)
+        rec["mass_computed"] = mc
+        if rec["mass"] is None and mc is not None:
+            rec["mass"], rec["mass_source"] = mc, "material"
     # a transition whose aft radius was "auto" takes the radius of the body component after it
     bodies = [c for c in comps if c["kind"] in BODY]
     for a, b in zip(bodies, bodies[1:]):
@@ -241,4 +328,5 @@ if __name__ == "__main__":
     print(f"{g['name']}: length {g['length']:.4f} m, max radius {g['max_radius']:.4f} m, {len(g['components'])} components -> {out}")
     for c in g["components"]:
         if c["kind"] in BODY or "fins" in c:
-            print(f"  {'  ' * c['depth']}{c['kind']:16s} {c['name'][:30]:30s} x {c['x0']:.3f}..{c['x1']:.3f}" + (f"  r {c['r_fore']:.4f}->{c['r_aft']:.4f}" if 'r_fore' in c else ''))
+            print(f"  {'  ' * c['depth']}{c['kind']:16s} {c['name'][:30]:30s} x {c['x0']:.3f}..{c['x1']:.3f}" + (f"  r {c['r_fore']:.4f}->{c['r_aft']:.4f}" if 'r_fore' in c else '')
+                  + (f"  mass {c['mass']:.3f} kg ({c['mass_source']})" if c.get('mass') is not None else ''))
