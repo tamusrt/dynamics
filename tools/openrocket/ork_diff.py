@@ -342,7 +342,7 @@ def headline(diff: dict) -> str:
     out = (", ".join(bits) + " component" + ("s" if sum(n.values()) != 1 else "")) if bits else ""
     if diff["simulations"]:
         out += ("; " if out else "") + f"{len(diff['simulations'])} simulation change" + ("s" if len(diff["simulations"]) != 1 else "")
-    return out or "no design changes (only stored results or metadata)"
+    return out or "Only stored results or metadata changed"
 
 
 def rows(diff: dict, units: str = "metric") -> list:
