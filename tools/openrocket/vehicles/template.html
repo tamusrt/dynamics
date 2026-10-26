@@ -201,6 +201,12 @@ function kindOf(c) { return KIND[c.kind] || ['mass', '??']; }
 function kcls(c) { return 'k-' + kindOf(c)[0]; }
 
 function num(v) { return (typeof v === 'number' && isFinite(v)) ? v : null; }
+// a nose cone with a shape constant reads "series - constant", e.g. "Haack - 0" for a von Karman; other shapes just their name
+function shapeText(c) {
+  var name = c.shape.charAt(0).toUpperCase() + c.shape.slice(1), k = num(c.shape_parameter);
+  var hasK = c.kind === 'nosecone' && k !== null && ['ogive', 'power', 'parabolic', 'haack'].indexOf(c.shape) >= 0;
+  return hasK ? name + ' - ' + (+k.toFixed(3)) : name;
+}
 function esc(s) { return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'); }
 function fmtLen(m) { var u = UNITS[state.units]; return (m * u.f).toFixed(u.d) + ' ' + u.s; }
 function fmtLenOpt(m) { return num(m) !== null ? fmtLen(m) : '—'; }
@@ -451,7 +457,7 @@ function describe(c, byId) {
     if (BODY[c.kind]) {
       if (num(c.r_fore) !== null && num(c.r_aft) !== null && Math.abs(c.r_fore - c.r_aft) > 1e-6) rows.push(['Diameter', fmtLen(2 * c.r_fore) + ' → ' + fmtLen(2 * c.r_aft)]);
       else if (num(c.r_aft) !== null) rows.push(['Diameter', fmtLen(2 * c.r_aft)]);
-      if (c.shape) rows.push(['Shape', c.shape]);
+      if (c.shape) rows.push(['Shape', shapeText(c)]);
     } else {
       var r = partRadius(c, byId);
       if (r !== null) rows.push(['Diameter', fmtLen(2 * r) + (num(c.radius) === null || c.radius === 0 ? ' (auto)' : '')]);
@@ -495,7 +501,7 @@ function detailRows(n, byId) {
       if (num(c.r_fore) !== null && num(c.r_aft) !== null && Math.abs(c.r_fore - c.r_aft) > 1e-9) { add('Fore diameter', fmtLen(2 * c.r_fore)); add('Aft diameter', fmtLen(2 * c.r_aft)); }
       else add('Diameter', fmtLenOpt(2 * (num(c.r_aft) !== null ? c.r_aft : c.r_fore)));
       if (num(c.thickness) !== null) add('Wall thickness', fmtLen(c.thickness));
-      if (c.shape) add('Shape', c.shape);
+      if (c.shape) add('Shape', shapeText(c));
     } else if (c.fins) {
       var f = c.fins;
       add('Fin count', String(f.count));
