@@ -1,4 +1,5 @@
-"""Regression test of or_ci.git_file_history, the walk that lists every committed version of a design.
+"""Regression test of or_ci.git_file_history, the walk that lists every committed version of a design,
+and of hide_commits, the config entry that leaves chosen commits out of it.
 
     python tools/openrocket/tests/test_history.py
 
@@ -95,6 +96,41 @@ def test_a_plain_history_and_the_limit_are_unchanged():
         assert [v["short"] for v in or_ci.git_file_history(root, "R/r.ork", 100)] == shorts
         assert [v["short"] for v in or_ci.git_file_history(root, "R/r.ork", 3)] == shorts[-3:], "the newest N"
     print("plain history and the limit: ok")
+
+
+def test_hide_commits_leaves_the_listed_versions_out():
+    import json
+    with tempfile.TemporaryDirectory() as tmp:
+        root = new_repo(tmp)
+        shorts, fulls = [], []
+        for n in range(4):
+            write(root, "R/r.ork", design(n))
+            shorts.append(commit(root, f"v{n}"))
+            fulls.append(git(root, "rev-parse", "HEAD"))
+        versions = or_ci.git_file_history(root, "R/r.ork", 100)
+        cfg_path = root / "sim_config.json"
+
+        def config(hide):
+            cfg_path.write_text(json.dumps({"hide_commits": hide}), encoding="utf-8")
+            return or_ci.Config(cfg_path)
+
+        log = []
+        kept = or_ci.drop_hidden_versions(config({shorts[1]: "a broken save", fulls[2].upper(): ""}), "R/r.ork", versions, log.append)
+        assert [v["short"] for v in kept] == [shorts[0], shorts[3]], "short and full SHAs both match, whatever the case"
+        assert len(log) == 2 and "a broken save" in log[0] and shorts[1] in log[0] and log[1].endswith("hidden by sim_config.json"), log
+        kept = or_ci.drop_hidden_versions(config([shorts[2]]), "R/r.ork", versions, log.append)
+        assert [v["short"] for v in kept] == [shorts[0], shorts[1], shorts[3]], "a plain list works too"
+        assert or_ci.drop_hidden_versions(config({}), "R/r.ork", versions) == versions, "nothing hidden by default"
+        working = {"sha": None, "short": "working", "message": "(uncommitted working tree)"}
+        assert or_ci.drop_hidden_versions(config([shorts[0]]), "R/r.ork", [working]) == [working], "the working tree has no SHA"
+        for bad in ([shorts[0][:6]], ["not-a-sha"], {"": "x"}):
+            try:
+                config(bad)
+            except SystemExit as e:
+                assert "hide_commits" in str(e), e
+            else:
+                raise AssertionError(f"{bad!r} must be rejected: too short a prefix could hide half the history")
+    print("hide_commits: ok")
 
 
 if __name__ == "__main__":

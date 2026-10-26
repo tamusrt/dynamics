@@ -53,6 +53,7 @@ CONFIG (aero_modeling/sim_config.json; every path relative to that file)
       "seed": 20260915,
       "fail_on_limits": false,
       "ignore": ["**/OLD/**"],
+      "hide_commits": {"fccc546": "broken save; left out of the history charts and the site"},
       "limits": {"stability_off_rod_cal": {"min": 1.5}},
       "files": {
         "IREC_2027/2027_OR_9_15.ork": {
@@ -276,6 +277,7 @@ class Config:
         self.deterministic_wind = bool(raw.get("deterministic_wind", True))
         self.fail_on_limits = bool(raw.get("fail_on_limits", False))
         self.ignore = list(raw.get("ignore", []))
+        self.hide_commits = self._parse_hide_commits(raw.get("hide_commits", {}))
         self.limits = dict(raw.get("limits", {}))
         self.files = {self._norm(k): v for k, v in raw.get("files", {}).items()}
 
@@ -296,6 +298,27 @@ class Config:
 
     def file_cfg(self, cfg_rel: str) -> dict:
         return self.files.get(self._norm(cfg_rel), {})
+
+    @staticmethod
+    def _parse_hide_commits(raw) -> dict:
+        """{"<sha or prefix>": "<why>"} or ["<sha>", ...] -> {lower-case prefix: reason}. Prefixes must be at
+        least 7 hex characters (what git log and the site show), so a typo cannot blank out half the history."""
+        items = raw.items() if isinstance(raw, dict) else [(sha, "") for sha in raw]
+        out = {}
+        for sha, why in items:
+            key = str(sha).strip().lower()
+            if len(key) < 7 or len(key) > 40 or any(c not in "0123456789abcdef" for c in key):
+                raise SystemExit(f"sim_config.json: hide_commits entry {sha!r} is not a commit SHA (7 to 40 hex characters)")
+            out[key] = str(why or "").strip()
+        return out
+
+    def hidden_commit(self, sha: str):
+        """The configured reason (possibly "") when `sha` is listed under hide_commits, else None."""
+        sha = (sha or "").lower()
+        for prefix, why in self.hide_commits.items():
+            if sha.startswith(prefix):
+                return why
+        return None
 
     @staticmethod
     def sim_cfg(file_cfg: dict, sim_name: str) -> dict:
@@ -1240,6 +1263,20 @@ def git_file_history(root: Path, rel: str, max_commits: int):
     return entries[::-1]
 
 
+def drop_hidden_versions(cfg: Config, rel: str, versions: list, log=print) -> list:
+    """Leave out the versions whose commit is listed under hide_commits in sim_config.json: a broken or
+    accidental save that would otherwise show as a huge swing and back. The next version's change is then
+    measured against the last version that is shown, and the changelog diffs across the gap."""
+    kept = []
+    for v in versions:
+        why = cfg.hidden_commit(v["sha"]) if v.get("sha") else None
+        if why is None:
+            kept.append(v)
+        else:
+            log(f"  {rel} :: {v['short']} {v['message']}: hidden by sim_config.json" + (f" ({why})" if why else ""))
+    return kept
+
+
 def _blob(root: Path, sha: str, rel: str):
     r = _git(root, "rev-parse", f"{sha}:{rel}", check=False)
     return r.stdout.strip() if r.returncode == 0 else None
@@ -1379,7 +1416,7 @@ def cmd_history(args):
     # plan: (file, version entry, blob) for every version; look up the cache first
     plan, cached, files_versions, want_series = [], {}, {}, set()
     for f in files:
-        versions = git_file_history(root, f, args.max_commits)
+        versions = drop_hidden_versions(cfg, f, git_file_history(root, f, args.max_commits))
         for v in versions:
             v["blob"] = _blob(root, v["sha"], v["path"])
         # uncommitted working-tree version, if it differs from HEAD

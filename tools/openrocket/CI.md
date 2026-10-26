@@ -126,6 +126,8 @@ Below the before/after table, the commit comment and job summary carry a **Perfo
 
 How it's built: `or_ci.py history` walks each design's git history along the first-parent line, following renames, and through a merge whose first parent never had the file (someone committed on an old copy of main and then pulled), down the parent that had it (the IREC file's `2027_OR_9_15` → `2027_OR` rename is tracked), simulates every version with the same seed and wind settings as the check, and caches each result by the file's git blob id in `.or_ci_cache/` (restored between workflow runs with `actions/cache`). Only versions never seen before are simulated, so the step costs a few seconds after the first backfill. The last 30 versions are charted; the whole history is in the artifact's `history.csv`.
 
+A commit that should not count, such as a broken or accidental save that shows as a huge swing and back, can be left out with `hide_commits` in `sim_config.json`: `{"fccc546": "why"}` (7 or more characters of the SHA shown on the site; the reason is for the next reader and is only printed in the run log). Hidden versions are not simulated and appear nowhere: not in the charts, the site, the changelog or `history.csv`. The version after a hidden one is compared with the last version that is shown, and the changelog diffs across the gap. The site itself has no control for this; the config is the only place.
+
 Locally, the same command draws the chart for your uncommitted working copy as a final "working" bar:
 
 ```

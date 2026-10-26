@@ -8,6 +8,8 @@
     "and are written in the display units. units: metric (default) or imperial (ft, ft/s, psi); CSV/JSON stay SI.",
     "stability_units: cal (calibers, default) or pct (% of rocket length); both are always computed, limits name",
     "the key they mean (stability_off_rod_cal vs stability_off_rod_pct).",
+    "hide_commits {<sha>: <why>} leaves those commits out of the performance history (charts, site, CSV):",
+    "a broken or accidental save that would show as a big swing and back. 7+ hex characters, as shown on the site.",
     "Full docs, metric definitions and examples: tools/openrocket/CI.md"
   ],
   "units": "imperial",
@@ -19,6 +21,9 @@
     "**/OLD/**",
     "**/PROGRESS REPORT*/**"
   ],
+  "hide_commits": {
+    "fccc546": "2026-10-16 DYN meeting save of AIRMAIL.ork: file shrank from 926 kB to 484 kB and stability went to -57 %L; treated as a broken save, not a design change"
+  },
   "limits": {
     "stability_off_rod_cal": {"min": 1.5},
     "min_stability_cal": {"min": 1.0},
