@@ -224,8 +224,11 @@ jobs:
           path: or_ci_results/
           if-no-files-found: ignore
 
+      # Commit comments (the Discord bot relays them) are switched by the repository variable COMMIT_COMMENTS:
+      # unset or "all" = the OpenRocket report plus the JARVIS message and predictions notes; "openrocket" = the
+      # OpenRocket report only; "off" = none. Settings -> Secrets and variables -> Actions -> Variables.
       - name: Comment on the commit
-        if: always() && github.event_name == 'push' && hashFiles('or_ci_results/report.md') != ''
+        if: always() && github.event_name == 'push' && hashFiles('or_ci_results/report.md') != '' && (vars.COMMIT_COMMENTS || 'all') != 'off'
         env:
           GH_TOKEN: ${{ github.token }}
         # the OpenRocket design diff and before/after deltas first, then the file check; JARVIS build problems are
@@ -472,7 +475,7 @@ jobs:
       # DISCORD_WEBHOOK_URL, tools/whatif/README.md) it goes straight to the channel with the VISION picture;
       # without one it is a commit comment, which the Discord GitHub bot shows as text.
       - name: Send the JARVIS message
-        if: always() && hashFiles('jarvis_note.md') != ''
+        if: always() && hashFiles('jarvis_note.md') != '' && (vars.COMMIT_COMMENTS || 'all') == 'all'
         env:
           GH_TOKEN: ${{ github.token }}
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
@@ -491,7 +494,7 @@ jobs:
       # What broke in the predictions build, and its notes (auto-fixes, stale tables). They used to ride in the
       # OpenRocket comment; now they get their own, only when there is something to say.
       - name: Comment on the commit about the predictions build (only problems and notes)
-        if: always() && github.event_name == 'push' && hashFiles('site/index.html') != ''
+        if: always() && github.event_name == 'push' && hashFiles('site/index.html') != '' && (vars.COMMIT_COMMENTS || 'all') == 'all'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
