@@ -16,8 +16,8 @@
   .k-struct { --k: var(--k-struct); } .k-mass { --k: var(--k-mass); } .k-reco { --k: var(--k-reco); } .k-stage { --k: var(--k-stage); }
   * { box-sizing: border-box; }
   html, body { margin: 0; background: var(--bg); color: var(--fg); }
-  body { font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif, "Apple Color Emoji", "Segoe UI Emoji"; padding: 16px 16px 32px; }
-  main { max-width: 1500px; margin: 0 auto; }
+  body { font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif, "Apple Color Emoji", "Segoe UI Emoji"; padding: 12px 20px 28px; }
+  main { width: 100%; }
   h1 { font-size: 18px; font-weight: 600; margin: 0 14px 0 0; }
   /* toolbar */
   .bar { display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: center; margin-bottom: 12px; }
@@ -65,14 +65,14 @@
   .stats { color: var(--muted); font-size: 12.5px; margin: 0 0 2px; }
   .stats b { color: var(--fg); font-weight: 500; }
   #card { overflow-x: auto; }
-  #card svg { display: block; width: 100%; min-width: 760px; height: auto; font-size: 11px; }
+  #card svg { display: block; width: 100%; min-width: 760px; height: auto; max-height: calc(100vh - 150px); font-size: 11px; }
   .key { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 2px 12px; color: var(--muted); font-size: 11.5px; margin: 0; }
   .key span { display: inline-flex; align-items: center; gap: 4px; }
   .key i { display: inline-block; width: 9px; height: 9px; border-radius: 2px; background: var(--k); opacity: .7; }
   .body { fill: var(--k); fill-opacity: .18; stroke: var(--k); stroke-width: 1; stroke-opacity: .85; stroke-linejoin: round; cursor: pointer; }
   .body.alt { fill-opacity: .30; }
   .silhouette { fill: none; stroke: var(--fg); stroke-width: 1.4; stroke-linejoin: round; pointer-events: none; }
-  .centre { stroke: var(--muted); stroke-width: .8; stroke-dasharray: 14 4 2 4; opacity: .7; pointer-events: none; }
+  .centre { stroke: var(--muted); stroke-width: .8; stroke-dasharray: 14 4 2 4; opacity: .7; pointer-events: none; vector-effect: non-scaling-stroke; }
   .fin { fill: var(--k); fill-opacity: .40; stroke: var(--k); stroke-width: 1.1; stroke-linejoin: round; cursor: pointer; }
   .fin-hint { fill: var(--k-fin); fill-opacity: .25; stroke: var(--k-fin); stroke-width: .7; stroke-dasharray: 3 2; pointer-events: none; }
   .struct { fill: var(--k); fill-opacity: .38; stroke: var(--k); stroke-width: .8; cursor: pointer; }
@@ -89,11 +89,11 @@
   .fin.sel, .struct.sel { fill-opacity: .7; }
   .massitem.sel { stroke-dasharray: none; }
   .selring, .selring * { fill: none; stroke: var(--accent); stroke-width: 2; stroke-linejoin: round; stroke-dasharray: none; pointer-events: none; }
-  .dim line, .dim polyline { stroke: var(--muted); stroke-width: .8; fill: none; }
+  .dim line, .dim polyline { stroke: var(--muted); stroke-width: .8; fill: none; vector-effect: non-scaling-stroke; }
   .dim .ext { stroke-width: .6; opacity: .8; }
   .dim polygon { fill: var(--muted); stroke: none; }
-  .dim text { fill: var(--fg); paint-order: stroke; stroke: var(--bg); stroke-width: 3px; stroke-linejoin: round; }
-  .dim text.name { fill: var(--muted); font-size: 10px; }
+  .dim text { fill: var(--fg); paint-order: stroke; stroke: var(--bg); stroke-width: .28em; stroke-linejoin: round; }
+  .dim text.name { fill: var(--muted); font-size: .9em; }
   .dim text.diam { font-weight: 600; }
   /* tooltip */
   #tip { position: fixed; z-index: 10; pointer-events: none; display: none; max-width: 300px; background: var(--bg); color: var(--fg); border: 1px solid var(--line); border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,.18); padding: 8px 10px; font-size: 13px; line-height: 1.4; }
@@ -106,20 +106,23 @@
   .detail .head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 10px; margin-bottom: 8px; }
   .detail h2 { font-size: 15px; font-weight: 600; margin: 0; word-break: break-word; }
   .detail .kindlabel { font-size: 12.5px; color: var(--k, var(--muted)); }
-  .detail .crumbs { width: 100%; font-size: 12.5px; color: var(--muted); display: flex; flex-wrap: wrap; gap: 2px 4px; }
+  .detail .crumbs { font-size: 12.5px; color: var(--muted); display: flex; flex-direction: column; gap: 2px; }
+  .detail .crumbs > * { display: block; padding-left: calc(var(--d, 0) * 12px); }
+  .detail .mass { margin: 0 0 14px; font-size: 13px; font-variant-numeric: tabular-nums; }
+  .detail .mass b { font-weight: 600; }
+  .detail .src { color: var(--muted); font-size: 12px; }
   .detail .crumbs a { color: var(--accent); cursor: pointer; text-decoration: none; }
   .detail .crumbs a:hover { text-decoration: underline; }
   .detail .crumbs .here { color: var(--fg); font-weight: 600; }
-  .detail .grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 12px 28px; }
+  .detail .grid { display: grid; grid-template-columns: minmax(260px, 1.2fr) minmax(220px, 1fr); gap: 12px 36px; align-items: start; }
   .detail .rawcol { display: none; }
-  main.adv .detail .grid { grid-template-columns: minmax(240px, 1fr) minmax(0, 1.5fr); }
+  main.adv .detail .grid { grid-template-columns: minmax(260px, 1.2fr) minmax(220px, 1fr) minmax(0, 2fr); }
   main.adv .detail .rawcol { display: block; }
-  @media (max-width: 760px) { main.adv .detail .grid { grid-template-columns: minmax(0, 1fr); } }
+  @media (max-width: 900px) { .detail .grid, main.adv .detail .grid { grid-template-columns: minmax(0, 1fr); } }
   .detail h3 { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .6px; color: var(--muted); margin: 0 0 6px; }
   .detail h3 small { text-transform: none; letter-spacing: 0; font-weight: 400; }
   .detail dl { display: grid; grid-template-columns: auto 1fr; gap: 2px 14px; margin: 0; font-size: 13px; }
   .detail dt { color: var(--muted); white-space: nowrap; } .detail dd { margin: 0; font-variant-numeric: tabular-nums; }
-  .detail dd .src { color: var(--muted); font-size: 12px; }
   .detail table.raw { border-collapse: collapse; width: 100%; margin: 0; font-size: 12px; }
   .detail table.raw td { text-align: left; padding: 3px 6px; border-bottom: 1px solid var(--line); font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; white-space: normal; word-break: break-word; vertical-align: top; }
   .detail table.raw td.k { color: var(--muted); width: 38%; }
@@ -495,15 +498,18 @@ function detailRows(n, byId) {
   return rows;
 }
 function detailHTML(n, byId) {
-  var c = n.c, rows = detailRows(n, byId);
-  var h = '<div class="head"><h2>' + esc(c.name) + '</h2><span class="kindlabel ' + kcls(c) + '">' + esc(c.label || c.kind) + '</span>';
-  var chain = []; for (var p = n; p; p = p.parent) chain.unshift(p);
-  h += '<div class="crumbs">' + chain.map(function (p, i) {
-    return i === chain.length - 1 ? '<span class="here">' + esc(p.c.name) + '</span>' : '<a data-id="' + esc(p.c.id) + '">' + esc(p.c.name) + '</a><span>›</span>';
-  }).join('') + '</div></div>';
+  var c = n.c, rows = detailRows(n, byId), massRow = rows.pop();
+  var h = '<div class="head"><h2>' + esc(c.name) + '</h2><span class="kindlabel ' + kcls(c) + '">' + esc(c.label || c.kind) + '</span></div>';
   h += '<div class="grid"><div><h3>Dimensions</h3><dl>';
-  rows.forEach(function (r) { h += '<dt>' + esc(r[0]) + '</dt><dd>' + esc(r[1]) + (r[2] ? ' <span class="src">' + esc(r[2]) + '</span>' : '') + '</dd>'; });
-  h += '</dl></div><div class="rawcol"><h3>OpenRocket fields <small>(raw, SI)</small></h3>';
+  rows.forEach(function (r) { h += '<dt>' + esc(r[0]) + '</dt><dd>' + esc(r[1]) + '</dd>'; });
+  h += '</dl></div>';
+  var chain = []; for (var p = n; p; p = p.parent) chain.unshift(p);
+  h += '<div class="ctx"><h3>Mass</h3><p class="mass"><b>' + esc(massRow[1]) + '</b>' + (massRow[2] ? ' <span class="src">' + esc(massRow[2]) + '</span>' : '') + '</p>';
+  h += '<h3>Path</h3><div class="crumbs">' + chain.map(function (p, i) {
+    var st = ' style="--d:' + i + '"';
+    return i === chain.length - 1 ? '<span class="here"' + st + '>' + esc(p.c.name) + '</span>' : '<a data-id="' + esc(p.c.id) + '"' + st + '>' + esc(p.c.name) + '</a>';
+  }).join('') + '</div></div>';
+  h += '<div class="rawcol"><h3>OpenRocket fields <small>(raw, SI)</small></h3>';
   var fields = c.fields || {}, keys = Object.keys(fields);
   if (keys.length) {
     h += '<table class="raw">';
@@ -585,7 +591,21 @@ function init() {
     if (state.selected && !model.nodes[state.selected]) state.selected = null;
     renderTree();
     applySelection(false);
+    fitText();
   }
+  /* Label text is authored at 11 user units for a 1200-unit-wide drawing; rescale it so it reads at ~11 px on screen
+     (capped at 12 units so chained labels keep their allotted rows on narrow windows). */
+  function fitText() {
+    var svg = card.querySelector('svg'); if (!svg) return;
+    var vb = (svg.getAttribute('viewBox') || '').split(/[\s,]+/).map(Number);
+    var box = svg.getBoundingClientRect ? svg.getBoundingClientRect() : { width: svg.clientWidth, height: svg.clientHeight };
+    if (vb.length !== 4 || !(vb[2] > 0) || !(vb[3] > 0) || !(box.width > 0)) return;
+    var scale = box.width / vb[2];
+    if (box.height > 0) scale = Math.min(scale, box.height / vb[3]);
+    svg.style.fontSize = Math.min(12, 11 / scale).toFixed(2) + 'px';
+  }
+  window.addEventListener('resize', fitText);
+  if (typeof ResizeObserver !== 'undefined') new ResizeObserver(fitText).observe(card);
 
   /* ---------- tree ---------- */
   function renderTree() {
