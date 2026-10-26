@@ -104,7 +104,8 @@ def test_an_edith_page_that_was_not_made_is_replaced_by_the_last_good_one():
         assert code == 0, "an EDITH problem does not stop the site from being published"
         assert [p["area"] for p in status["problems"]] == ["edith"] and status["problems"][0]["shown"] == "last_good"
         page = (site / "predictions/edith/index.html").read_text()
-        assert "last good page predictions/edith/index.html" in page and "EDITH: " in page and 'id="srt-error"' in page
+        assert "last good page predictions/edith/index.html" in page and "srt-kept-because:EDITH: " in page
+        assert 'id="srt-error"' not in page, "no red bar on a page put back"
         assert "NEW BROKEN" in (site / "predictions/index.html").read_text(), "the JARVIS page is left alone"
         assert "EDITH" in (root / "summary.md").read_text()
 
@@ -164,7 +165,8 @@ def test_a_broken_vision_is_replaced_by_the_last_good_one_with_an_error_bar():
         assert code == 0, "Predictions and Vision problems do not stop the site from being published"
         page = (site / "predictions/viewer/index.html").read_text()
         assert "last good page predictions/viewer/index.html" in page and "NEW BROKEN" not in page
-        assert 'id="srt-error"' in page and "the 3D scene looks blank" in page and "last good version, from" in page
+        assert 'id="srt-error"' not in page and site_status.SINCE.search(page), "marked with its date, but no red bar"
+        assert "the 3D scene looks blank" in page.split("<!--srt-error-end-->")[0].split("<!--srt-error-start-->")[1]
         assert "NEW BROKEN" in (site / "predictions/index.html").read_text(), "the Predictions page was fine, so it is kept"
         assert status["ok"] is False and len(status["problems"]) == 1
         problem = status["problems"][0]
@@ -256,7 +258,7 @@ def test_a_page_put_back_twice_keeps_one_bar_and_the_original_date():
             site2 = _new_site(root / "again")
             _run(root, site2, live2, failed=[{"name": "Vision", "area": "vision", "message": "second problem"}])
         second = (site2 / "predictions/viewer/index.html").read_text()
-        assert second.count('id="srt-error"') == 1 and "second problem" in second and "first problem" not in second
+        assert second.count("<!--srt-error-start-->") == 1 and "second problem" in second and "first problem" not in second
         assert "2020-01-02 03:04 UTC" in second, "the date the page was last good is kept"
 
 
@@ -270,10 +272,12 @@ def test_something_that_is_not_a_page_is_not_put_back():
         assert "NEW BROKEN" in (site / "predictions/viewer/index.html").read_text()
 
 
-def test_the_error_bar_text_is_escaped():
-    page = site_status.with_banner("<html><body class=x>hello</body></html>", "<script>alert(1)</script>", "now")
-    assert "<script>alert(1)</script>" not in page.split("<script>(function")[0] and "&lt;script&gt;" in page
-    assert page.index('id="srt-error"') > page.index("<body class=x>") and page.endswith("hello</body></html>")
+def test_a_page_put_back_is_marked_but_shows_nothing():
+    page = site_status.with_banner("<html><body class=x>hello</body></html>", "<script>alert(1)</script> -->x", "now")
+    assert "<script>alert(1)</script>" not in page and "&lt;script&gt;" in page
+    assert "<div" not in page and 'id="srt-error"' not in page, "no visible bar"
+    assert page.count("-->") == 4, "the message cannot close its comment early"
+    assert page.index("<!--srt-error-start-->") > page.index("<body class=x>") and page.endswith("hello</body></html>")
     assert site_status.with_banner("no body tag", "t", "s").endswith("no body tag")
 
 

@@ -131,7 +131,7 @@ change to the pages or to VISION alone keeps it). A result cut short by
 the time limit is not kept.
 
 **It cannot break the site.** If EDITH fails or runs out of time, the JARVIS and VISION pages stay as they were built
-and `site_status.py` puts the last good EDITH page back with a red Error bar (see below). `browser_test.py` checks the
+and `site_status.py` puts the last good EDITH page back (see below). `browser_test.py` checks the
 EDITH tab and page (with its charts and picture), that the Predictions page has nothing of EDITH's, and VISION's spread switch and landing circles when EDITH is on
 (`--require-edith`).
 
@@ -223,8 +223,8 @@ Every push that changes `tools/whatif/`, `tools/openrocket/`, `aero_modeling/` o
 ## If a build breaks a page
 
 If a push breaks the JARVIS predictions tab, VISION or (when it is on) EDITH, the workflow keeps the last working version of that page on the
-site, shows a red **Error** bar at the top of every tab saying what broke (with a link to the run), and still publishes
-the rest of the site. The bar disappears after the next clean build. If the History tab itself breaks, nothing is
+site and still publishes the rest of it. What broke is reported in the run (an error annotation and the job summary) and
+in a commit comment, not on the site: the site has no red bar. If the History tab itself breaks, nothing is
 published and the live site stays as it is. This is handled by `site_status.py`. If the site is not at
 `https://<owner>.github.io/<repo>`, set the repository variable `LIVE_SITE_URL`. EDITH is covered only in a build that is
 meant to make it, so a site that does not run EDITH never shows an old EDITH page.

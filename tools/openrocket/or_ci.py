@@ -84,6 +84,7 @@ from pathlib import Path, PurePosixPath
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import ork_diff  # noqa: E402  (structural diff of two .ork files; stdlib only)
+import ork_vs_ras  # noqa: E402  (an .ork against its RASAero model; stdlib only)
 
 DEFAULT_SEED = 20260915
 
@@ -1540,8 +1541,38 @@ def cmd_history(args):
     print(f"Wrote {out / 'history.md'}, {out / 'history.csv'}")
     if args.site:
         repo_url = args.repo_url or _guess_repo_url(root)
-        write_site(series, Path(args.site), cfg.units, repo_url, files_versions, cfg.stability_units, changelog)
+        write_site(series, Path(args.site), cfg.units, repo_url, files_versions, cfg.stability_units, changelog,
+                   rasaero_checks(cfg, root))
     return 0
+
+
+def rasaero_checks(cfg: Config, root: Path) -> list:
+    """Every design with a "rasaero" model in the config, checked against it as committed (ork_vs_ras). Only the pairs
+    that disagree are returned, with what disagrees in both unit systems: "lines" for the whole design (shape, fins) and
+    "sims" for each simulation whose launch mass or CG differs. The site puts an (i) after each of those names."""
+    out = []
+    for cfg_rel, fcfg in cfg.files.items():
+        cdx = fcfg.get("rasaero")
+        if not cdx or cfg.is_ignored(cfg_rel):
+            continue
+        entry = {"ork": cfg.to_repo_rel(cfg_rel, root), "rasaero": cfg.to_repo_rel(cdx, root)}
+        missing = [p for p in (cfg.dir / cfg_rel, cfg.dir / cdx) if not p.is_file()]
+        if missing:
+            entry["lines"] = {u: [f"{missing[0].name} is named in sim_config.json but is not in the repository"]
+                              for u in UNIT_SYSTEMS}
+            out.append(entry)
+            continue
+        try:
+            res = ork_vs_ras.compare_files(cfg.dir / cfg_rel, cfg.dir / cdx, fcfg.get("rasaero_sim"))
+        except Exception as e:                       # a reader problem must never sink the site
+            print(f"  could not compare {cfg_rel} with {cdx}: {e}")
+            continue
+        entry["lines"] = {u: ork_vs_ras.mismatch_lines(res, u) for u in UNIT_SYSTEMS}
+        entry["sims"] = {s: {u: ork_vs_ras.mismatch_lines(res, u, s) for u in UNIT_SYSTEMS}
+                         for s in ork_vs_ras.sim_names(res) if ork_vs_ras.mismatches(res, s)}
+        if entry["lines"]["metric"] or entry["sims"]:
+            out.append(entry)
+    return out
 
 
 # ----------------------------------------------------------------------------
@@ -1571,23 +1602,16 @@ SITE_HTML = r"""<!doctype html>
 <script src="https://cdn.plot.ly/plotly-basic-2.35.2.min.js" charset="utf-8"></script>
 <style>
   :root { color-scheme: light dark; --bg:#fff; --fg:#1f2328; --muted:#59636e; --card:#f6f8fa; --line:#d0d7de;
-          --up:#1a7f37; --down:#cf222e; --flat:#8c959f; --accent:#0969da; --hover:#eaeef2; --errbg:#cf222e; --errline:#82071e; }
+          --up:#1a7f37; --down:#cf222e; --flat:#8c959f; --accent:#0969da; --hover:#eaeef2; --warn:#9a6700; }
   @media (prefers-color-scheme: dark) { :root { --bg:#0d1117; --fg:#e6edf3; --muted:#9198a1; --card:#161b22; --line:#30363d;
-          --up:#3fb950; --down:#f85149; --flat:#6e7681; --accent:#58a6ff; --hover:#21262d; --errbg:#b62324; --errline:#f85149; } }
+          --up:#3fb950; --down:#f85149; --flat:#6e7681; --accent:#58a6ff; --hover:#21262d; --warn:#d29922; } }
   * { box-sizing:border-box; }
   html, body { height:100%; }
   body { margin:0; display:flex; flex-direction:column; overflow:hidden; background:var(--bg); color:var(--fg); font:14px/1.45 -apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif; }
-  .bigerror { flex:none; position:relative; background:var(--errbg); color:#fff; padding:14px 56px 16px 20px; border-bottom:4px solid var(--errline); }
-  .bigerror[hidden] { display:none; }
-  .bigerror #be-close { position:absolute; top:8px; right:12px; border:0; background:transparent; color:#fff; font-size:30px; line-height:1; cursor:pointer; padding:0 6px; }
   .skipnote { flex:none; display:flex; gap:12px; align-items:flex-start; background:#fff4d6; color:#3d2e00; border-bottom:2px solid #d29922; padding:8px 16px; font-size:14px; }
   .skipnote[hidden] { display:none; }
   .skipnote .sn-text { flex:1; } .skipnote a { color:inherit; font-weight:600; }
   .skipnote button { flex:none; border:0; background:transparent; color:inherit; font-size:20px; line-height:1; cursor:pointer; padding:0 4px; }
-  .bigerror .be-title { font-size:30px; font-weight:800; letter-spacing:.03em; text-transform:uppercase; margin-right:14px; }
-  .bigerror .be-sub { font-size:17px; opacity:.95; }
-  .bigerror ul { margin:8px 0 6px 22px; padding:0; } .bigerror li { font-size:18px; font-weight:600; margin:4px 0; }
-  .bigerror a { color:#fff; font-size:15px; font-weight:600; text-decoration:underline; }
   header { flex:none; padding:12px 16px; border-bottom:1px solid var(--line); display:flex; flex-wrap:wrap; gap:6px 16px; align-items:baseline; }
   header h1 { font-size:18px; margin:0; } header .sub { color:var(--muted); font-size:13px; }
   .hctl { margin-left:auto; display:flex; flex-wrap:wrap; gap:6px 16px; align-items:baseline; }   /* units and stability stay together when the header wraps */
@@ -1597,6 +1621,8 @@ SITE_HTML = r"""<!doctype html>
   main.frame { padding:0; overflow:hidden; }
   main.frame iframe { flex:1 1 auto; width:100%; height:100%; border:0; display:block; background:var(--bg); }
   .framemsg { margin:24px 16px; color:var(--muted); }
+  main > section > .vehbar { flex:none; margin:0; padding:8px 16px 6px; border-bottom:1px solid var(--line); }
+  main > section > #vehframe { flex:1 1 auto; min-height:0; display:flex; }
   nav { border-right:1px solid var(--line); background:var(--card); padding:10px 8px; overflow:auto; }
   main { padding:14px 16px 24px; min-width:0; min-height:0; overflow:auto; display:flex; flex-direction:column; }
   main > section { display:flex; flex-direction:column; flex:1; min-height:0; }
@@ -1608,15 +1634,16 @@ SITE_HTML = r"""<!doctype html>
   .design > .head .caret { width:14px; color:var(--muted); font-size:11px; transition:transform .12s; }
   .design.closed > .head .caret { transform:rotate(-90deg); }
   .design.closed > .sims { display:none; }
-  .design > .head .name { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-  .design > .head .mini { color:var(--muted); font-size:11px; font-weight:400; }
+  .design > .head .name { flex:0 1 auto; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .rasinfo { flex:none; color:var(--warn); font-size:15px; line-height:1; cursor:help; }
+  .design > .head .mini { margin-left:auto; color:var(--muted); font-size:11px; font-weight:400; }
   .sims { padding-left:18px; }
   .sim { display:flex; align-items:center; gap:7px; padding:4px 6px; border-radius:6px; cursor:pointer; }
   .sim:hover { background:var(--hover); }
   .sim input { margin:0; accent-color:var(--accent); }
   .sim .swatch { width:10px; height:10px; border-radius:3px; background:var(--line); flex:none; }
-  .sim .label { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-  .sim .val { color:var(--muted); font-size:12px; font-variant-numeric:tabular-nums; }
+  .sim .label { flex:0 1 auto; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .sim .val { margin-left:auto; color:var(--muted); font-size:12px; font-variant-numeric:tabular-nums; }
   .sim .val.up { color:var(--up); } .sim .val.down { color:var(--down); }
   .navtools { display:flex; gap:8px; align-items:center; padding:2px 6px 10px; } .navtools .lbl { margin:0; }
   .navtools button, .row button, .row label { font:inherit; font-size:12px; }
@@ -1682,19 +1709,13 @@ SITE_HTML = r"""<!doctype html>
 </style>
 </head>
 <body>
-<div class="bigerror" id="bigerror" role="alert" hidden>
-  <button type="button" id="be-close" aria-label="Hide this error" title="Hide this error">&times;</button>
-  <div><span class="be-title">Error</span><span class="be-sub" id="be-sub"></span></div>
-  <ul id="be-list"></ul>
-  <a id="be-link" target="_blank" rel="noopener" hidden>See what went wrong in the build</a>
-</div>
 <div class="skipnote" id="skipnote" role="status" hidden>
   <div class="sn-text" id="sn-text"></div>
   <button type="button" id="sn-close" aria-label="Hide this note" title="Hide this note">&times;</button>
 </div>
 <header>
   <h1>Rocket performance</h1>
-  <div class="tabs"><button id="tab-history">History</button><button id="tab-flight">Flight plots</button><button id="tab-changelog">Changelog</button><button id="tab-predictions">JARVIS predictions</button><button id="tab-vision">VISION</button><button id="tab-edith" hidden>EDITH</button></div>
+  <div class="tabs"><button id="tab-history">History</button><button id="tab-flight">Flight plots</button><button id="tab-changelog">Changelog</button><button id="tab-predictions">JARVIS predictions</button><button id="tab-vision">VISION</button><button id="tab-vehicles">Vehicles (demo)</button><button id="tab-edith" hidden>EDITH</button></div>
   <span class="sub" id="sub"></span>
   <span class="hctl">
     <label class="sub" id="units-label">units <select id="units"><option value="metric">metric (m, m/s, kPa)</option><option value="imperial">imperial (ft, ft/s, psi)</option></select></label>
@@ -1726,6 +1747,10 @@ SITE_HTML = r"""<!doctype html>
    </section>
    <section id="view-predictions" hidden></section>
    <section id="view-vision" hidden></section>
+   <section id="view-vehicles" hidden>
+    <div class="row vehbar"><span class="lbl">Demo</span><select id="vehsel"></select><span class="lbl">Four ways of showing a vehicle's geometry as it is in its OpenRocket file, for review. Static snapshots of the designs on 2026-10-26; not rebuilt on push yet.</span></div>
+    <div id="vehframe"></div>
+   </section>
    <section id="view-edith" hidden></section>
   </main>
 </div>
@@ -1747,9 +1772,11 @@ for (const [file, sims] of Object.entries(DATA.designs)) for (const [sim, rows] 
 const VIEWS = [['abs', 'Absolute'], ['dline', 'Δ line'], ['dbar', 'Δ bars']];
 const DEFAULTS = () => ({ metric: DATA.metrics[0].key, view: 'abs', units: DATA.default_units || 'metric', stab: DATA.default_stability || 'cal',
                           fx: 'altitude', fys: [{ key: 'stability', side: 'l' }], fapo: true });   // fys: Y variables in order, side l|r
-const state = Object.assign(DEFAULTS(), { sel: new Set(), tab: 'history', fprev: false, jarvis: false, openrocket: true });   // Jarvis's lines are off until asked for
+const state = Object.assign(DEFAULTS(), { sel: new Set(), tab: 'history', fprev: false, jarvis: false, openrocket: true, veh: 'sideview' });   // Jarvis's lines are off until asked for
 const FVARS = DATA.flight_vars || {};
-const FRAMES = { predictions: 'predictions/index.html', vision: 'predictions/viewer/index.html', edith: 'predictions/edith/index.html' };   // pages shown inside this one
+const FRAMES = { predictions: 'predictions/index.html', vision: 'predictions/viewer/index.html', edith: 'predictions/edith/index.html', vehicles: 'vehicles/' };   // pages shown inside this one
+// the Vehicles tab: static demo pages (tools/openrocket/vehicle_demo, copied to site/vehicles/), chosen with a dropdown
+const VEHICLE_DEMOS = [['sideview', 'Side view drawing'], ['specsheet', 'Spec sheet'], ['tree', 'Component tree'], ['threed', '3D viewer']];
 // EDITH (the many-flight simulation) is only built for the EDITH branch of flight_sim, so its tab stays hidden until its page is there (see showEdithTab)
 // Y variables travel in the URL as 'altitude,velocity_total:r' (':r' = right axis)
 const parseFys = s => s.split(',').map(x => { const [key, side] = x.split(':'); return { key, side: side === 'r' ? 'r' : 'l' }; }).filter(f => FVARS[f.key]);
@@ -1796,7 +1823,8 @@ function readHash() {
   state.view = VIEWS.some(v => v[0] === p.get('view')) ? p.get('view') : (p.get('delta') === '1' ? 'dline' : 'abs');
   if (p.get('units') === 'metric' || p.get('units') === 'imperial') state.units = p.get('units');
   if (p.get('stab') === 'cal' || p.get('stab') === 'pct') state.stab = p.get('stab');
-  state.tab = ['flight', 'changelog', 'predictions', 'vision', 'edith'].includes(p.get('tab')) ? p.get('tab') : 'history';
+  state.tab = ['flight', 'changelog', 'predictions', 'vision', 'edith', 'vehicles'].includes(p.get('tab')) ? p.get('tab') : 'history';
+  if (VEHICLE_DEMOS.some(d => d[0] === p.get('veh'))) state.veh = p.get('veh');
   if (FVARS[p.get('fx')]) state.fx = p.get('fx');
   if (p.has('fy')) { const fys = parseFys(p.get('fy')); if (FVARS[p.get('fy2')]) fys.push({ key: p.get('fy2'), side: 'r' }); state.fys = fys; }   // fy2: old links
   if (p.has('apo')) state.fapo = p.get('apo') !== '0';
@@ -1811,6 +1839,7 @@ function readHash() {
 function writeHash() {
   const p = new URLSearchParams(), d = DEFAULTS();
   p.set('tab', state.tab);
+  if (state.tab === 'vehicles' && state.veh !== 'sideview') p.set('veh', state.veh);
   if (state.units !== d.units) p.set('units', state.units);
   if (state.stab !== d.stab) p.set('stab', state.stab);
   if (state.tab === 'flight') {
@@ -1831,6 +1860,25 @@ function assignColors() { colorOf.clear(); let i = 0; for (const a of ALL) if (s
 
 // ---- sidebar tree ----
 const nav = document.getElementById('nav');
+// what disagrees with the RASAero model (DATA.rasaero, ork_vs_ras.py when the site was built) gets an (i) after its
+// name: a design for its shape and fins, a simulation for its launch mass and CG. Hovering it lists what differs, in
+// the units chosen above.
+const rasIcons = new Map();   // design file, or simulation id -> { el, ras, lines: {metric, imperial} }
+function rasOf(file) { return (DATA.rasaero || []).find(p => p && p.ork === file) || null; }
+function rasLines(p, sim) {   // a motor_variants simulation ("best [85%]") has the lines of the simulation it runs
+  const by = sim == null ? p && p.lines : p && p.sims && (p.sims[sim] || p.sims[sim.replace(/ \[[^\]]*\]$/, '')]);
+  return by && (by.metric || []).length ? by : null;
+}
+function rasIcon(key, p, lines, what) {
+  const el = document.createElement('span'); el.className = 'rasinfo'; el.textContent = 'ⓘ'; el.tabIndex = 0;
+  el.setAttribute('aria-label', what + ' differs from its RASAero model');
+  el.onclick = e => { e.preventDefault(); e.stopPropagation(); };   // neither folds the design nor ticks the simulation
+  rasIcons.set(key, { el, ras: p, lines }); return el;
+}
+function rasTitle(o) {
+  return 'Differs from its RASAero model ' + String(o.ras.rasaero).split('/').pop() + ':\n'
+    + (o.lines[state.units] || o.lines.metric).map(t => '• ' + t).join('\n');
+}
 function buildNav() {
   nav.innerHTML = '';
   const tools = document.createElement('div'); tools.className = 'navtools';
@@ -1842,10 +1890,11 @@ function buildNav() {
     const head = document.createElement('div'); head.className = 'head';
     const caret = document.createElement('span'); caret.className = 'caret'; caret.textContent = '▼';
     const name = document.createElement('span'); name.className = 'name'; name.textContent = short(file); name.title = file;
+    const ras = rasOf(file), shape = rasLines(ras), info = shape ? [rasIcon(file, ras, shape, 'This design')] : [];
     const mini = document.createElement('span'); mini.className = 'mini'; mini.textContent = `${Object.keys(sims).length}`;
     const all = document.createElement('button'); all.textContent = 'all'; all.title = 'Select every simulation of this design';
     all.onclick = e => { e.stopPropagation(); const ids = ALL.filter(a => a.file === file).map(a => a.id); const every = ids.every(id => state.sel.has(id)); ids.forEach(id => every ? state.sel.delete(id) : state.sel.add(id)); update(); };
-    head.append(caret, name, mini, all); head.onclick = () => d.classList.toggle('closed');
+    head.append(caret, name, ...info, mini, all); head.onclick = () => d.classList.toggle('closed');
     const list = document.createElement('div'); list.className = 'sims';
     for (const [sim, rows] of Object.entries(sims)) {
       const id = `${file}|${sim}`;
@@ -1855,7 +1904,8 @@ function buildNav() {
       const sw = document.createElement('span'); sw.className = 'swatch';
       const lab = document.createElement('span'); lab.className = 'label'; lab.textContent = lab.title = simName(file, sim);
       const val = document.createElement('span'); val.className = 'val';
-      row.append(cb, sw, lab, val); list.appendChild(row);
+      const mass = rasLines(ras, sim);
+      row.append(cb, sw, lab, ...(mass ? [rasIcon(id, ras, mass, 'This simulation')] : []), val); list.appendChild(row);
     }
     d.append(head, list); nav.appendChild(d);
   }
@@ -1864,6 +1914,7 @@ function navMetric() { return state.tab === 'history' ? state.metric : 'apogee';
 function refreshNav() {
   const key = navMetric(), spec = specOf(key);
   const cap = document.getElementById('navcap'); if (cap) cap.textContent = `latest ${spec.label.toLowerCase()}${spec.unit ? ' (' + spec.unit + ')' : ''}`;
+  for (const o of rasIcons.values()) o.el.title = rasTitle(o);
   for (const row of nav.querySelectorAll('.sim')) {
     const a = ALL.find(x => x.id === row.dataset.id);
     row.querySelector('input').checked = state.sel.has(a.id);
@@ -2311,7 +2362,7 @@ function drawChangelog() {
   box.innerHTML = h || '<p class="legend">No changelog yet: it starts with the second committed version of a design.</p>';
 }
 
-const TABS = { history: 'tab-history', flight: 'tab-flight', changelog: 'tab-changelog', predictions: 'tab-predictions', vision: 'tab-vision', edith: 'tab-edith' };
+const TABS = { history: 'tab-history', flight: 'tab-flight', changelog: 'tab-changelog', predictions: 'tab-predictions', vision: 'tab-vision', vehicles: 'tab-vehicles', edith: 'tab-edith' };
 // Predictions (Jarvis) and Vision (see FRAMES) are pages built by tools/whatif/build_site.py. They open inside this page, in frames, so
 // the tabs above keep working. The frame is made the first time its tab opens, so nothing loads before it is wanted.
 const FRAMES_MISSING = { predictions: 'The Predictions page has not been built yet. It appears here after the next successful run of the GitHub Action on main (see tools/whatif/README.md).',
@@ -2319,38 +2370,6 @@ const FRAMES_MISSING = { predictions: 'The Predictions page has not been built y
                          edith: 'The EDITH page has not been built. EDITH is only built when the repository variable FLIGHT_SIM_REF is EDITH (see tools/whatif/README.md).' };
 const frames = {};
 function frameHash() { return 'embed=1&units=' + state.units + '&stab=' + state.stab; }
-// ---- the big Error bar: a push that broke something (build_status.json, written by the workflow) or a tab that cannot be loaded ----
-const AREAS = { predictions: 'Predictions', vision: 'Vision', edith: 'EDITH', build: 'Predictions and Vision', history: 'History', jarvis: 'Jarvis lines' };
-const SHOWN = { last_good: p => ' Showing the last good version' + (p.since ? ' from ' + p.since : '') + ' instead.',
-                as_built: () => ' There is no earlier version, so this is the new one as built.', none: () => ' There is no earlier version to show.' };
-let BUILD = null;
-const FRAME_ERRORS = {};
-function errorLines() {
-  const out = [];
-  if (BUILD) for (const p of BUILD.problems) {
-    out.push({ area: p.area, text: (AREAS[p.area] || p.area) + ': ' + p.message.trim().replace(/\.+$/, '') + '.' + (SHOWN[p.shown] ? SHOWN[p.shown](p) : '') });
-  }
-  for (const [tab, text] of Object.entries(FRAME_ERRORS)) if (!out.some(o => o.area === tab || o.area === 'build')) out.push({ area: tab, text: AREAS[tab] + ': ' + text });
-  return out;
-}
-// The x hides the bar for exactly these problems in this browser; a different problem (or a later broken push) shows it again.
-const BIGERROR_KEY = 'srt.bigerror.hidden';
-function bigErrorSignature(items) { return (BUILD && BUILD.commit ? String(BUILD.commit) : '') + '|' + items.map(o => o.text).join('\n'); }
-function bigErrorDismissed(sig) { try { return localStorage.getItem(BIGERROR_KEY) === sig; } catch (e) { return false; } }
-function renderBigError() {
-  const box = document.getElementById('bigerror'), list = document.getElementById('be-list'), link = document.getElementById('be-link'), items = errorLines();
-  const sig = bigErrorSignature(items);
-  box.hidden = !items.length || bigErrorDismissed(sig); list.innerHTML = '';
-  document.getElementById('be-close').onclick = () => { box.hidden = true; try { localStorage.setItem(BIGERROR_KEY, sig); } catch (e) { /* not kept */ } };
-  for (const o of items) { const li = document.createElement('li'); li.textContent = o.text; list.appendChild(li); }
-  document.getElementById('be-sub').textContent = BUILD && BUILD.commit ? 'The latest push (' + String(BUILD.commit).slice(0, 7) + ') broke something.' : '';
-  link.hidden = !(BUILD && BUILD.run_url); if (BUILD && BUILD.run_url) link.href = BUILD.run_url;
-}
-function setBuildStatus(s) { BUILD = s && Array.isArray(s.problems) && s.problems.length ? s : null; renderBigError(); }
-function loadBuildStatus() {
-  if (typeof fetch !== 'function') return;
-  try { fetch('build_status.json', { cache: 'no-store' }).then(r => r.ok ? r.json() : null).then(setBuildStatus).catch(() => {}); } catch (e) { /* no status file: nothing to report */ }
-}
 // ---- the amber note: this push's design change was too small to fly the Predictions, VISION and EDITH again ----
 // (predictions_skipped.json, written by tools/whatif/build_site.py). The x hides it for this push in this browser.
 function showSkipNote(s) {
@@ -2372,7 +2391,6 @@ function loadSkipNote() {
 function frameMissing(tab) {
   const holder = document.getElementById('view-' + tab); holder.innerHTML = ''; delete frames[tab];
   const d = document.createElement('p'); d.className = 'framemsg'; d.textContent = FRAMES_MISSING[tab]; holder.appendChild(d);
-  FRAME_ERRORS[tab] = 'the page is missing (404), so it cannot be shown.'; renderBigError();
 }
 function syncFrame(name) {   // units and stability are chosen in this page's header; pass them on to the frame
   const f = frames[name]; if (!f || !f.loaded) return;
@@ -2383,7 +2401,21 @@ function syncFrame(name) {   // units and stability are chosen in this page's he
   } catch (e) { /* a frame we may not look into (a file opened from disk): it keeps its own choice */ }
 }
 const SYNCED = ['predictions', 'edith'];   // the framed pages that follow the units chosen above
+function showVehicleDemo() {   // the dropdown picks which demo page sits in the frame
+  const sel = document.getElementById('vehsel');
+  if (!sel.children.length) {
+    for (const [key, name] of VEHICLE_DEMOS) { const o = document.createElement('option'); o.value = key; o.textContent = name; sel.appendChild(o); }
+    sel.onchange = () => { state.veh = sel.value; update(); };
+  }
+  sel.value = state.veh;
+  const src = FRAMES.vehicles + state.veh + '.html', holder = document.getElementById('vehframe');
+  if (frames.vehicles && frames.vehicles.dataset.src === src) return;
+  holder.innerHTML = '';
+  const f = document.createElement('iframe'); f.title = 'Vehicle demo: ' + VEHICLE_DEMOS.find(d => d[0] === state.veh)[1]; f.src = src; f.dataset.src = src;
+  frames.vehicles = f; holder.appendChild(f);
+}
 function showFrame(tab) {
+  if (tab === 'vehicles') return showVehicleDemo();
   if (frames[tab]) { if (SYNCED.includes(tab)) syncFrame(tab); return; }
   const holder = document.getElementById('view-' + tab); holder.innerHTML = '';
   const f = document.createElement('iframe');
@@ -2421,7 +2453,7 @@ function showEdithTab() {
   if (typeof fetch !== 'function') return;
   try { fetch(FRAMES.edith, { method: 'HEAD' }).then(r => { if (r.ok) show(); }).catch(() => {}); } catch (e) { /* no network: no EDITH tab */ }
 }
-readHash(); buildNav(); update(); loadJarvis(); loadBuildStatus(); loadSkipNote(); showEdithTab();
+readHash(); buildNav(); update(); loadJarvis(); loadSkipNote(); showEdithTab();
 window.addEventListener('hashchange', () => { readHash(); update(); });
 </script>
 </body>
@@ -2430,7 +2462,7 @@ window.addEventListener('hashchange', () => { readHash(); update(); });
 
 
 def write_site(series: dict, site_dir: Path, units: str, repo_url: str, files_versions: dict, stability: str = "cal",
-               changelog: dict = None):
+               changelog: dict = None, rasaero: list = None):
     """A self-contained index.html (+ data.json) with interactive charts of every design's history.
     Values are emitted in SI with both unit systems' specs, and both stability forms (calibers and
     % of length); the page converts and switches client-side."""
@@ -2491,12 +2523,18 @@ def write_site(series: dict, site_dir: Path, units: str, repo_url: str, files_ve
         "flights": flights,            # simulation id -> data script with the full flight time series
         "flight_vars": flight_vars,    # variable key -> {label, SI unit}
         "changelog": changelog or {},  # design file -> [entry, ...] newest first (ork_diff + optional narration)
+        "rasaero": rasaero or [],      # designs that disagree with their RASAero model (rasaero_checks): the (i) in the list
     }
     site_dir.mkdir(parents=True, exist_ok=True)
     data = json.dumps(payload).replace("</", "<\\/")
     (site_dir / "index.html").write_text(SITE_HTML.replace("__DATA__", data), encoding="utf-8")
     (site_dir / "data.json").write_text(json.dumps(payload, indent=1), encoding="utf-8")
     (site_dir / ".nojekyll").write_text("", encoding="utf-8")
+    demo = Path(__file__).resolve().parent / "vehicle_demo"   # the Vehicles tab: static demo pages, copied as they are
+    if demo.is_dir():
+        (site_dir / "vehicles").mkdir(exist_ok=True)
+        for f in demo.glob("*.html"):
+            shutil.copy(f, site_dir / "vehicles" / f.name)
     for icon in SITE_ICONS.iterdir():   # the browser-tab icon and the home-screen icons the page links to
         if icon.is_file():
             shutil.copyfile(icon, site_dir / icon.name)

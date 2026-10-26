@@ -342,7 +342,7 @@ jobs:
             pip install ./flight_sim_src
             python tools/whatif/build_site.py --config aero_modeling/whatif_config.json --site site --notes build_notes.md --cache .predictions_cache --since "$SINCE" \
               --or-results or_ci_results/results.json --commit "${{ github.sha }}" --rerun-url "$RERUN_URL" $REBUILD $EDITH
-          } 2>&1 | tee build_log.txt     # the last line it printed goes into the red bar and the commit comment
+          } 2>&1 | tee build_log.txt     # the last line it printed goes into the run's error and the commit comment
 
       # ---- Real-browser check of the built site, before it goes live ----
       # Opens the site in Chromium and clicks through History, Predictions, Vision and, when EDITH is on, EDITH (tools/whatif/tests/browser_test.py).
@@ -379,8 +379,8 @@ jobs:
 
       # ---- If this push broke Predictions or Vision, the site keeps showing the last good ones ----
       # Takes the Predictions page and Vision that are live now and puts them in the site in place of the broken
-      # new ones, and writes build_status.json, which makes the History page show a large red Error bar at the top
-      # saying what broke (tools/whatif/site_status.py). The site is still published. A problem in the History
+      # new ones, and writes build_status.json for the JARVIS message and the commit comment; the site shows no bar
+      # (tools/whatif/site_status.py). The site is still published. A problem in the History
       # tab itself fails this step: nothing is published, and the site that is live now stays as it is.
       # LIVE_SITE_URL is an optional repository variable, for a site that is not at <owner>.github.io/<repo>.
       - name: Keep the last good Predictions, Vision and EDITH if this push broke them (main only)

@@ -75,7 +75,7 @@ function run(params) {
   global.location = { hash: '#' + new URLSearchParams(params).toString() };
   requested.length = 0; calls.length = 0; simRows = [];
   for (const k of Object.keys(els)) delete els[k];
-  eval(js + ';globalThis.__P = { state, addY, flipY, removeY, exportCsv, csvText, update, stabSel, unitSel, simLabel, fvar, ALL, frames, FRAMES, syncFrame, frameMissing, setJarvis, setBuildStatus };');
+  eval(js + ';globalThis.__P = { state, addY, flipY, removeY, exportCsv, csvText, update, stabSel, unitSel, simLabel, fvar, ALL, frames, FRAMES, syncFrame, frameMissing, setJarvis, rasIcons };');
   P = globalThis.__P;
   for (const src of [...requested]) eval(fs.readFileSync(path.join(site, src), 'utf8'));   // what the browser's <script> tags do
   return calls[calls.length - 1];
@@ -412,49 +412,35 @@ test('Jarvis points exist only for the commits it flew', () => {
   const jT = last().traces[1]; assert.strictEqual(jT.y.length, 1); assert.strictEqual(jT.customdata[0].sha, shas[0]);
 });
 
-console.log('the Error bar');
-const problem = (area, extra) => Object.assign({ area, message: 'a script stopped (boom)', shown: 'last_good', since: '2026-10-01' }, extra);
-const barText = () => els['be-list'].children.map(li => li.textContent);
-test('a failed build puts a large Error bar at the top, saying what broke and what is shown instead', () => {
-  run({ tab: 'history', metric: 'apogee', view: 'abs', sel: enc([A]) });
-  assert(html.includes('id="bigerror" role="alert" hidden'), 'the bar starts hidden: no bar when nothing is wrong');
-  P.setBuildStatus({ commit: 'abcdef0123456789', run_url: 'https://example.test/run/1', problems: [problem('predictions'), problem('vision', { shown: 'none' })] });
-  assert.strictEqual(els.bigerror.hidden, false);
-  const t = barText(); assert.strictEqual(t.length, 2);
-  assert(t[0].startsWith('Predictions: a script stopped (boom).') && t[0].includes('last good version from 2026-10-01'), t[0]);
-  assert(t[1].startsWith('Vision:') && t[1].includes('no earlier version'), t[1]);
-  assert(els['be-sub'].textContent.includes('abcdef0'), els['be-sub'].textContent);
-  assert.strictEqual(els['be-link'].hidden, false); assert.strictEqual(els['be-link'].href, 'https://example.test/run/1');
+console.log('OpenRocket vs RASAero');
+test('there is no red bar at all, whatever broke', () => {
+  assert(!html.includes('bigerror') && !html.includes('build_status.json'), 'the page still has the red Error bar or reads build_status.json');
+  run({ tab: 'predictions', sel: enc([A]) }); P.frameMissing('predictions');
+  assert(!Object.keys(els).includes('bigerror'), 'a missing tab must not raise a bar');
 });
-test('the bar goes away for a clean status, a missing one or rubbish', () => {
-  run({ tab: 'history', sel: enc([A]) });
-  for (const clean of [null, {}, { problems: [] }, { problems: 'x' }, { ok: true }]) {
-    P.setBuildStatus({ problems: [problem('vision')] }); assert.strictEqual(els.bigerror.hidden, false);
-    P.setBuildStatus(clean); assert.strictEqual(els.bigerror.hidden, true); assert.strictEqual(barText().length, 0);
-  }
+test('a design whose shape differs from its RASAero model gets an (i) after its name, and hovering it says what differs', () => {
+  run({ tab: 'history', units: 'imperial', sel: enc([A]) });
+  const fa = A.split('|')[0], fb = B.split('|')[0];
+  assert(P.rasIcons.has(fa) && !P.rasIcons.has(fb), 'only the design whose shape differs has the (i) on its name');
+  const icon = P.rasIcons.get(fa).el;
+  assert.strictEqual(icon.textContent, 'ⓘ'); assert.strictEqual(icon.className, 'rasinfo');
+  assert(icon.title.includes('A.CDX1') && icon.title.includes('204.69 in') && !icon.title.includes('launch mass'), icon.title);
+  P.state.units = 'metric'; P.update();
+  assert(icon.title.includes('5199.1 mm') && !icon.title.includes(' in,'), 'the hover text follows the units: ' + icon.title);
+  let stopped = 0; icon.onclick({ preventDefault() { stopped++; }, stopPropagation() { stopped++; } });
+  assert.strictEqual(stopped, 2, 'clicking the (i) must not fold the design open or shut');
 });
-test('a tab whose page is missing (404) raises the bar too, once', () => {
-  run({ tab: 'predictions', sel: enc([A]) });
-  P.frameMissing('predictions');
-  assert.strictEqual(els.bigerror.hidden, false); assert(barText()[0].startsWith('Predictions: the page is missing (404)'), barText()[0]);
-  P.setBuildStatus({ problems: [problem('predictions', { shown: 'none', message: 'it could not be built' })] });
-  assert.strictEqual(barText().length, 1, 'the build status already says it; the same tab is not listed twice');
-  assert(barText()[0].includes('could not be built'));
-});
-test('a failed build, and a page kept as built, are worded for what was shown', () => {
-  run({ tab: 'history', sel: enc([A]) });
-  P.setBuildStatus({ problems: [problem('build', { message: 'the build failed.' })] });
-  assert(barText()[0].startsWith('Predictions and Vision: the build failed. Showing the last good version from 2026-10-01 instead.'), barText()[0]);
-  P.frameMissing('predictions'); assert.strictEqual(barText().length, 1, 'the build problem already covers both tabs');
-  P.setBuildStatus({ problems: [problem('vision', { shown: 'as_built' })] });
-  assert(barText().some(t => t.includes('this is the new one as built')), barText().join('|'));
-  P.setBuildStatus({ problems: [problem('jarvis', { shown: undefined, message: 'the dashed lines did not draw.' })] });
-  assert(barText().includes('Jarvis lines: the dashed lines did not draw.'), barText().join('|'));
-});
-test('the text of an error is shown as text, never as markup', () => {
-  run({ tab: 'history', sel: enc([A]) });
-  P.setBuildStatus({ problems: [problem('predictions', { message: '<img src=x onerror=alert(1)>' })] });
-  assert(barText()[0].includes('<img src=x'), barText()[0]); assert.strictEqual(els['be-list'].innerHTML, '', 'built from elements with textContent, not innerHTML');
+test('a simulation whose launch mass or CG differs gets its own (i), the others none', () => {
+  run({ tab: 'history', units: 'imperial', sel: enc([A]) });
+  const fa = A.split('|')[0], fb = B.split('|')[0];
+  const sims = [...P.rasIcons.keys()].filter(k => k.includes('|')).sort();
+  assert.deepStrictEqual(sims, [`${fa}|best`, `${fb}|Simulation 1`].sort(), sims.join(', '));
+  const o = P.rasIcons.get(`${fa}|best`), row = simRows.find(r => r.dataset.id === `${fa}|best`);
+  assert(row.children.includes(o.el), 'the (i) sits in the simulation row');
+  assert(row.children.indexOf(o.el) === row.children.findIndex(c => c.className === 'label') + 1, 'right after the name');
+  assert(o.el.title.includes('158.68 lb') && !o.el.title.includes('overall length'), o.el.title);
+  let ticked = true; o.el.onclick({ preventDefault() { ticked = false; }, stopPropagation() {} });
+  assert(!ticked, 'clicking the (i) must not tick the simulation');
 });
 
 test('both tabs are always there, and each opens a frame inside this page', () => {
@@ -473,6 +459,21 @@ test('both tabs are always there, and each opens a frame inside this page', () =
   run({ tab: 'history', metric: 'apogee', view: 'abs', sel: enc([A]) });
   assert(!els.layout.classList.contains('wide') && !els.main.classList.contains('frame'), 'the history tab has its list back');
   assert.strictEqual(els['units-label'].hidden, false); assert.strictEqual(Object.keys(P.frames).length, 0, 'nothing is loaded before its tab is opened');
+});
+test('the Vehicles demo tab frames the chosen demo page; the dropdown and the URL switch it', () => {
+  run({ tab: 'vehicles', sel: enc([A]) });
+  assert(html.includes('id="tab-vehicles"'));
+  assert.strictEqual(els['view-vehicles'].hidden, false); assert.strictEqual(els['view-history'].hidden, true);
+  assert(els.layout.classList.contains('wide') && els.main.classList.contains('frame'), 'fills the page like the other framed tabs');
+  assert.deepStrictEqual(els.vehsel.children.map(o => o.value), ['sideview', 'specsheet', 'tree', 'threed']);
+  assert.strictEqual(els.vehsel.value, 'sideview');
+  assert.strictEqual(els.vehframe.children.length, 1); assert.strictEqual(els.vehframe.children[0].src, 'vehicles/sideview.html');
+  els.vehsel.value = 'threed'; els.vehsel.onchange();
+  assert.strictEqual(els.vehframe.children[0].src, 'vehicles/threed.html'); assert(/tab=vehicles/.test(hash) && /veh=threed/.test(hash), hash);
+  run({ tab: 'vehicles', veh: 'tree', sel: enc([A]) });
+  assert.strictEqual(els.vehframe.children[0].src, 'vehicles/tree.html'); assert.strictEqual(els.vehsel.value, 'tree');
+  run({ tab: 'vehicles', veh: 'nonsense', sel: enc([A]) });
+  assert.strictEqual(els.vehframe.children[0].src, 'vehicles/sideview.html', 'an unknown demo name falls back to the first');
 });
 test('units and stability chosen in this page reach the Predictions frame', () => {
   run({ tab: 'predictions', units: 'imperial', stab: 'pct', sel: enc([A]) });

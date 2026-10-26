@@ -9,10 +9,11 @@ the report of ``tools/whatif/tests/browser_test.py``, and decides what is wrong.
 Predictions or Vision it then:
 
 * downloads the page that is live now (the last good one), and puts it in the site in place of the new one,
-  with a large red Error bar added at the top of the page (it hides itself when the page is inside the History
-  page, which shows its own bar); if there is no earlier page, the new one is kept as built;
-* writes ``build_status.json`` into the site. The History page reads it and shows the big Error bar at the top
-  of every tab, saying what broke and what is shown instead.
+  marked (invisibly) with the date it was last good; if there is no earlier page, the new one is kept as built;
+* writes ``build_status.json`` into the site, for the JARVIS message (jarvis_note.py) and the commit comment.
+
+Nothing on the site shows a build problem: it is reported in the run (an error annotation and the job summary) and
+in the commit comment. The site has no red bar at all.
 
 EDITH (the Monte Carlo simulation, its own page under ``predictions/edith/``) is handled the same way, but only
 when ``--edith`` says this build was meant to make it. Without the flag nothing about EDITH is checked or put back,
@@ -164,25 +165,19 @@ def when(text: str | None) -> str:
 
 
 def banner(text: str, since: str) -> str:
-    """The large Error bar for a page that is shown on its own; it removes itself inside the History page."""
-    style = (
-        "background:#b62324;color:#fff;padding:14px 20px 16px;border-bottom:4px solid #f85149;"
-        "font:700 20px/1.4 -apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;"
-    )
+    """The mark on a page put back from the live site: what broke and since when it is the last good one, in HTML
+    comments only. Nothing is shown on the page."""
+    said = html.escape(text).replace("--", "&#45;&#45;")  # a comment cannot hold "--"
     return (
         "<!--srt-error-start-->"
-        f'<div id="srt-error" role="alert" style="{style}">'
-        '<span style="font-size:30px;letter-spacing:.03em;margin-right:14px;text-transform:uppercase">Error</span>'
-        f"{html.escape(text)}</div>"
-        "<script>(function(){var e=document.getElementById('srt-error');"
-        "try{if(window.top!==window.self)e.remove();}catch(x){e.remove();}})();</script>"
+        f"<!--srt-kept-because:{said}-->"
         f"<!--srt-good-since:{html.escape(since)}-->"
         "<!--srt-error-end-->"
     )
 
 
 def with_banner(page: str, text: str, since: str) -> str:
-    """The page with any earlier Error bar taken out and this one put right after <body>."""
+    """The page with any earlier mark taken out and this one put right after <body>."""
     page = MARK.sub("", page)
     tag = re.search(r"<body[^>]*>", page, re.IGNORECASE)
     block = banner(text, since)

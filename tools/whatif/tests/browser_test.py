@@ -19,8 +19,9 @@ What it checks, in order:
   while there is no EDITH page, and when there is one the tab opens it with its verdict, IREC rules, charts over time
   and picture of every flight path, the units picked in the page reach it, the Predictions page has nothing of EDITH's
   (EDITH's results are only on its own page), and Vision can show the apogee and landing spread of the simulated flights and the landing circles;
-* the big red Error bar at the top is there when the site's ``build_status.json`` says something broke, and when a tab
-  cannot be loaded (a 404, a page that was not built);
+* there is no red bar at the top, even when the site's ``build_status.json`` says something broke (build problems are
+  reported in the run and the commit comment), and every design that differs from its RASAero model has an (i) after
+  its name in the list, whose hover text says what differs;
 * no tab throws a script error or loads a file that is missing.
 
 A page that has not been built is fine unless ``--require-predictions`` (or, for EDITH, ``--require-edith``) is
@@ -29,7 +30,7 @@ any failure. ``--shots DIR`` saves a picture of each tab, for the workflow to ke
 
 ``--report FILE`` writes what failed as JSON, each failure with the area it belongs to (history, predictions, vision,
 edith or jarvis), for ``tools/whatif/site_status.py``: a problem in Predictions or Vision makes the site show their last good
-versions with an Error bar, and a problem in History keeps the site from being published.
+versions (with no bar on the page), and a problem in History keeps the site from being published.
 """
 
 from __future__ import annotations
@@ -263,8 +264,7 @@ def check_predictions(b: Browser, require: bool) -> str:
     if not built:
         assert not require, "the Predictions page should have been built but is not there"
         b.page.wait_for_selector("#view-predictions .framemsg", timeout=10000)
-        b.page.wait_for_function("!document.getElementById('bigerror').hidden", timeout=10000)
-        return "skipped: not built; the page explains that, with the Error bar"
+        return "skipped: not built; the page explains that"
     frame = b.frame("/predictions/index.html")
     frame.wait_for_selector("#plot .main-svg", timeout=30000)
     frame.wait_for_function("document.querySelectorAll('#climb tr').length > 2", timeout=30000)
@@ -304,8 +304,7 @@ def check_vision(b: Browser, require: bool) -> str:
     if not built:
         assert not require, "Vision should have been built but is not there"
         b.page.wait_for_selector("#view-vision .framemsg", timeout=10000)
-        b.page.wait_for_function("!document.getElementById('bigerror').hidden", timeout=10000)
-        return "skipped: not built; the page explains that, with the Error bar"
+        return "skipped: not built; the page explains that"
     frame = b.frame("/predictions/viewer/index.html")
     frame.wait_for_selector("canvas", timeout=30000)
     frame.wait_for_function("window.__viewer !== undefined", timeout=30000)
@@ -434,30 +433,22 @@ def check_no_problems(b: Browser, area: str) -> str:
     return ""
 
 
-def check_error_bar(b: Browser) -> str:
-    """The big Error bar follows build_status.json: shown with what broke when there is a problem, hidden when not."""
-    status = b.site / "build_status.json"
-    problems = json.loads(status.read_text(encoding="utf-8")).get("problems", []) if status.is_file() else []
-    b.open("tab=history&metric=apogee&view=abs")
-    b.page.wait_for_selector("#hplot .main-svg", timeout=30000)
-    if not problems:
-        b.page.wait_for_timeout(500)  # the status file is asked for as the page opens
-        assert b.page.evaluate("document.getElementById('bigerror').hidden"), "an Error bar is showing but nothing is wrong"
-        return "no bar when all is well"
-    b.page.wait_for_function("!document.getElementById('bigerror').hidden", timeout=10000)
-    text = b.page.evaluate("document.getElementById('bigerror').innerText")
-    assert "error" in text.lower() and problems[0]["message"][:40] in text, f"the Error bar does not say what broke: {text!r}"
-    size = b.page.evaluate("parseFloat(getComputedStyle(document.querySelector('#bigerror .be-title')).fontSize)")
-    assert size >= 24, f"the Error bar's heading is only {size}px"
-    b.shot("error_bar")
-    b.page.click("#be-close")
-    assert b.page.evaluate("document.getElementById('bigerror').hidden"), "the x does not hide the Error bar"
+def check_rasaero_marks(b: Browser) -> str:
+    """No red bar whatever broke; an (i) with hover text after each design that differs from its RASAero model."""
     b.open("tab=history&metric=apogee&view=abs")
     b.page.wait_for_selector("#hplot .main-svg", timeout=30000)
     b.page.wait_for_timeout(500)
-    assert b.page.evaluate("document.getElementById('bigerror').hidden"), "the Error bar came back after the x, for the same problems"
-    b.page.evaluate("localStorage.removeItem('srt.bigerror.hidden')")
-    return f"{len(problems)} problem(s) shown at the top, and the x hides them"
+    assert b.page.evaluate("!document.getElementById('bigerror') && !document.getElementById('srt-error')"), "a red bar is on the page"
+    data = json.loads((b.site / "data.json").read_text(encoding="utf-8"))
+    want = sorted(p["ork"] for p in data.get("rasaero", []) if p.get("lines", {}).get("metric"))
+    icons = b.page.evaluate("[...document.querySelectorAll('#nav .design > .head .rasinfo')].map(i => [i.parentElement.querySelector('.name').title, i.title])")
+    assert sorted(f for f, _ in icons) == want, f"(i) marks on {[f for f, _ in icons]}, expected {want}"
+    sims = b.page.evaluate("[...document.querySelectorAll('#nav .sim .rasinfo')].map(i => [i.parentElement.dataset.id, i.title])")
+    for where, title in icons + sims:
+        assert title.startswith("Differs from its RASAero model") and "OpenRocket" in title, f"{where}: hover text {title!r}"
+    if icons or sims:
+        b.shot("rasaero_mark")
+    return f"no red bar; {len(icons)} design(s) and {len(sims)} simulation(s) marked as differing from RASAero"
 
 
 def run(site: Path, args: argparse.Namespace) -> int:
@@ -488,10 +479,10 @@ def run(site: Path, args: argparse.Namespace) -> int:
         report.check("back on History, the address follows", "history", lambda: check_back_to_history(b))
         for area, what in (("history", "History"), ("predictions", "Predictions"), ("vision", "Vision"), ("edith", "EDITH")):
             report.check(f"no script errors and no missing files in {what}", area, lambda area=area: check_no_problems(b, area))
-        if args.synthetic:  # a made-up failure, to see the Error bar
+        if args.synthetic:  # a made-up failure, which must not put a red bar on the page
             (site / "build_status.json").write_text(json.dumps({"ok": False, "commit": "abcdef0", "run_url": "https://example.test/run", "problems": [
                 {"area": "vision", "message": "the 3D scene looks blank", "shown": "last_good", "since": "2026-10-01 12:00 UTC"}]}), encoding="utf-8")
-        report.check("the Error bar at the top says what broke", "history", lambda: check_error_bar(b))
+        report.check("no red bar, and an (i) on each design that differs from RASAero", "history", lambda: check_rasaero_marks(b))
         browser.close()
     server.shutdown()
     if args.report:

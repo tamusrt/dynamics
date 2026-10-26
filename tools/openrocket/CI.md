@@ -57,6 +57,14 @@ A hybrid modelled as two motors, an ox-tank curve in one body tube and a combust
 }
 ```
 
+**Its RASAero model.** `rasaero` names the `.CDX1` that models the same rocket. When the History site is built, `ork_vs_ras.py` compares the two (outer shape with touching same-diameter tubes merged, fins by absolute station, each simulation's fully loaded launch mass and CG against the closest RASAero simulation row, or the one `rasaero_sim` names by motor). The site puts an ⓘ after the design's name when its shape or fins disagree, and after a simulation's name when its launch mass or CG does; hovering it lists what differs. RASAero does not compute the CG: it is typed in from OpenRocket's at t=0 for that motor, so a difference means one of the two was not updated. Run it by hand with `python tools/openrocket/ork_vs_ras.py X.ork X.CDX1 --units imperial --table`. OpenRocket's mass and CG come from the file's stored simulation data, so re-run and save in OpenRocket after a mass change.
+
+```json
+"SOL_INVICTUS/OpenRocket/SOL_4_30.ork": {
+  "rasaero": "SOL_INVICTUS/RasAero/Latest/Invictus_RasAero_4_30.CDX1"
+}
+```
+
 So for a new design flying `IGNIS_2027.rse`: if the motor's designation in the file matches the `.rse` (`2027_Engine` today), nothing needs adding. If not, add the file to the config. Simulation and mount names match case- and whitespace-insensitively. Two simulations that share a flight configuration share a motor, so mapping them to different files will not work as expected. If a base commit predates a motor file, the current file is used for the "before" run and the report says so.
 
 ## Running it locally
@@ -178,4 +186,4 @@ The workflow can also be started from the Actions tab (**Run workflow**) with a 
 
 - GitHub's free plan gives private repos 2,000 Actions minutes a month. A typical run is 2 to 3 minutes (JVM boot plus about 1.5 s per simulation), so budget is not a concern unless designs are pushed dozens of times a day.
 - With `deterministic_wind` off, OpenRocket 24.12's turbulence adds randomness the seed does not control, so numbers differ between runs and even between two loads of the same file.
-- Only OpenRocket. RASAero has no scripting interface.
+- Only OpenRocket is simulated; RASAero has no scripting interface. Its `.CDX1` files are only read, to check them against the `.ork` (`rasaero` above).

@@ -94,7 +94,15 @@ def build(site: Path):
         "lines": {u: [f"**Nose cone** length 0.30 → 0.35 {u}"] for u in or_ci.UNIT_SYSTEMS},
         "rows": {u: [["Nose cone", "length", "0.30", "0.35"]] for u in or_ci.UNIT_SYSTEMS}}
     changelog = {FILE_A: [entry(va[2], va[1], "1 component changed"), entry(va[1], va[0], "Nose cone lengthened")], FILE_B: [entry(vb[1], vb[0], "Motor changed")]}
-    or_ci.write_site(series, site, "imperial", "https://github.com/example/dynamics", files_versions, "pct", changelog)
+    mass = lambda u: [f"launch mass (vs RASAero “CUST”): OpenRocket 158.68 {u}, RASAero 152.00 {u}"]  # noqa: E731
+    rasaero = [  # what rasaero_checks gives: A differs in shape and in one simulation's mass, B only in one simulation's
+        {"ork": FILE_A, "rasaero": "aero_modeling/A/RASAero/A.CDX1",
+         "lines": {"metric": ["overall length: OpenRocket 5199.1 mm, RASAero 5237.2 mm"],
+                   "imperial": ["overall length: OpenRocket 204.69 in, RASAero 206.19 in"]},
+         "sims": {"best": {"metric": mass("kg"), "imperial": mass("lb")}}},
+        {"ork": FILE_B, "rasaero": "aero_modeling/B/RASAero/B.CDX1", "lines": {"metric": [], "imperial": []},
+         "sims": {"Simulation 1": {"metric": mass("kg"), "imperial": mass("lb")}}}]
+    or_ci.write_site(series, site, "imperial", "https://github.com/example/dynamics", files_versions, "pct", changelog, rasaero)
 
 
 def test_current_sims():
@@ -138,6 +146,8 @@ def main() -> int:
         rows_b = data["designs"][FILE_B]["Simulation 1"]
         assert [r["ok"] for r in rows_b] == [True, False], "a failed version must be marked not ok"
         assert len(data["changelog"][FILE_A]) == 2
+        demos = sorted(f.name for f in (site / "vehicles").glob("*.html"))
+        assert demos == ["sideview.html", "specsheet.html", "threed.html", "tree.html"], demos   # the Vehicles tab's static demo pages
         assert data["motors"] == {FILE_A: {"best": "a.rse", "worst": "a.rse"}},             f"each simulation is labelled with the motor file its newest version flew, and only then: {data['motors']}"
         page = (site / "index.html").read_text(encoding="utf-8")
         for icon in ("favicon.ico", "favicon-32x32.png", "favicon-16x16.png", "apple-touch-icon.png", "site.webmanifest"):
