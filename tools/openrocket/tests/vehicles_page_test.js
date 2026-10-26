@@ -111,4 +111,75 @@ const ok = (c, msg) => { assert.ok(c, msg); checks++; };
   ok(d.querySelector('#units button.on').getAttribute('data-u') === 'mm' && d.getElementById('adv').checked, 'controls reflect the hash');
 }
 
+// 5. zoom and pan on the drawing (viewBox based; jsdom has no layout, so the SVG box is stubbed at 1200 px wide, scale 1)
+{
+  const { w, d, errors } = load('');
+  const api = w.vehicleSideview;
+  const svg = () => d.querySelector('#card svg');
+  const vb = () => svg().getAttribute('viewBox').split(/[\s,]+/).map(Number);
+  const near = (a, b, eps) => Math.abs(a - b) <= (eps === undefined ? 0.05 : eps);
+  const fit = vb();
+  const H = 1200 * fit[3] / fit[2];
+  const stub = () => { svg().getBoundingClientRect = () => ({ left: 0, top: 0, right: 1200, bottom: H, width: 1200, height: H }); };
+  stub(); w.dispatchEvent(new w.Event('resize'));
+  ok(near(parseFloat(svg().style.fontSize), 11), 'labels read 11 px at the fitted view: ' + svg().style.fontSize);
+  // client point -> user units for a viewBox v shown in the 1200 x H box (preserveAspectRatio meet)
+  const userAt = (v, x, y) => { const s = Math.min(1200 / v[2], H / v[3]); return [v[0] + (x - (1200 - v[2] * s) / 2) / s, v[1] + (y - (H - v[3] * s) / 2) / s]; };
+  const wheel = (dy, x, y) => { const ev = new w.WheelEvent('wheel', { deltaY: dy, clientX: x, clientY: y, bubbles: true, cancelable: true }); svg().dispatchEvent(ev); return ev; };
+  const before = userAt(fit, 300, 100);
+  const ev = wheel(-100, 300, 100);
+  const z1 = vb();
+  ok(ev.defaultPrevented, 'wheel over the drawing is consumed, so the page does not scroll');
+  ok(near(z1[2], fit[2] / 1.15, 0.1) && near(z1[3], fit[3] / 1.15, 0.1), 'one notch zooms in 1.15x: ' + z1.join(' '));
+  const after = userAt(z1, 300, 100);
+  ok(near(after[0], before[0], 0.1) && near(after[1], before[1], 0.1), 'the point under the cursor stays fixed while zooming');
+  ok(near(parseFloat(svg().style.fontSize) * (1200 / z1[2]), 11, 0.05), 'label text keeps its screen size when zoomed: ' + svg().style.fontSize);
+  ok(/scale\(0\.87/.test(svg().querySelector('.dim polygon[data-tip]').getAttribute('transform')), 'arrowheads are counter-scaled');
+  ok(/vector-effect: non-scaling-stroke/.test(html), 'strokes keep their screen width');
+  for (let i = 0; i < 60; i++) wheel(-100, 600, 100);
+  ok(near(vb()[2], fit[2] / 40, 0.02), 'zoom-in limit 40x: ' + vb()[2]);
+  for (let i = 0; i < 80; i++) wheel(100, 600, 100);
+  ok(near(vb()[2], fit[2] * 2, 0.02), 'zoom-out limit 0.5x: ' + vb()[2]);
+  click(w, d.querySelector('.zoomctl [data-z="fit"]'));
+  ok(fit.every((v, i) => near(vb()[i], v)), 'fit button restores the fitted view');
+  click(w, d.querySelector('.zoomctl [data-z="in"]'));
+  ok(near(vb()[2], fit[2] / 1.15, 0.1) && near(vb()[0] + vb()[2] / 2, fit[0] + fit[2] / 2, 0.1), 'zoom-in button zooms about the centre');
+  click(w, d.querySelector('.zoomctl [data-z="out"]'));
+  ok(fit.every((v, i) => near(vb()[i], v, 0.1)), 'zoom-out button returns to the fitted view');
+  ok(api.state.selected === null, 'overlay buttons do not touch the selection');
+  // drag pans; the click that ends a drag is ignored; a plain click still selects / clears
+  const first = svg().querySelector('[data-id]').getAttribute('data-id');
+  api.select(first, true);
+  svg().dispatchEvent(new w.MouseEvent('mousedown', { button: 0, clientX: 100, clientY: 100, bubbles: true, cancelable: true }));
+  w.dispatchEvent(new w.MouseEvent('mousemove', { clientX: 150, clientY: 120, bubbles: true }));
+  w.dispatchEvent(new w.MouseEvent('mouseup', { button: 0, clientX: 150, clientY: 120, bubbles: true }));
+  click(w, svg());
+  ok(near(vb()[0], fit[0] - 50, 0.1) && near(vb()[1], fit[1] - 20, 0.1), 'drag pans the view: ' + vb().join(' '));
+  ok(api.state.selected === first, 'the click that ends a drag does not change the selection');
+  click(w, svg());
+  ok(api.state.selected === null, 'a plain click on empty space still clears the selection');
+  svg().dispatchEvent(new w.MouseEvent('dblclick', { bubbles: true }));
+  ok(fit.every((v, i) => near(vb()[i], v)), 'double-click on empty space fits');
+  const key = k => d.getElementById('card').dispatchEvent(new w.KeyboardEvent('keydown', { key: k, bubbles: true, cancelable: true }));
+  key('+'); ok(near(vb()[2], fit[2] / 1.15, 0.1), '+ key zooms in');
+  key('0'); ok(near(vb()[2], fit[2]), '0 key fits');
+  // zoom to part from the details head; selecting in the tree does not change the zoom
+  api.select(first, true);
+  const zt = d.querySelector('#detail .zoomto');
+  ok(zt && zt.getAttribute('data-zoom-to') === first, 'details head offers "zoom to part"');
+  click(w, zt);
+  const zp = vb();
+  ok(zp[2] < fit[2] && near(zp[2] / zp[3], fit[2] / fit[3], 0.01), 'zoom to part narrows the view and keeps the aspect');
+  click(w, d.querySelectorAll('#tree .node')[1].querySelector('.name'));
+  ok(vb().every((v, i) => near(v, zp[i])), 'selecting in the tree keeps the zoom');
+  w.dispatchEvent(new w.Event('resize'));
+  ok(vb().every((v, i) => near(v, zp[i])), 'resize keeps a user zoom');
+  api.setUnits('mm');
+  ok(vb().every((v, i) => near(v, zp[i])), 'units change keeps the zoom');
+  ok(!/zoom|view/.test(w.location.hash), 'zoom state is not in the hash: ' + w.location.hash);
+  api.setDesign(KEYS[KEYS.length > 1 ? 1 : 0]);
+  if (KEYS.length > 1) ok(near(vb()[2], 1200) && near(vb()[0], 0), 'design change restores the fitted view');
+  ok(errors.length === 0, 'no errors in zoom tests: ' + errors.map(String).join('; '));
+}
+
 console.log('ok: ' + checks + ' checks passed (' + KEYS.length + ' designs)');

@@ -64,19 +64,28 @@
   /* drawing */
   .stats { color: var(--muted); font-size: 12.5px; margin: 0 0 2px; }
   .stats b { color: var(--fg); font-weight: 500; }
-  #card { overflow-x: auto; }
-  #card svg { display: block; width: 100%; min-width: 760px; height: auto; max-height: calc(100vh - 150px); font-size: 11px; }
+  #card { position: relative; overflow-x: auto; outline: none; }
+  #card:focus-visible { box-shadow: inset 0 0 0 2px var(--accent-soft); }
+  #card.dragging, #card.dragging svg * { cursor: grabbing; }
+  #card svg { display: block; width: 100%; min-width: 760px; height: auto; max-height: calc(100vh - 150px); font-size: 11px; touch-action: none; }
+  .zoomctl { position: absolute; top: 6px; right: 6px; display: flex; flex-direction: column; gap: 3px; opacity: .75; }
+  .zoomctl:hover { opacity: 1; }
+  .zoomctl button { width: 26px; height: 26px; padding: 0; font: inherit; font-size: 15px; line-height: 1; color: var(--muted); background: var(--bg); border: 1px solid var(--line); border-radius: 5px; cursor: pointer; }
+  .zoomctl button:hover { color: var(--fg); }
+  .zoomto { font: inherit; font-size: 12px; color: var(--muted); background: none; border: 1px solid var(--line); border-radius: 5px; padding: 1px 8px; cursor: pointer; }
+  .zoomto:hover { color: var(--fg); }
   .key { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 2px 12px; color: var(--muted); font-size: 11.5px; margin: 0; }
   .key span { display: inline-flex; align-items: center; gap: 4px; }
   .key i { display: inline-block; width: 9px; height: 9px; border-radius: 2px; background: var(--k); opacity: .7; }
-  .body { fill: var(--k); fill-opacity: .18; stroke: var(--k); stroke-width: 1; stroke-opacity: .85; stroke-linejoin: round; cursor: pointer; }
+  .body { fill: var(--k); fill-opacity: .18; stroke: var(--k); stroke-width: 1; stroke-opacity: .85; stroke-linejoin: round; cursor: pointer; vector-effect: non-scaling-stroke; }
   .body.alt { fill-opacity: .30; }
-  .silhouette { fill: none; stroke: var(--fg); stroke-width: 1.4; stroke-linejoin: round; pointer-events: none; }
+  .silhouette { fill: none; stroke: var(--fg); stroke-width: 1.4; stroke-linejoin: round; pointer-events: none; vector-effect: non-scaling-stroke; }
   .centre { stroke: var(--muted); stroke-width: .8; stroke-dasharray: 14 4 2 4; opacity: .7; pointer-events: none; vector-effect: non-scaling-stroke; }
-  .fin { fill: var(--k); fill-opacity: .40; stroke: var(--k); stroke-width: 1.1; stroke-linejoin: round; cursor: pointer; }
-  .fin-hint { fill: var(--k-fin); fill-opacity: .25; stroke: var(--k-fin); stroke-width: .7; stroke-dasharray: 3 2; pointer-events: none; }
-  .struct { fill: var(--k); fill-opacity: .38; stroke: var(--k); stroke-width: .8; cursor: pointer; }
-  .massitem { stroke: var(--k); stroke-width: .8; stroke-dasharray: 3 2; cursor: pointer; }
+  .fin { fill: var(--k); fill-opacity: .40; stroke: var(--k); stroke-width: 1.1; stroke-linejoin: round; cursor: pointer; vector-effect: non-scaling-stroke; }
+  .fin-hint { fill: var(--k-fin); fill-opacity: .25; stroke: var(--k-fin); stroke-width: .7; stroke-dasharray: 3 2; pointer-events: none; vector-effect: non-scaling-stroke; }
+  .struct { fill: var(--k); fill-opacity: .38; stroke: var(--k); stroke-width: .8; cursor: pointer; vector-effect: non-scaling-stroke; }
+  .struct * { vector-effect: non-scaling-stroke; }
+  .massitem { stroke: var(--k); stroke-width: .8; stroke-dasharray: 3 2; cursor: pointer; vector-effect: non-scaling-stroke; }
   .massitem.k-mass { fill: url(#hatch-mass); } .massitem.k-reco { fill: url(#hatch-reco); }
   #hatch-mass line { stroke: var(--k-mass); stroke-width: .8; opacity: .8; } #hatch-reco line { stroke: var(--k-reco); stroke-width: .8; opacity: .8; }
   .body.hl { fill-opacity: .42; stroke: var(--fg); }
@@ -88,7 +97,7 @@
   .body.sel { fill-opacity: .42; }
   .fin.sel, .struct.sel { fill-opacity: .7; }
   .massitem.sel { stroke-dasharray: none; }
-  .selring, .selring * { fill: none; stroke: var(--accent); stroke-width: 2; stroke-linejoin: round; stroke-dasharray: none; pointer-events: none; }
+  .selring, .selring * { fill: none; stroke: var(--accent); stroke-width: 2; stroke-linejoin: round; stroke-dasharray: none; pointer-events: none; vector-effect: non-scaling-stroke; }
   .dim line, .dim polyline { stroke: var(--muted); stroke-width: .8; fill: none; vector-effect: non-scaling-stroke; }
   .dim .ext { stroke-width: .6; opacity: .8; }
   .dim polygon { fill: var(--muted); stroke: none; }
@@ -153,7 +162,10 @@
 
     <div id="mainCol">
       <p class="stats" id="stats"></p>
-      <div id="card"></div>
+      <div id="card" tabindex="0">
+        <div id="drawing"></div>
+        <div class="zoomctl" title="Wheel: zoom · drag: pan · double-click: fit"><button type="button" data-z="in" title="Zoom in (+)">+</button><button type="button" data-z="out" title="Zoom out (−)">−</button><button type="button" data-z="fit" title="Fit the whole rocket (0)">⤢</button></div>
+      </div>
       <p class="key" id="key"></p>
       <section class="detail" id="detail" aria-live="polite"></section>
     </div>
@@ -225,7 +237,7 @@ function partRadius(c, byId) {
 function arrow(x, y, ang) {   // arrowhead pointing in direction ang (radians), tip at (x, y)
   var L = 7, W = 2.6, c = Math.cos(ang), s = Math.sin(ang);
   var bx = x - L * c, by = y - L * s;
-  return '<polygon points="' + r2(x) + ',' + r2(y) + ' ' + r2(bx - W * s) + ',' + r2(by + W * c) + ' ' + r2(bx + W * s) + ',' + r2(by - W * c) + '"/>';
+  return '<polygon data-tip="' + r2(x) + ',' + r2(y) + '" points="' + r2(x) + ',' + r2(y) + ' ' + r2(bx - W * s) + ',' + r2(by + W * c) + ' ' + r2(bx + W * s) + ',' + r2(by - W * c) + '"/>';
 }
 function line(x1, y1, x2, y2, cls) {
   return '<line' + (cls ? ' class="' + cls + '"' : '') + ' x1="' + r2(x1) + '" y1="' + r2(y1) + '" x2="' + r2(x2) + '" y2="' + r2(y2) + '"/>';
@@ -332,10 +344,12 @@ function render(g) {
   out.push('<clipPath id="bodyclip"><polygon points="' + polyOf(outline) + '"/></clipPath></defs>');
 
   // body sections (individually hoverable); consecutive sections of the same kind alternate tint so the joints stay visible
-  var alt = false;
+  var alt = false, boxes = {};
   bodies.forEach(function (b, i) {
     alt = (i > 0 && bodies[i - 1].kind === b.kind) ? !alt : false;
     out.push('<polygon class="body ' + kcls(b) + (alt ? ' alt' : '') + '" data-id="' + esc(b.id) + '" points="' + polyOf(b.profile) + '"/>');
+    var rm = Math.max.apply(null, b.profile.map(function (p) { return p[1]; }));
+    boxes[b.id] = [X(b.profile[0][0]), -rm * s, X(b.profile[b.profile.length - 1][0]), rm * s];
   });
   // centreline
   out.push(line(X(0) - 18, 0, X(L) + 18, 0, 'centre'));
@@ -350,6 +364,7 @@ function render(g) {
     var c = o.c, x0 = X(Math.min(c.x0, c.x1)), w = Math.max(Math.abs(c.x1 - c.x0) * s, 1.2);
     var cls = (MASSY[c.kind] ? 'massitem ' : 'struct ') + kcls(c);
     var ri = num(c.inner_radius);
+    boxes[c.id] = [x0, -o.r * s, x0 + w, o.r * s];
     if (!MASSY[c.kind] && ri !== null && ri > 0 && ri < o.r - 1e-6 && (c.kind === 'centeringring' || c.kind === 'bulkhead' || c.kind === 'engineblock')) {
       // ring: draw as two bands, one above and one below the bore
       out.push('<g class="' + cls + '" data-id="' + esc(c.id) + '">' +
@@ -375,6 +390,8 @@ function render(g) {
     }
     out.push('<polygon class="fin k-fin" data-id="' + esc(f.id) + '" points="' + bot + '"/>');
     out.push('<polygon class="fin k-fin" data-id="' + esc(f.id) + '" points="' + top + '"/>');
+    var fxs = pts.map(function (q) { return X(f.x0 + q[0]); }), fy = (surf + Math.max.apply(null, pts.map(function (q) { return q[1]; }))) * s;
+    boxes[f.id] = [Math.min.apply(null, fxs), -fy, Math.max.apply(null, fxs), fy];
     finDims.push({ f: f, pts: pts, surf: surf });
   });
 
@@ -413,7 +430,7 @@ function render(g) {
   var parts = comps.filter(function (c) { return c.kind !== 'stage'; });
   var finCount = finSets.reduce(function (a, f) { return a + (f.fins.count || 0); }, 0);
   var groups = {}; parts.forEach(function (c) { groups[kindOf(c)[0]] = 1; });
-  return { svg: out.join('\n'), parts: parts, byId: byId, groups: GROUP_ORDER.filter(function (k) { return groups[k]; }),
+  return { svg: out.join('\n'), parts: parts, byId: byId, boxes: boxes, groups: GROUP_ORDER.filter(function (k) { return groups[k]; }),
     stats: { length: L, diameter: 2 * R, fins: finCount, parts: parts.length, ld: (2 * R) ? L / (2 * R) : null } };
 }
 
@@ -546,7 +563,7 @@ function init() {
   var statsEl = document.getElementById('stats'), keyEl = document.getElementById('key'), mainEl = document.getElementById('main');
   var treeEl = document.getElementById('tree'), searchEl = document.getElementById('search'), advEl = document.getElementById('adv');
   var detailEl = document.getElementById('detail'), layout = document.getElementById('layout'), treeToggle = document.getElementById('treeToggle');
-  var builtEl = document.getElementById('built');
+  var builtEl = document.getElementById('built'), drawingEl = document.getElementById('drawing');
   if (builtEl && builtEl.textContent.trim() === '__' + 'BUILT' + '__') builtEl.style.display = 'none';
   NAMES.forEach(function (n) { var o = document.createElement('option'); o.value = n; o.textContent = n; sel.appendChild(o); });
   sel.addEventListener('change', function () { setDesign(sel.value); });
@@ -583,7 +600,10 @@ function init() {
     var g = DATA[state.design], res = render(g);
     setHL(null); hideTip();
     current = res; model = buildModel(g);
-    card.innerHTML = res.svg;
+    drawingEl.innerHTML = res.svg;
+    var svg0 = svgEl(); fitView = parseVB(svg0);
+    if (state.design !== lastDesign || !zoomed) { lastDesign = state.design; view = { x: fitView.x, y: fitView.y, w: fitView.w, h: fitView.h }; zoomed = false; }
+    else svg0.setAttribute('viewBox', vbStr(view));
     var st = res.stats;
     statsEl.innerHTML = '<b>' + esc(g.file) + '</b> · length <b>' + esc(fmtLen(st.length)) + '</b> · max ⌀ <b>' + esc(fmtLen(st.diameter)) + '</b>' +
       (st.ld ? ' · L/D <b>' + st.ld.toFixed(1) + '</b>' : '') + ' · <b>' + st.fins + '</b> fins · <b>' + st.parts + '</b> parts';
@@ -593,19 +613,118 @@ function init() {
     applySelection(false);
     fitText();
   }
-  /* Label text is authored at 11 user units for a 1200-unit-wide drawing; rescale it so it reads at ~11 px on screen
-     (capped at 12 units so chained labels keep their allotted rows on narrow windows). */
+  /* Label text and arrowheads are authored at 11 units / 7 units for a 1200-unit-wide drawing; rescale them by the
+     current screen scale (element size and viewBox zoom) so they read the same at any width and zoom. Capped at 12 units
+     so chained labels keep their allotted rows on narrow windows. */
   function fitText() {
-    var svg = card.querySelector('svg'); if (!svg) return;
-    var vb = (svg.getAttribute('viewBox') || '').split(/[\s,]+/).map(Number);
-    var box = svg.getBoundingClientRect ? svg.getBoundingClientRect() : { width: svg.clientWidth, height: svg.clientHeight };
-    if (vb.length !== 4 || !(vb[2] > 0) || !(vb[3] > 0) || !(box.width > 0)) return;
-    var scale = box.width / vb[2];
-    if (box.height > 0) scale = Math.min(scale, box.height / vb[3]);
-    svg.style.fontSize = Math.min(12, 11 / scale).toFixed(2) + 'px';
+    var svg = svgEl(), ss = svg && screenScale(svg); if (!ss) return;
+    var fu = Math.min(12, 11 / ss.s), f = fu / 11;
+    svg.style.fontSize = fu.toFixed(2) + 'px';
+    Array.prototype.forEach.call(svg.querySelectorAll('polygon[data-tip]'), function (a) {
+      var t = a.getAttribute('data-tip').split(',');
+      a.setAttribute('transform', 'translate(' + t[0] + ' ' + t[1] + ') scale(' + f.toFixed(3) + ') translate(' + r2(-t[0]) + ' ' + r2(-t[1]) + ')');
+    });
   }
   window.addEventListener('resize', fitText);
   if (typeof ResizeObserver !== 'undefined') new ResizeObserver(fitText).observe(card);
+
+  /* ---------- zoom & pan: viewBox based, like OpenRocket's rocket figure; never written to the URL hash ---------- */
+  var fitView = null, view = null, zoomed = false, lastDesign = null;
+  var ZOOM_MIN = 0.5, ZOOM_MAX = 40, STEP = 1.15;
+  function svgEl() { return drawingEl.querySelector('svg'); }
+  function parseVB(svg) { var v = (svg.getAttribute('viewBox') || '').split(/[\s,]+/).map(Number); return v.length === 4 ? { x: v[0], y: v[1], w: v[2], h: v[3] } : null; }
+  function vbStr(v) { return r2(v.x) + ' ' + r2(v.y) + ' ' + r2(v.w) + ' ' + r2(v.h); }
+  /* screen px per user unit and the element box; null when the element has no layout (hidden, or jsdom) */
+  function screenScale(svg) {
+    var v = parseVB(svg), b = svg.getBoundingClientRect ? svg.getBoundingClientRect() : null;
+    if (!v || !b || !(b.width > 0) || !(b.height > 0)) return null;
+    return { s: Math.min(b.width / v.w, b.height / v.h), b: b, v: v };
+  }
+  function setView(v) {
+    var svg = svgEl(); if (!svg || !fitView) return;
+    view = v;
+    svg.setAttribute('viewBox', vbStr(v));
+    zoomed = Math.abs(v.w - fitView.w) > 1e-6 || Math.abs(v.x - fitView.x) > 1e-6 || Math.abs(v.y - fitView.y) > 1e-6;
+    fitText();
+  }
+  function fitAll() { if (fitView) setView({ x: fitView.x, y: fitView.y, w: fitView.w, h: fitView.h }); }
+  function clampW(w) { return Math.min(Math.max(w, fitView.w / ZOOM_MAX), fitView.w / ZOOM_MIN); }
+  /* zoom by factor f (> 1 zooms in) keeping the client point (px, py) fixed; without a point, about the centre */
+  function zoomAt(f, px, py) {
+    var svg = svgEl(), ss = svg && screenScale(svg); if (!ss || !view) return;
+    var s = ss.s, b = ss.b, offX = (b.width - view.w * s) / 2, offY = (b.height - view.h * s) / 2;
+    var ux = px === undefined ? view.x + view.w / 2 : view.x + (px - b.left - offX) / s;
+    var uy = py === undefined ? view.y + view.h / 2 : view.y + (py - b.top - offY) / s;
+    var w = clampW(view.w / f); f = view.w / w;
+    setView({ x: ux - (ux - view.x) / f, y: uy - (uy - view.y) / f, w: w, h: view.h / f });
+  }
+  function panBy(dxPx, dyPx) {
+    var svg = svgEl(), ss = svg && screenScale(svg); if (!ss || !view) return;
+    setView({ x: view.x - dxPx / ss.s, y: view.y - dyPx / ss.s, w: view.w, h: view.h });
+  }
+  /* fit the viewBox to a drawn part with some margin, keeping the fitted view's aspect so the element does not resize */
+  function zoomToPart(id) {
+    var bx = current && current.boxes[id]; if (!bx || !fitView) return;
+    var aspect = fitView.w / fitView.h;
+    var w = (bx[2] - bx[0]) * 1.5 + 24, h = (bx[3] - bx[1]) * 1.5 + 24;
+    if (w / h < aspect) w = h * aspect;
+    w = clampW(w); h = w / aspect;
+    setView({ x: (bx[0] + bx[2]) / 2 - w / 2, y: (bx[1] + bx[3]) / 2 - h / 2, w: w, h: h });
+  }
+  function inSvg(e) { return !!(e.target && e.target.closest && e.target.closest('svg')); }
+  card.addEventListener('wheel', function (e) {
+    if (!inSvg(e)) return;
+    e.preventDefault();
+    zoomAt(e.deltaY < 0 ? STEP : 1 / STEP, e.clientX, e.clientY);
+  }, { passive: false });
+  var drag = null, suppressClick = false;
+  card.addEventListener('mousedown', function (e) {
+    if (e.button !== 0 || !inSvg(e)) return;
+    e.preventDefault(); card.focus();
+    drag = { x: e.clientX, y: e.clientY, moved: false };
+  });
+  window.addEventListener('mousemove', function (e) {
+    if (!drag) return;
+    var dx = e.clientX - drag.x, dy = e.clientY - drag.y;
+    if (!drag.moved && Math.abs(dx) + Math.abs(dy) < 4) return;
+    drag.moved = true; drag.x = e.clientX; drag.y = e.clientY;
+    card.classList.add('dragging'); hideTip();
+    panBy(dx, dy);
+  });
+  window.addEventListener('mouseup', function () {
+    if (drag && drag.moved) suppressClick = true;
+    drag = null; card.classList.remove('dragging');
+  });
+  card.addEventListener('dblclick', function (e) {
+    if (inSvg(e) && !(e.target.closest && e.target.closest('[data-id]'))) fitAll();
+  });
+  card.addEventListener('keydown', function (e) {
+    if (e.key === '+' || e.key === '=') { zoomAt(STEP); e.preventDefault(); }
+    else if (e.key === '-' || e.key === '_') { zoomAt(1 / STEP); e.preventDefault(); }
+    else if (e.key === '0') { fitAll(); e.preventDefault(); }
+  });
+  Array.prototype.forEach.call(card.querySelectorAll('.zoomctl button'), function (b) {
+    b.addEventListener('click', function () {
+      var z = b.getAttribute('data-z');
+      if (z === 'in') zoomAt(STEP); else if (z === 'out') zoomAt(1 / STEP); else fitAll();
+    });
+  });
+  // touch: one finger pans, two fingers pinch about their midpoint
+  var touch = null;
+  function tDist(t) { var dx = t[0].clientX - t[1].clientX, dy = t[0].clientY - t[1].clientY; return Math.sqrt(dx * dx + dy * dy); }
+  card.addEventListener('touchstart', function (e) {
+    if (!inSvg(e)) { touch = null; return; }
+    var t = e.touches;
+    touch = t.length === 1 ? { x: t[0].clientX, y: t[0].clientY } : t.length === 2 ? { d: tDist(t) } : null;
+  }, { passive: true });
+  card.addEventListener('touchmove', function (e) {
+    if (!touch) return;
+    var t = e.touches;
+    if (t.length === 1 && touch.x !== undefined) { panBy(t[0].clientX - touch.x, t[0].clientY - touch.y); touch.x = t[0].clientX; touch.y = t[0].clientY; }
+    else if (t.length === 2) { var dnow = tDist(t); if (touch.d === undefined) touch = { d: dnow }; else if (touch.d > 0) { zoomAt(dnow / touch.d, (t[0].clientX + t[1].clientX) / 2, (t[0].clientY + t[1].clientY) / 2); touch.d = dnow; } }
+    e.preventDefault();
+  }, { passive: false });
+  card.addEventListener('touchend', function (e) { touch = e.touches.length ? (e.touches.length === 1 ? { x: e.touches[0].clientX, y: e.touches[0].clientY } : { d: tDist(e.touches) }) : null; }, { passive: true });
 
   /* ---------- tree ---------- */
   function renderTree() {
@@ -716,11 +835,15 @@ function init() {
     if (svg) svg.classList.toggle('hasSel', inDrawing);
     var n = id !== null ? model.nodes[id] : null;
     detailEl.innerHTML = n ? detailHTML(n, current.byId) : '<p class="placeholder">Select a part in the tree or the drawing to see its dimensions.</p>';
+    if (n && current.boxes[id]) detailEl.querySelector('.head').insertAdjacentHTML('beforeend', '<button type="button" class="zoomto" data-zoom-to="' + esc(id) + '" title="Fit the drawing to this part">zoom to part</button>');
   }
   detailEl.addEventListener('click', function (e) {
+    var z = e.target.closest ? e.target.closest('button[data-zoom-to]') : null; if (z) { zoomToPart(z.getAttribute('data-zoom-to')); return; }
     var a = e.target.closest ? e.target.closest('a[data-id]') : null; if (a) select(a.getAttribute('data-id'), true);
   });
   card.addEventListener('click', function (e) {
+    if (suppressClick) { suppressClick = false; return; }   // the mouseup that ended a pan
+    if (e.target.closest && e.target.closest('.zoomctl')) return;
     var el = e.target.closest ? e.target.closest('[data-id]') : null;
     select(el ? el.getAttribute('data-id') : null, true);
   });
