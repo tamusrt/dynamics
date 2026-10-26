@@ -446,6 +446,11 @@ def check_rasaero_marks(b: Browser) -> str:
     sims = b.page.evaluate("[...document.querySelectorAll('#nav .sim .rasinfo')].map(i => [i.parentElement.dataset.id, i.title])")
     for where, title in icons + sims:
         assert title.startswith("Differs from its RASAero model") and "OpenRocket" in title, f"{where}: hover text {title!r}"
+    # long names give way (ellipsis), never the number on the right: "9.4 % L" stays on one line
+    wrapped = b.page.evaluate("""[...document.querySelectorAll('#nav .sim')].filter(r => {
+        const v = r.querySelector('.val'), l = r.querySelector('.label');
+        return v.textContent && v.getBoundingClientRect().height > l.getBoundingClientRect().height + 2; }).map(r => r.dataset.id)""")
+    assert not wrapped, f"the value wraps onto two lines in: {wrapped}"
     if icons or sims:
         b.shot("rasaero_mark")
     return f"no red bar; {len(icons)} design(s) and {len(sims)} simulation(s) marked as differing from RASAero"

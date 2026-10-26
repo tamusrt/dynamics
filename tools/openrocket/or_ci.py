@@ -1643,7 +1643,7 @@ SITE_HTML = r"""<!doctype html>
   .sim input { margin:0; accent-color:var(--accent); }
   .sim .swatch { width:10px; height:10px; border-radius:3px; background:var(--line); flex:none; }
   .sim .label { flex:0 1 auto; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-  .sim .val { margin-left:auto; color:var(--muted); font-size:12px; font-variant-numeric:tabular-nums; }
+  .sim .val { flex:none; white-space:nowrap; margin-left:auto; color:var(--muted); font-size:12px; font-variant-numeric:tabular-nums; }
   .sim .val.up { color:var(--up); } .sim .val.down { color:var(--down); }
   .navtools { display:flex; gap:8px; align-items:center; padding:2px 6px 10px; } .navtools .lbl { margin:0; }
   .navtools button, .row button, .row label { font:inherit; font-size:12px; }
