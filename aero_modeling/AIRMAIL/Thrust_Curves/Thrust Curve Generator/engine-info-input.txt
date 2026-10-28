@@ -22,7 +22,7 @@ engine_comments = PER_MY_LAST
 # ENGINE GEOMETRY (mm)
 engine_outer_diameter_mm = 152.4
 nozzle_throat_diameter_mm = 36.576
-nozzle_exit_diameter_mm = 73.66
+nozzle_exit_diameter_mm = 73.82555508
 
 # OUTPUT LOCATION
 # Relative to the dynamics folder. Use / or \\ between folders.
@@ -46,5 +46,5 @@ middle_plumbing_length_in = 16.0
 
 # Combustion chamber
 combustion_chamber_dry_mass_kg = 3.583383
-combustion_chamber_length_in = 24.5
+combustion_chamber_length_in = 26.5
 initial_fuel_mass_kg = 3.99161

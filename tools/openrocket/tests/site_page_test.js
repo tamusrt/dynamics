@@ -260,6 +260,10 @@ test('absolute view plots each version of each ticked simulation in display unit
   ok.forEach((r, i) => assert(close(c.traces[0].y[i], r.m.apogee * specOf('apogee').units.imperial.factor, 1e-6)));
   assert.strictEqual(c.layout.xaxis.type, 'date'); assert.strictEqual(c.layout.yaxis.title.text, 'Apogee (ft)');
   assert(c.traces[0].customdata.every(d => d.sha), 'points carry the commit sha for click-through');
+  const motor = ok.map((r, i) => [r, i]).filter(([r]) => r.kind === 'motor');
+  assert.strictEqual(motor.length, 1, 'fixture needs a thrust-curve version');
+  assert(c.traces[0].hovertemplate[motor[0][1]].includes('thrust curve change'), 'a curve commit says so in its hover');
+  assert(!c.traces[0].hovertemplate[0].includes('thrust curve change'), 'a design commit does not');
 });
 test('delta line and delta bars are differences between consecutive versions, coloured by sign', () => {
   let c = run({ tab: 'history', metric: 'apogee', view: 'dline', units: 'metric', sel: enc([A]) });
@@ -320,6 +324,8 @@ test('entries render for the ticked design, newest first, with the diff escaped'
   assert(h.indexOf(entries[0].short) < h.indexOf(entries[entries.length - 1].short), 'newest first');
   assert(!h.includes('<script'), 'commit messages are escaped'); assert(h.includes('&lt;script'), 'the fixture message with a script tag is shown escaped');
   assert(!h.includes(files[1]), 'only the ticked design');
+  const motor = entries.find(e => e.kind === 'motor'); assert(motor, 'fixture needs a thrust-curve entry');
+  assert(h.includes(motor.headline) && h.includes('37273'), 'a thrust-curve entry keeps its headline and lists what moved');
 });
 
 console.log('predictions and vision tabs');

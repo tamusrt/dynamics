@@ -79,11 +79,14 @@ def row(v: dict, apogee, fl=None, status="OK", note="", motor_file="") -> dict:
 
 
 def build(site: Path):
-    va = [version(1, "first"), version(2, "longer nose"), version(3, "<script>alert(1)</script> heavier payload")]
+    va = [version(1, "first"), version(2, "longer nose"), version(3, "<script>alert(1)</script> heavier payload"),
+          dict(version(6, "new thrust curve"), blob="blob3", kind="motor")]   # a curve commit: same design, new motor
     vb = [dict(version(4, "initial"), path=FILE_B), dict(version(5, "broke the motor reference"), path=FILE_B)]
     series = {
-        (FILE_A, "best"): [row(va[0], 3000), row(va[1], 3200, flight(1.0)), row(va[2], 3100, flight(1.02), motor_file=MOTOR_A)],
-        (FILE_A, "worst"): [row(va[0], 2500), row(va[1], 2450, flight(0.9)), row(va[2], 2450, flight(0.9), motor_file=MOTOR_A)],
+        (FILE_A, "best"): [row(va[0], 3000), row(va[1], 3200, flight(1.0)), row(va[2], 3100, flight(1.02), motor_file=MOTOR_A),
+                           row(va[3], 3150, flight(1.03), motor_file=MOTOR_A)],
+        (FILE_A, "worst"): [row(va[0], 2500), row(va[1], 2450, flight(0.9)), row(va[2], 2450, flight(0.9), motor_file=MOTOR_A),
+                            row(va[3], 2470, flight(0.91), motor_file=MOTOR_A)],
         (FILE_B, "Simulation 1"): [row(vb[0], 1800, flight(0.6)), row(vb[1], None, None, status="FAILED", note="motor unresolved")],
     }
     files_versions = {FILE_A: va, FILE_B: vb}
@@ -93,7 +96,10 @@ def build(site: Path):
         "headline": headline, "empty": False,
         "lines": {u: [f"**Nose cone** length 0.30 → 0.35 {u}"] for u in or_ci.UNIT_SYSTEMS},
         "rows": {u: [["Nose cone", "length", "0.30", "0.35"]] for u in or_ci.UNIT_SYSTEMS}}
-    changelog = {FILE_A: [entry(va[2], va[1], "1 component changed"), entry(va[1], va[0], "Nose cone lengthened")], FILE_B: [entry(vb[1], vb[0], "Motor changed")]}
+    motor_entry = dict(entry(va[3], va[2], "Thrust curve changed: a.rse"), kind="motor",
+                       lines={u: ["**a.rse**: total impulse 37141 \u2192 37273 N\u00b7s; burn time 12.80 \u2192 12.60 s"] for u in or_ci.UNIT_SYSTEMS},
+                       rows={u: [["a.rse", "total impulse", "37141 N\u00b7s", "37273 N\u00b7s"], ["a.rse", "burn time", "12.80 s", "12.60 s"]] for u in or_ci.UNIT_SYSTEMS})
+    changelog = {FILE_A: [motor_entry, entry(va[2], va[1], "1 component changed"), entry(va[1], va[0], "Nose cone lengthened")], FILE_B: [entry(vb[1], vb[0], "Motor changed")]}
     mass = lambda u: [f"launch mass (vs RASAero “CUST”): OpenRocket 158.68 {u}, RASAero 152.00 {u}"]  # noqa: E731
     rasaero = [  # what rasaero_checks gives: A differs in shape and in one simulation's mass, B only in one simulation's
         {"ork": FILE_A, "rasaero": "aero_modeling/A/RASAero/A.CDX1",
@@ -145,7 +151,8 @@ def main() -> int:
         assert "stability_pct_length" in data["flight_vars"] and data["default_units"] == "imperial" and data["default_stability"] == "pct"
         rows_b = data["designs"][FILE_B]["Simulation 1"]
         assert [r["ok"] for r in rows_b] == [True, False], "a failed version must be marked not ok"
-        assert len(data["changelog"][FILE_A]) == 2
+        assert len(data["changelog"][FILE_A]) == 3 and data["changelog"][FILE_A][0]["kind"] == "motor"
+        assert [r["kind"] for r in data["designs"][FILE_A]["best"]] == ["design", "design", "design", "motor"], "a curve commit is a version of its own"
         assert not (site / "vehicles").exists(), "the Vehicles page is built by its own job, not by write_site"
         assert data["motors"] == {FILE_A: {"best": "a.rse", "worst": "a.rse"}},             f"each simulation is labelled with the motor file its newest version flew, and only then: {data['motors']}"
         page = (site / "index.html").read_text(encoding="utf-8")

@@ -133,6 +133,67 @@ def test_hide_commits_leaves_the_listed_versions_out():
     print("hide_commits: ok")
 
 
+def test_a_thrust_curve_commit_is_a_version_of_the_design():
+    """A commit that changes a curve sim_config.json names for a design, and not the design, is a version of its
+    own (kind "motor"), flown with the .ork as it was then. A commit that changes both stays one version; a curve
+    commit from before the design existed is not a version; hide_commits applies; the version id follows the curve."""
+    import json
+    import os
+    with tempfile.TemporaryDirectory() as tmp:
+        root = new_repo(tmp)
+        day = 0
+
+        def dated_commit(message):   # commits a day apart, so "not older than" means something
+            nonlocal day
+            day += 1
+            env = dict(os.environ, GIT_AUTHOR_DATE=f"2027-01-{day:02d}T12:00:00", GIT_COMMITTER_DATE=f"2027-01-{day:02d}T12:00:00")
+            git(root, "add", "-A")
+            subprocess.run(["git", "commit", "-q", "-m", message], cwd=root, check=True, env=env)
+            return git(root, "rev-parse", "--short", "HEAD")
+
+        def curve(peak):
+            return f"M {peak} 100 0 1.0 2.0 T\n0.1 {peak}\n1.0 0\n"
+        write(root, "R/m.eng", curve(100)); before = dated_commit("curve before the design")
+        write(root, "R/r.ork", design(0)); v0 = dated_commit("design v0")
+        write(root, "R/m.eng", curve(120)); c1 = dated_commit("curve 1 alone")
+        write(root, "R/r.ork", design(1)); v1 = dated_commit("design v1")
+        write(root, "R/r.ork", design(2)); write(root, "R/m.eng", curve(130)); v2 = dated_commit("design v2 and curve 2")
+        write(root, "other.txt", "x"); dated_commit("nothing of ours")
+        (root / "sim_config.json").write_text(json.dumps({"files": {"R/r.ork": {"default_motor": "R/m.eng"}}}), encoding="utf-8")
+        cfg = or_ci.Config(root / "sim_config.json")
+        head = or_ci.Snapshot(root)
+
+        mpaths = or_ci.design_motor_paths(cfg, root, "R/r.ork")
+        assert mpaths == ["R/m.eng"], mpaths
+        versions = or_ci.git_file_history(root, "R/r.ork", 100)
+        assert [v["short"] for v in versions] == [v0, v1, v2]
+        motor = or_ci.git_motor_versions(root, mpaths, versions[0]["time"], 100)
+        assert [m["short"] for m in motor] == [c1, v2], "curve commits from the design's first version on (v0 did not touch it)"
+        merged = or_ci.merge_motor_versions(root, versions, motor)
+        assert [(v["short"], v["kind"]) for v in merged] == [(v0, "design"), (c1, "motor"), (v1, "design"), (v2, "design")], merged
+        assert merged[1]["path"] == "R/r.ork" and before not in [v["short"] for v in merged]
+        for v in merged:
+            v["blob"] = or_ci._blob(root, v["sha"], v["path"])
+            v["mblobs"] = or_ci._motor_blobs(root, v["sha"], mpaths, head)
+            v["vid"] = or_ci.version_id(v)
+        assert merged[1]["blob"] == merged[0]["blob"], "the motor version carries the design as it was"
+        assert merged[1]["mblobs"] != merged[0]["mblobs"] and merged[1]["vid"] != merged[0]["vid"], "but its id follows the curve"
+        assert merged[2]["mblobs"] == merged[1]["mblobs"], "the next design version flies the same curve"
+        assert len({v["vid"] for v in merged}) == 4
+        hidden_cfg_path = root / "hide.json"
+        hidden_cfg_path.write_text(json.dumps({"hide_commits": [git(root, "rev-parse", c1)]}), encoding="utf-8")
+        kept = or_ci.drop_hidden_versions(or_ci.Config(hidden_cfg_path), "R/r.ork", merged, lambda *_: None)
+        assert [v["short"] for v in kept] == [v0, v1, v2], "hide_commits hides a motor version too"
+        rec = or_ci.motor_change_record([("R/m.eng", head.path("R/m.eng"), head.path("R/m.eng"))])
+        assert rec["headline"] == "Thrust curve changed: m.eng" and rec["kind"] == "motor" and rec["lines"]["metric"] == ["**m.eng**: changed (no difference at display precision)"], rec
+        old = root / "old.eng"; old.write_text(curve(120), encoding="utf-8")
+        rec = or_ci.motor_change_record([("R/m.eng", old, head.path("R/m.eng"))])
+        assert rec["lines"]["metric"][0].startswith("**m.eng**: total impulse ") and "peak thrust 120 \u2192 130 N" in rec["lines"]["metric"][0], rec["lines"]
+        peak = next(r for r in rec["rows"]["imperial"] if r[1] == "peak thrust")
+        assert peak == ["m.eng", "peak thrust", "27 lbf", "29 lbf"], rec["rows"]
+    print("thrust-curve versions: ok")
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):
