@@ -46,5 +46,5 @@ middle_plumbing_length_in = 16.0
 
 # Combustion chamber
 combustion_chamber_dry_mass_kg = 3.583383
-combustion_chamber_length_in = 24.5
+combustion_chamber_length_in = 26.5
 initial_fuel_mass_kg = 3.99161
