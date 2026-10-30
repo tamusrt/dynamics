@@ -76,7 +76,7 @@
       <Fin>
         <Count>4</Count>
         <Chord>14</Chord>
-        <Span>6.5</Span>
+        <Span>6.25</Span>
         <SweepDistance>12</SweepDistance>
         <TipChord>4</TipChord>
         <Thickness>0.3</Thickness>
@@ -148,9 +148,9 @@
       <Booster2NozzleDiameter>0</Booster2NozzleDiameter>
       <IncludeBooster2>False</IncludeBooster2>
       <FlightTime>0</FlightTime>
-      <TimetoApogee>46.5282</TimetoApogee>
-      <MaxAltitude>34521.18</MaxAltitude>
-      <MaxVelocity>1760.922</MaxVelocity>
+      <TimetoApogee>46.78815</TimetoApogee>
+      <MaxAltitude>34892.54</MaxAltitude>
+      <MaxVelocity>1772.469</MaxVelocity>
       <OptimumWt>0</OptimumWt>
       <OptimumMaxAlt>0</OptimumMaxAlt>
     </Simulation>
