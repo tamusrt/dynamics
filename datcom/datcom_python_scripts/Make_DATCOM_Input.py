@@ -13,10 +13,16 @@ from a DATCOM input file instead of RASAero text files:
        byte. Each run's input and plot file are kept in datcom_runs/.
        (MAKE_GRID = True instead builds one complete grid from each file's
        rocket; see "THE GRID" below.)
-    3. TILES every case of every file into ONE CSV, with the same columns as the
-       RASAero one:
+    3. TILES every case of every file into ONE CSV with the columns
 
-           Mach, Alpha, Phi, Cx, Cy, Cz, CMx, CMy, CMz
+           Mach, Alpha, Phi, Cx, Cy, Cz, CMx, XCP
+
+       XCP is DATCOM's non-dimensional center of pressure (the X-C.P. it
+       prints): from its XCG, in LREFs, positive forward, so negative = c.p.
+       aft of XCG (see xcp()). The rows are grouped by case: a row naming the
+       case (which file, which case, its Mach/alpha/phi range), that case's
+       rows, a blank row, then the next case. Points DATCOM did not run come
+       last, under their own label.
 
        The table's Machs and alphas are all the ones run anywhere. Where the
        tiles don't line up, the gaps are filled (fill_holes) and shown on a
@@ -27,8 +33,9 @@ from a DATCOM input file instead of RASAero text files:
 
 Run it with:   python Make_DATCOM_Input.py                  (asks for the files)
            or: python Make_DATCOM_Input.py low_mach.dat high_mach.dat ...
-Run it from the flight_sim repo (uv run python ...) and it also loads the CSV
-with the sim's own aero_table_from_csv as a final check.
+NOTE: the label rows, blank rows and XCP column mean this CSV is NOT in the
+layout flight_sim's aero_table_from_csv reads (that needs CMy and CMz columns
+and number-only rows).
 
 Nothing here reads for006.dat's results. If DATCOM writes no for003.dat, the
 lines in for006.dat that say ERROR or WARNING are printed on your screen so you
@@ -637,7 +644,7 @@ def check_refs(used, to_in):
     return xcg_in, lref_in, latref_in, sref
 
 
-def save_csv(table, path):
+def save_csv(table, origin, info, path, xcg_in, lref_in):
     """Write the CSV, coping with Windows locking it. Excel (or anything else
     with the file open) stops it from being overwritten, so: try for a few
     seconds, then ask you to close it and press Enter, or type another name.
@@ -646,7 +653,7 @@ def save_csv(table, path):
     while True:
         for _ in range(6):
             try:
-                write_table(table, path)
+                write_table(table, origin, info, path, xcg_in, lref_in)
                 return path
             except PermissionError:
                 time.sleep(0.5)
@@ -656,33 +663,69 @@ def save_csv(table, path):
             path = path.with_name(s if s.lower().endswith(".csv") else s + ".csv")
 
 
-def write_table(table, path):
-    """Write the CSV sorted by Mach, then Alpha, then Phi."""
+OUT_COLUMNS = ("Cx", "Cy", "Cz", "CMx", "XCP")
+
+
+def xcp(table, key, xcg_in, lref_in):
+    """DATCOM's non-dimensional center of pressure, the X-C.P. it prints in
+    for006.dat: distance from DATCOM's moment reference (XCG) to the center of
+    pressure, in reference lengths (LREF), positive FORWARD of XCG (negative =
+    c.p. aft of XCG, i.e. stable). It is CM / CN about XCG.
+
+    The table holds CM about REFPOINT, so CM/CN there gives the c.p. from
+    REFPOINT, and (XCG - REFPOINT) / LREF moves it to XCG. Where the normal
+    force is about zero (alpha 0 or 180) CM/CN is 0/0, so the value at the
+    nearest alpha with some normal force is used, like DATCOM's own slope
+    ratio at alpha 0. Inches from the nose tip: XCG - XCP * LREF."""
+    def at(k):
+        cn = -table[k]["Cz"]
+        return None if abs(cn) < 1e-4 else table[k]["CMy"] / cn
+    ratio = at(key)
+    if ratio is None:
+        m, a, p = key
+        others = sorted((k for k in table if k[0] == m and k[2] == p and at(k) is not None),
+                        key=lambda k: abs(k[1] - a))
+        if not others:
+            return 0.0
+        ratio = at(others[0])
+    return ratio + (xcg_in - REFPOINT) / lref_in
+
+
+def describe_case(label, number, case):
+    """The label row above a case's rows."""
+    name = f" ({case['name']})" if case["name"] else ""
+    ms, al = case["machs"], case["alphas"]
+    # no commas, so the label stays one plain cell instead of a quoted one
+    return (f"Case {number} of {label}{name}: Mach {min(ms):g}-{max(ms):g}; "
+            f"alpha {min(al):g}-{max(al):g}; phi {case['phi']:g}").replace(",", ";")
+
+
+def write_table(table, origin, info, path, xcg_in, lref_in):
+    """Write the CSV one case at a time: a label row naming the case, its rows
+    sorted by Mach, Alpha, Phi, then a blank row. A point run by more than one
+    case is listed under the case that won (the later one). Points DATCOM did
+    not run (filled in between or beyond the runs, and the Mach 0 copy) come
+    last, under their own label."""
+    groups = {k: [] for k in info}
+    filled = []
+    for key in sorted(table):
+        (groups[origin[key]] if key in origin else filled).append(key)
     with open(path, "w", newline="") as f:
         w = csv.writer(f)
-        w.writerow(["Mach", "Alpha", "Phi", *SIM_COLUMNS])
-        for key in sorted(table):
-            w.writerow([fmt(v) for v in key] + [fmt(table[key][n]) for n in SIM_COLUMNS])
+        w.writerow(["Mach", "Alpha", "Phi", *OUT_COLUMNS])
+        sections = [(describe_case(lab, num, info[(lab, num)]), keys)
+                    for (lab, num), keys in groups.items()]
+        sections.append(("Filled in - not run by DATCOM (between runs; beyond runs; Mach 0)",
+                         filled))
+        for title, keys in sections:
+            if not keys:
+                continue
+            w.writerow([title])
+            for key in keys:
+                c = dict(table[key], XCP=xcp(table, key, xcg_in, lref_in))
+                w.writerow([fmt(v) for v in key] + [fmt(c[n]) for n in OUT_COLUMNS])
+            w.writerow([])
 
-
-def sim_check(path, sref_m2):
-    """Load the CSV with the sim's own loader, if this runs inside the repo."""
-    try:
-        from flight_sim.units import scalar, vector  # pylint: disable=import-outside-toplevel
-        from flight_sim.utilities.data_loader import aero_table_from_csv  # pylint: disable=import-outside-toplevel
-    except ImportError:
-        return
-    import numpy as np  # pylint: disable=import-outside-toplevel
-    t = aero_table_from_csv(str(path), reference_area=scalar(sref_m2 or 1.0, "m**2"),
-                            reference_length=scalar(L_ref * 0.0254, "m"),
-                            reference_point=vector((-REFPOINT * 0.0254, 0.0, 0.0), "m"),
-                            frame="missile")
-    bad = int(np.isnan(t.values).sum())
-    print(f"  Sim loader check: {t.values.shape[:3]} grid, "
-          f"{'no gaps' if not bad else f'{bad} NaN values (gaps!)'}")
-
-
-# --------------------------------------------------------------------------- #
 
 def pick_rocket(runs):
     """All the tiles must be the same rocket. Cases whose geometry (every
@@ -715,13 +758,16 @@ def tile(runs, xcg_in, lref_in, latref_in, phi_sign):
     Runs are laid down in the order they were given, and within a run case by
     case, so where two tiles cover the same point the later one wins. That way
     a run added at the end can patch or refine part of the table. Returns the
-    table and the set of points that came straight from DATCOM."""
+    table, {point: (file label, case number)} for the points that came
+    straight from DATCOM, and a description of every case in order."""
     table, origin, dropped, overlaps, differ = {}, {}, 0, 0, []
+    alt_at, info = {}, {}
     for run in runs:
         for block, case, mach in run["matched"]:
             if MAX_MACH is not None and mach > MAX_MACH + TOL:
                 continue
             alt = dict(zip(case["machs"], case["alts"])).get(mach, 0.0)
+            info.setdefault((run["label"], case["number"]), case)
             if len(block["rows"]) != len(case["alphas"]):
                 print(f"  WARNING: {run['label']} case {case['number']} Mach {mach}: "
                       f"{len(block['rows'])} rows but {len(case['alphas'])} alphas in its input")
@@ -739,9 +785,11 @@ def tile(runs, xcg_in, lref_in, latref_in, phi_sign):
                 if key in table:
                     overlaps += 1
                     if max(abs(new[n] - table[key][n]) for n in SIM_COLUMNS) > 1e-3:
-                        differ.append((key, origin[key], (run["label"], case["number"], alt)))
+                        differ.append((key, origin[key] + (alt_at[key],),
+                                       (run["label"], case["number"], alt)))
                 table[key] = new
-                origin[key] = (run["label"], case["number"], alt)
+                origin[key] = (run["label"], case["number"])
+                alt_at[key] = alt
     if dropped:
         print(f"  Dropped {dropped} all-zero row(s) (DATCOM had no answer there)")
     if overlaps:
@@ -751,7 +799,7 @@ def tile(runs, xcg_in, lref_in, latref_in, phi_sign):
         print(f"  {len(differ)} of those gave different numbers, e.g. Mach {m:g}, alpha {a:g}: "
               f"{was[0]} case {was[1]} at {was[2]:g} ft vs {now[0]} case {now[1]} at "
               f"{now[2]:g} ft. Usually that is the altitude; the later one is in the CSV.")
-    return table, set(table)
+    return table, origin, info
 
 
 def _interp(table, key, lo, hi, t):
@@ -890,17 +938,25 @@ def convert(runs, out_path):
                 print("  WARNING: neither direction fits well; check the PHI runs.")
 
     print(f"\nTiling {len(used)} case(s) into one table:")
-    table, run_points = tile(runs, xcg_in, lref_in, latref_in, phi_sign)
+    table, origin, info = tile(runs, xcg_in, lref_in, latref_in, phi_sign)
     if FILL_BY_SYMMETRY and len({p for _, _, p in table}) > 1:
         npanel = next((c["npanel"] for c in used if c["npanel"]), None)
         if not npanel:
             raise SystemExit("FILL_BY_SYMMETRY needs NPANEL in $FINSET1.")
-        table = fill_by_symmetry(table, 360.0 / npanel)
-        run_points = set(table)
+        period = 360.0 / npanel
+        table = fill_by_symmetry(table, period)
+        for (m, a, q) in table:     # a copied roll angle belongs to the case it came from
+            if (m, a, q) not in origin:
+                src = next(((m, a, round((q - k * period) % 360.0, 6)) for k in range(npanel)
+                            if (m, a, round((q - k * period) % 360.0, 6)) in origin), None)
+                if src:
+                    origin[(m, a, q)] = origin[src]
     for (m, a, p), c in list(table.items()):        # close the circle
         if abs(p) < TOL:
             table[(m, a, 360.0)] = c
-            run_points.add((m, a, 360.0))
+            if (m, a, p) in origin:
+                origin[(m, a, 360.0)] = origin[(m, a, p)]
+    run_points = set(origin)
     if ADD_MACH_ZERO:
         low = min(m for m, _, _ in table)
         if low > TOL:
@@ -916,7 +972,7 @@ def convert(runs, out_path):
               f"holding the nearest alpha). These are guesses: add a run there to replace them.")
     coverage(run_points, guessed, machs, alphas)
 
-    out_path = save_csv(table, out_path)
+    out_path = save_csv(table, origin, info, out_path, xcg_in, lref_in)
     print(f"\n  {len(table)} rows ({len(machs)} Mach x {len(alphas)} alpha x {len(phis)} phi), "
           f"Mach {machs[0]:g}-{machs[-1]:g}, alpha {alphas[0]:g}-{alphas[-1]:g}")
     print(f"  Saved to {out_path}")
@@ -927,7 +983,6 @@ def convert(runs, out_path):
     if any(abs(v) > 1e-9 for _, v in spin):
         print("  Roll moment at zero alpha (from fin cant), CMx by Mach:")
         print("    " + ", ".join(f"M{m:g}: {v:+.4g}" for m, v in spin))
-    sim_check(out_path, sref_m2)
 
     print("\nFor the rocket file:")
     if sref_m2 is not None:
