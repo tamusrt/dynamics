@@ -136,21 +136,26 @@ def _get_motor_config_name(sim):
     return str(_safe_call(sim, "getName", default="") or "")
 
 
-def _get_apogee_time(events, FlightEvent):
+def _get_event_time(events, FlightEvent, name):
     """
-    Pull the time of the APOGEE event out of whatever shape `get_events`
-    returns (dict-of-lists is typical for orhelper/orlab).
+    Pull the first time of the named event (e.g. "APOGEE", "LAUNCHROD") out
+    of whatever shape `get_events` returns (dict-of-lists is typical for
+    orhelper/orlab).
     """
     try:
-        apogee_key = getattr(FlightEvent, "APOGEE", None)
-        if apogee_key is None or events is None:
+        key = getattr(FlightEvent, name, None)
+        if key is None or events is None:
             return None
-        times = events.get(apogee_key)
+        times = events.get(key)
         if times:
             return float(times[0])
     except Exception:
         pass
     return None
+
+
+def _get_apogee_time(events, FlightEvent):
+    return _get_event_time(events, FlightEvent, "APOGEE")
 
 
 def probe_one_file(ork_path: Path, jar_path):
@@ -242,11 +247,27 @@ def _round_or_blank(value, ndigits, scale=1.0):
     return round(float(value) * scale, ndigits) if not math.isnan(value) else ""
 
 
-def simulate_file(helper, FlightDataType, FlightEvent, ork_path: Path, verbose=False, motor=None):
+def _disable_turbulence(sim):
+    """
+    Zero the wind turbulence in a simulation's options, keeping the average
+    wind speed and direction. Covers both of OpenRocket's wind models: the
+    single average model and every level of the multi-level model.
+    """
+    opts = sim.getOptions()
+    # Set on the model itself: SimulationOptions.setWindTurbulenceIntensity
+    # also switches the wind model type to AVERAGE, dropping a multi-level profile.
+    opts.getAverageWindModel().setStandardDeviation(0.0)
+    for level in opts.getMultiLevelWindModel().getLevels():
+        level.setStandardDeviation(0.0)
+
+
+def simulate_file(helper, FlightDataType, FlightEvent, ork_path: Path, verbose=False, motor=None,
+                  keep_turbulence=False):
     """
     Load one .ork file and run every simulation saved in it. If `motor` is a
     .eng/.rse path, every simulation flies that thrust curve instead of the
-    motor saved in the file.
+    motor saved in the file. Wind turbulence is zeroed unless
+    `keep_turbulence` is set.
     Returns (rows, log_lines, ok_count, error_count). Never raises.
     Log lines are returned rather than printed so parallel workers don't
     interleave their output.
@@ -277,6 +298,8 @@ def simulate_file(helper, FlightDataType, FlightEvent, ork_path: Path, verbose=F
             sim_name = str(_safe_call(sim, "getName", default=f"sim_{sim_idx}"))
             if motor:
                 helper.set_motor(sim, motor)
+            if not keep_turbulence:
+                _disable_turbulence(sim)
             motor_cfg = _get_motor_config_name(sim)
 
             helper.run_simulation(sim)
@@ -285,21 +308,30 @@ def simulate_file(helper, FlightDataType, FlightEvent, ork_path: Path, verbose=F
                 sim,
                 [
                     FlightDataType.TYPE_TIME,
-                    FlightDataType.TYPE_ALTITUDE,
-                    FlightDataType.TYPE_VELOCITY_Z,
-                    FlightDataType.TYPE_ACCELERATION_TOTAL,
                     FlightDataType.TYPE_STABILITY,
                     FlightDataType.TYPE_AOA,
                 ],
             )
 
             times = list(data[FlightDataType.TYPE_TIME])
-            altitudes = list(data[FlightDataType.TYPE_ALTITUDE])
-            velocities = list(data[FlightDataType.TYPE_VELOCITY_Z])
-            accels = list(data[FlightDataType.TYPE_ACCELERATION_TOTAL])
+
+            # Apogee, max velocity, max acceleration, time to apogee and
+            # flight time come from OpenRocket's own flight summary -- the
+            # same numbers the GUI's simulation table shows. Recomputing
+            # them from the time series gave different answers: vertical
+            # instead of total velocity, and an acceleration spike from a
+            # recovery event during descent instead of the ascent peak.
+            summary = sim.getSimulatedData()
+            apogee_m = float(summary.getMaxAltitude())
+            max_v = float(summary.getMaxVelocity())
+            max_a = float(summary.getMaxAcceleration())
+            t_apogee = float(summary.getTimeToApogee())
+            flight_time = float(summary.getFlightTime())
+            if not math.isfinite(t_apogee):
+                t_apogee = None
 
             events = helper.get_events(sim)
-            t_apogee = _get_apogee_time(events, FlightEvent)
+            t_rail_exit = _get_event_time(events, FlightEvent, "LAUNCHROD")
 
             # OpenRocket's "Stability margin calibers" series. Only
             # ascent samples (launch -> apogee) are used: after
@@ -311,15 +343,16 @@ def simulate_file(helper, FlightDataType, FlightEvent, ork_path: Path, verbose=F
                 if math.isfinite(s) and (t_apogee is None or t <= t_apogee)
             ]
 
+            # Angle of attack from rail exit to apogee. While the rocket sits
+            # on the rail its airspeed is ~0, so any crosswind reads as an AoA
+            # of 90 deg minus the rail angle (e.g. 82 deg on an 8 deg rail).
             aoas = [
                 a for t, a in zip(times, data[FlightDataType.TYPE_AOA])
-                if math.isfinite(a) and (t_apogee is None or t <= t_apogee)
+                if math.isfinite(a)
+                and (t_rail_exit is None or t >= t_rail_exit)
+                and (t_apogee is None or t <= t_apogee)
             ]
 
-            apogee_m = max(altitudes) if altitudes else float("nan")
-            max_v = max(velocities) if velocities else float("nan")
-            max_a = max(accels) if accels else float("nan")
-            flight_time = times[-1] if times else float("nan")
             min_stab = min(stabilities) if stabilities else float("nan")
             max_stab = max(stabilities) if stabilities else float("nan")
             first_stab = stabilities[0] if stabilities else float("nan")
@@ -387,13 +420,14 @@ def _worker_init(jar_path):
         _WORKER["init_error"] = traceback.format_exc()
 
 
-def _worker_simulate_file(ork_path_str, verbose, motor=None):
+def _worker_simulate_file(ork_path_str, verbose, motor=None, keep_turbulence=False):
     ork_path = Path(ork_path_str)
     if "init_error" in _WORKER:
         log = [f"    Worker failed to start OpenRocket:\n{_WORKER['init_error']}"]
         return [_error_row(ork_path, "", "WORKER_ERROR", "Worker JVM failed to start")], log, 0, 1
     return simulate_file(
-        _WORKER["helper"], _WORKER["FlightDataType"], _WORKER["FlightEvent"], ork_path, verbose, motor
+        _WORKER["helper"], _WORKER["FlightDataType"], _WORKER["FlightEvent"], ork_path, verbose, motor,
+        keep_turbulence,
     )
 
 
@@ -403,7 +437,7 @@ def _default_workers():
 
 
 def run_batch(input_dir: Path, output_csv: Path, recursive: bool, jar_path, limit=None,
-              verbose=False, workers=None, motor=None):
+              verbose=False, workers=None, motor=None, keep_turbulence=False):
     orkit, which = _import_orkit()
     print(f"Using wrapper package: {which}")
 
@@ -446,7 +480,7 @@ def run_batch(input_dir: Path, output_csv: Path, recursive: bool, jar_path, limi
         if workers == 1:
             _worker_init(jar_path)
             for idx, ork_path in enumerate(ork_files):
-                emit(idx, ork_path, _worker_simulate_file(str(ork_path), verbose, motor))
+                emit(idx, ork_path, _worker_simulate_file(str(ork_path), verbose, motor, keep_turbulence))
         else:
             # Results are written in input-file order (same CSV as a serial
             # run): finished files are buffered until all earlier ones are in.
@@ -460,7 +494,7 @@ def run_batch(input_dir: Path, output_csv: Path, recursive: bool, jar_path, limi
             )
             try:
                 futures = {
-                    executor.submit(_worker_simulate_file, str(p), verbose, motor): i
+                    executor.submit(_worker_simulate_file, str(p), verbose, motor, keep_turbulence): i
                     for i, p in enumerate(ork_files)
                 }
                 for fut in as_completed(futures):
@@ -504,6 +538,9 @@ def main():
     parser.add_argument("--motor", default=None,
                         help="Thrust curve file (.eng/.rse) to fly in every simulation, instead of the "
                              "motor saved in each .ork (use when headless OpenRocket can't find it)")
+    parser.add_argument("--keep-turbulence", action="store_true",
+                        help="Use the wind turbulence saved in each .ork (by default it is set to 0, "
+                             "keeping the average wind speed and direction)")
     args = parser.parse_args()
 
     motor = None
@@ -535,6 +572,7 @@ def main():
         verbose=args.verbose,
         workers=args.workers,
         motor=motor,
+        keep_turbulence=args.keep_turbulence,
     )
 
 
