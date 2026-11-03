@@ -207,6 +207,50 @@ def test_a_cached_load_error_is_simulated_again():
     print("cached load errors: ok")
 
 
+class StandInConfig:
+    """Enough of OpenRocket's FlightConfiguration for or_ci.flying_lengths: stages by number (0 = top), each
+    ending at an absolute station; the length is where the bottom active stage ends."""
+
+    class Stage:
+        def __init__(self, n):
+            self.n = n
+
+        def getStageNumber(self):
+            return self.n
+
+    def __init__(self, ends, active=None):
+        self.ends, self.active = ends, set(range(len(ends)) if active is None else active)
+
+    def clone(self):
+        return StandInConfig(self.ends, self.active)
+
+    def getLength(self):
+        return self.ends[max(self.active)]
+
+    def getActiveStageCount(self):
+        return len(self.active)
+
+    def getBottomStage(self):
+        return self.Stage(max(self.active))
+
+    def clearStage(self, n):
+        self.active.discard(n)
+
+
+def test_stability_length_follows_the_stages_left():
+    """Stability as % of length divides by what is still flying: Nimitz's sustainer (0.96 m) after separation,
+    not the 2.48 m launch stack, which read its margin about 3.6 times too small."""
+    nimitz = StandInConfig([0.9606, 2.4798])
+    assert or_ci.flying_lengths(nimitz, [2.976]) == [(-float("inf"), 2.4798), (2.976, 0.9606)]
+    assert nimitz.getActiveStageCount() == 2, "the simulation's own configuration keeps every stage"
+    assert or_ci.flying_lengths(StandInConfig([4.03]), []) == [(-float("inf"), 4.03)], "single stage: one length"
+    three = StandInConfig([1.0, 2.0, 3.0])
+    assert or_ci.flying_lengths(three, [9.0, 4.0]) == [(-float("inf"), 3.0), (4.0, 2.0), (9.0, 1.0)], "in time order"
+    assert or_ci.flying_lengths(StandInConfig([1.0, 2.0]), [3.0, 5.0]) == [(-float("inf"), 2.0), (3.0, 1.0)], \
+        "a separation event past the last stage changes nothing"
+    print("stability length per stage: ok")
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):

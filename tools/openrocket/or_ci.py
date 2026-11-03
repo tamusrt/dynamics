@@ -479,11 +479,46 @@ def _num(v):
     return float(v) if isinstance(v, (int, float)) and not isinstance(v, bool) else math.nan
 
 
+def pct_per_caliber(helper, sim, t):
+    """Factor turning OpenRocket's stability in calibers into % of rocket length at each time in `t`:
+    reference diameter / length of what is still flying x 100.
+
+    On a staged rocket both change at each stage separation: OpenRocket switches its reference diameter to the
+    stages left (Nimitz: 0.0758 m booster to 0.054 m sustainer) and reports calibers of that, and the length is
+    the stages left (2.48 m to 0.96 m). Using the full stack for the whole flight read the sustainer's margin
+    about 3.6 times too small."""
+    import numpy as np
+    from orlab import FlightDataType as F, FlightEvent as E
+    ref = np.asarray(helper.get_timeseries(sim, [F.TYPE_REFERENCE_LENGTH])[F.TYPE_REFERENCE_LENGTH], float)
+    t = np.asarray(t, float)
+    length = np.full(t.shape, math.nan)
+    for t_from, stage_length in flying_lengths(sim.getActiveConfiguration(), helper.get_events(sim).get(E.STAGE_SEPARATION, [])):
+        length[t >= t_from - 1e-9] = stage_length   # OpenRocket's sample at the event is already the upper stages
+    with np.errstate(invalid="ignore", divide="ignore"):
+        return ref / length * 100.0
+
+
+def flying_lengths(config, separations) -> list:
+    """[(from time, length of what is flying)]: the launch stack from the start, then after each stage separation
+    the stages left, the bottom one dropped each time. `config` is OpenRocket's FlightConfiguration; it is cloned,
+    so the simulation's own configuration keeps every stage."""
+    out = [(-math.inf, float(config.getLength()))]
+    flying = config.clone()
+    for t_sep in sorted(float(s) for s in separations):
+        if flying.getActiveStageCount() < 2:
+            break
+        flying.clearStage(flying.getBottomStage().getStageNumber())
+        out.append((t_sep, float(flying.getLength())))
+    return out
+
+
 def derived_metrics(helper, sim, summary: dict) -> dict:
-    """Max dynamic pressure (kPa) and a speed-windowed min/max stability, from the time series."""
+    """Max dynamic pressure (kPa), a speed-windowed min/max stability (calibers and % of length) and the
+    stability off the rod as % of length, from the time series."""
     import numpy as np
     from orlab import FlightDataType as F
-    out = {"max_dynamic_pressure_kpa": math.nan, "min_stability_cal": math.nan, "max_stability_cal": math.nan}
+    out = {"max_dynamic_pressure_kpa": math.nan, "min_stability_cal": math.nan, "max_stability_cal": math.nan,
+           "min_stability_pct": math.nan, "max_stability_pct": math.nan, "stability_off_rod_pct": math.nan}
     try:
         ts = helper.get_timeseries(sim, [F.TYPE_TIME, F.TYPE_AIR_PRESSURE, F.TYPE_AIR_TEMPERATURE,
                                          F.TYPE_VELOCITY_TOTAL, F.TYPE_STABILITY])
@@ -507,6 +542,17 @@ def derived_metrics(helper, sim, summary: dict) -> dict:
             if mask.any():
                 out["min_stability_cal"] = float(stab[mask].min())
                 out["max_stability_cal"] = float(stab[mask].max())
+        # % of length per sample, so a staged rocket's min/max are taken over what is flying at each time
+        factor = pct_per_caliber(helper, sim, t)
+        pct = stab * factor
+        if t_rod is not None and t_apo is not None:
+            mask = mask & ~np.isnan(pct)
+            if mask.any():
+                out["min_stability_pct"] = float(pct[mask].min())
+                out["max_stability_pct"] = float(pct[mask].max())
+        rod_cal = _num(summary.get("stability_off_rod_cal"))
+        if t_rod is not None and not math.isnan(rod_cal) and t.size:
+            out["stability_off_rod_pct"] = rod_cal * float(np.interp(t_rod, t, factor))
     except Exception:
         pass
     return out
@@ -585,8 +631,12 @@ def capture_flight_series(helper, sim, length_m: float, ref_d: float) -> dict:
         meta["dynamic_pressure"] = {"label": "Dynamic pressure", "unit": "Pa"}
     if "stability" in cols:
         meta["stability"] = {"label": "Stability margin", "unit": "cal"}
-        if length_m and ref_d and not (math.isnan(length_m) or math.isnan(ref_d)):
-            cols["stability_pct_length"] = cols["stability"] * ref_d / length_m * 100.0
+        try:   # per sample: a staged rocket's upper stages are shorter and narrower after separation
+            factor = pct_per_caliber(helper, sim, cols["time"])
+        except Exception:
+            factor = ref_d / length_m * 100.0 if length_m and ref_d and not (math.isnan(length_m) or math.isnan(ref_d)) else None
+        if factor is not None:
+            cols["stability_pct_length"] = cols["stability"] * factor
             meta["stability_pct_length"] = {"label": "Stability margin, % of length", "unit": "% L"}
     events = {}
     try:
@@ -738,7 +788,9 @@ def _run_one(helper, cfg, snap, root, ork_rel, base_rec, info, fcfg, scfg, sim, 
         summary["max_stability_cal_raw"] = summary.get("max_stability_cal")
         summary.update(derived_metrics(helper, sim, summary))
         summary.update(twr_metrics(helper, sim))
-        # stability as % of rocket length: calibers x (reference diameter / overall length) x 100
+        # stability as % of rocket length: calibers x (reference diameter / length) x 100. derived_metrics does it
+        # per sample (a staged rocket's sustainer is shorter and narrower); the launch stack's values are recorded
+        # and only stand in when the time series could not be read
         try:
             fc = sim.getActiveConfiguration()
             length_m, ref_d = float(fc.getLength()), float(fc.getReferenceLength())
@@ -747,7 +799,8 @@ def _run_one(helper, cfg, snap, root, ork_rel, base_rec, info, fcfg, scfg, sim, 
         summary["rocket_length_m"], summary["reference_diameter_m"] = length_m, ref_d
         for cal_key, pct_key in STABILITY_PAIRS.items():
             v = _num(summary.get(cal_key))
-            summary[pct_key] = v * ref_d / length_m * 100.0 if length_m and not math.isnan(v) else math.nan
+            if math.isnan(_num(summary.get(pct_key))):
+                summary[pct_key] = v * ref_d / length_m * 100.0 if length_m and not math.isnan(v) else math.nan
         rec["metrics"] = {k: _num(summary.get(k)) for k in METRIC_KEYS}
         rec["warnings"] = "; ".join(str(w) for w in (summary.get("warnings") or ()))[:400]
         rec["violations"] = check_limits(rec["metrics"], cfg.limits_for(fcfg, scfg), cfg.units)
@@ -1610,7 +1663,7 @@ def cmd_history(args):
     cache_dir = Path(args.cache).resolve() if args.cache else None
     if cache_dir:
         cache_dir.mkdir(parents=True, exist_ok=True)
-    cache_salt = f"s{cfg.seed}-w{int(cfg.deterministic_wind)}-m5"  # bump the suffix when metrics or the run setup change (m5: TWR metrics)
+    cache_salt = f"s{cfg.seed}-w{int(cfg.deterministic_wind)}-m6"  # bump the suffix when metrics or the run setup change (m5: TWR metrics; m6: % L per stage)
 
     def salt_for(f):  # the file's config entry (motors, variants) changes the results too
         import hashlib
