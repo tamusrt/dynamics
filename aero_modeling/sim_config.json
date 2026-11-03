@@ -27,7 +27,8 @@
     "**/PROGRESS REPORT*/**"
   ],
   "hide_commits": {
-    "fccc546": "2026-10-16 DYN meeting save of AIRMAIL.ork: file shrank from 926 kB to 484 kB and stability went to -57 %L; treated as a broken save, not a design change"
+    "fccc546": "2026-10-16 DYN meeting save of AIRMAIL.ork: file shrank from 926 kB to 484 kB and stability went to -57 %L; treated as a broken save, not a design change",
+    "b2127b9": "Accidental delete of the engine model created 0 apogee"
   },
   "limits": {
     "min_stability_pct": {"min": 9.0},
