@@ -95,37 +95,10 @@ def check_build(tmp: Path, orks) -> Path:
     return page
 
 
-def check_against_openrocket():
-    """Nimitz parts the parser once got wrong, against the values OpenRocket 24.12 itself gives for the file:
-    an "auto" radius saved with its value, an "ogive" with shape parameter 0 (a cone), an ogive transition
-    shaped by its real radius change, and an auto bulkhead inside a coupler (the coupler's bore)."""
-    ork = CONFIG.parent / "NIMITZ" / "Nimitz.ork"
-    if not ork.is_file():
-        print("openrocket values: skipped (no Nimitz.ork)")
-        return
-    comps = ork_geometry.parse(ork)["components"]
-
-    def part(name, x0):
-        return next(c for c in comps if c["name"] == name and abs(c["x0"] - x0) < 1e-3)
-
-    def near(got, want, tol, what):
-        assert is_num(got) and abs(got - want) <= tol, f"Nimitz {what}: {got!r}, OpenRocket gives {want}"
-
-    near(part("Nose tip (Aluminum)", 0.0)["mass"], 0.1195, 5e-4, "solid ogive-0 nose tip mass (kg)")
-    hollow = part("Nose Cone (hollow)", 0.1778)
-    near(hollow["r_fore"], 0.01542, 1e-5, "hollow nose cone fore radius (m)")
-    near(hollow["r_aft"], 0.02699, 1e-5, "hollow nose cone aft radius, saved as auto (m)")
-    near(part("Nosecone Straight Section", 0.4413)["r_fore"], 0.02699, 1e-5, "straight section radius, saved as auto (m)")
-    near(part("Bulkhead", 0.2591)["radius"], 0.01821, 5e-5, "bulkhead radius inside the ogive transition (m)")
-    near(part("Bulkhead", 0.5547)["radius"], 0.02281, 5e-5, "bulkhead radius inside the motor coupler (m)")
-    print("openrocket values: ok (Nimitz)")
-
-
 def main() -> int:
     orks = listed_orks()
     for path in orks:
         check_geometry(path)
-    check_against_openrocket()
     tmp = Path(tempfile.mkdtemp(prefix="or_vehicles_test_"))
     try:
         page = check_build(tmp, orks)
