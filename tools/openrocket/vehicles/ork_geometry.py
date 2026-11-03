@@ -135,7 +135,9 @@ def computed_mass(c, rec, el):
             t = fl(num(el, "thickness", 0.0))
         return math.pi * (R * R - max(R - t, 0.0) ** 2) * fl(rec.get("length")) * rho
     if kind in ("nosecone", "transition"):
-        filled = (el.findtext("filled") or "false").strip() == "true"
+        # solid part: older files write <filled>true</filled>, 24.12 writes <thickness>filled</thickness> (Nimitz's nose tip)
+        filled = ((el.findtext("filled") or "false").strip() == "true"
+                  or (el.findtext("thickness") or "").strip() == "filled")
         t = None if filled else fl(rec.get("thickness"))
         return shell_volume(rec["profile"], t) * rho
     if kind == "bulkhead":

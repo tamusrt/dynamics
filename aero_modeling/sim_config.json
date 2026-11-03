@@ -12,7 +12,9 @@
     "a broken or accidental save that would show as a big swing and back. 7+ hex characters, as shown on the site.",
     "rasaero: the .CDX1 that models the same rocket. The site puts an (i) after the design's name when the two disagree",
     "(shape, fins), and after a simulation's name when its fully loaded launch mass or CG does.",
-    "tools/openrocket/ork_vs_ras.py. rasaero_sim picks the RASAero row by motor name. Lumina has no RASAero model yet.",
+    "tools/openrocket/ork_vs_ras.py. rasaero_sim picks the RASAero row by motor name. Lumina and Nimitz have no RASAero model yet.",
+    "Nimitz flies commercial motors (Loki M3464LB booster, AeroTech K2050ST sustainer), which OpenRocket finds itself;",
+    "its entry is empty and only puts it on the Vehicles page.",
     "Full docs, metric definitions and examples: tools/openrocket/CI.md"
   ],
   "units": "imperial",
@@ -52,6 +54,7 @@
     "SOL_INVICTUS/OpenRocket/Invictus_RSE.ork": {
       "default_motor": "SOL_INVICTUS/OpenRocket/IGNIS_INJECTOR_SCALED_FULL_THRUST_FOR_DYN.rse",
       "rasaero": "SOL_INVICTUS/RasAero/Latest/Invictus_RasAero_4_30.CDX1"
-    }
+    },
+    "NIMITZ/Nimitz.ork": {}
   }
 }

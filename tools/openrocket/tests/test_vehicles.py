@@ -61,7 +61,8 @@ def check_geometry(path: Path):
             # AIRMAIL's "Nose Cone -> Body Coupler" is saved with thickness 0.0: OpenRocket gives it zero mass too
             zero_wall = c["fields"].get("thickness", "") in ("0", "0.0")
             assert c["mass"] > 0 or zero_wall, f"{where}: material mass is 0 although the file gives it a wall"
-        if c["kind"] == "bodytube" and is_num(c.get("thickness")):
+        # Nimitz's motor tubes are saved with thickness 0.0 and carry only an override: zero computed mass is right
+        if c["kind"] == "bodytube" and is_num(c.get("thickness")) and c["thickness"] > 0:
             try:
                 float(c["fields"].get("material_density", ""))
             except ValueError:

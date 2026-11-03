@@ -772,6 +772,31 @@ def open_jvm(jar):
     return orlab, jar
 
 
+def make_helper(orlab, inst):
+    """orlab.Helper for a started instance, with OpenRocket's ComponentPresetDao bound.
+
+    OpenRocket 24.12's headless CoreModule binds ComponentPresetDatabase but not the ComponentPresetDao
+    interface the .ork loader asks for (the GUI binds it in GuiModule), so a design using a parts-library
+    preset (a <preset .../> tag, e.g. Nimitz's Top Flight parachute) fails to load with a Guice
+    MissingImplementation. The binding is added in a child injector, pointing at the same database."""
+    import jpype
+    app = inst.openrocket.startup.Application
+    dao = inst.openrocket.database.ComponentPresetDao
+    injector = app.getInjector()
+    key = jpype.JClass("com.google.inject.Key").get(dao)
+    if injector is not None and injector.getExistingBinding(key) is None:
+        db = injector.getInstance(inst.openrocket.database.ComponentPresetDatabase)
+
+        @jpype.JImplements("com.google.inject.Module")
+        class BindPresetDao:
+            @jpype.JOverride
+            def configure(self, binder):
+                binder.bind(dao).toInstance(db)
+
+        app.setInjector(injector.createChildInjector(BindPresetDao()))
+    return orlab.Helper(inst)
+
+
 # ----------------------------------------------------------------------------
 # reporting
 # ----------------------------------------------------------------------------
@@ -1068,7 +1093,7 @@ def cmd_run(args):
     print(f"Running {len(files)} file(s) with OpenRocket jar {jar}")
     records = []
     with orlab.OpenRocketInstance(jar, log_level="ERROR") as inst:
-        helper = orlab.Helper(inst)
+        helper = make_helper(orlab, inst)
         for f in files:
             records.extend(run_ork(helper, cfg, snap, root, f, cfg.seed))
     out = Path(args.results)
@@ -1130,7 +1155,7 @@ def cmd_compare(args):
     print(f"Comparing {len(targets)} file(s): base={base_label or 'none'} head={head_sha}; jar {jar}")
     head_recs, base_recs = [], []
     with orlab.OpenRocketInstance(jar, log_level="ERROR") as inst:
-        helper = orlab.Helper(inst)
+        helper = make_helper(orlab, inst)
         for f in targets:
             if base is not None and base.exists(f):
                 base_recs.extend(run_ork(helper, cfg, base, root, f, cfg.seed, fallback=head))
@@ -1630,7 +1655,7 @@ def cmd_history(args):
     if todo:
         orlab, jar = open_jvm(args.jar)
         with orlab.OpenRocketInstance(jar, log_level="ERROR") as inst:
-            helper = orlab.Helper(inst)
+            helper = make_helper(orlab, inst)
             for f, v in todo:
                 snap = head if v["sha"] is None else Snapshot(root, v["sha"])
                 cfg_key = rel_posix(root / f, cfg.dir)  # config is keyed by the CURRENT name
