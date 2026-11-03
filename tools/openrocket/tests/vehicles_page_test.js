@@ -182,4 +182,72 @@ const ok = (c, msg) => { assert.ok(c, msg); checks++; };
   ok(errors.length === 0, 'no errors in zoom tests: ' + errors.map(String).join('; '));
 }
 
+// 6. stage toggles: a multistage design (Nimitz) can be drawn with any of its stages hidden
+{
+  const stagesOf = g => g.components.filter(c => c.kind === 'stage' && !c.parent);
+  const multi = KEYS.filter(k => stagesOf(GEO[k]).length >= 2);
+  const single = KEYS.filter(k => stagesOf(GEO[k]).length < 2);
+  ok(multi.length >= 1, 'the build has a multistage design to test the stage toggles on (Nimitz)');
+  const { w, d, errors } = load('');
+  const api = w.vehicleSideview;
+  const grp = d.getElementById('stagesGrp');
+  const buttons = () => Array.from(d.querySelectorAll('#stages button'));
+  const hashStages = () => new w.URLSearchParams(w.location.hash.slice(1)).get('stages');
+  if (single.length) {
+    api.setDesign(single[0]);
+    ok(grp.hidden && w.getComputedStyle(grp).display === 'none', 'single-stage design: no stage toggles (' + single[0] + ')');
+  }
+  for (const key of multi) {
+    const g = GEO[key], stages = stagesOf(g), byId = {};
+    g.components.forEach(c => { byId[c.id] = c; });
+    const stageOf = c => { for (let p = c; p; p = byId[p.parent]) if (p.kind === 'stage' && !p.parent) return p.id; return null; };
+    const inStage = id => g.components.filter(c => stageOf(c) === id);
+    // what the page should show for one stage alone: its body length measured from its own front
+    const aloneLength = st => Math.max(...inStage(st.id).filter(c => ['nosecone', 'bodytube', 'transition'].includes(c.kind)).map(c => c.x1)) - st.x0;
+    api.setDesign(key);
+    ok(!grp.hidden && w.getComputedStyle(grp).display !== 'none', key + ': stage toggles shown');
+    ok(buttons().length === stages.length && buttons().every(b => b.classList.contains('on') && b.getAttribute('aria-pressed') === 'true'), key + ': one button per stage, all on');
+    ok(buttons()[0].textContent === stages[0].name.replace(/\s*stage\s*$/i, '').trim(), key + ': buttons named after the stages: ' + buttons().map(b => b.textContent).join(', '));
+    const [top, bottom] = [stages[0], stages[stages.length - 1]];
+    // a part of the bottom stage is selected, then that stage is hidden: the selection goes with it
+    const bottomPart = inStage(bottom.id).find(c => c.kind !== 'stage');
+    api.select(bottomPart.id, true);
+    click(w, buttons()[stages.length - 1]);
+    ok(api.state.stages && api.state.stages.length === stages.length - 1 && !api.state.stages.includes(bottom.id), key + ': clicking the bottom stage hides it');
+    ok(api.state.selected === null, key + ': a selected part of a hidden stage is deselected');
+    ok(!buttons()[stages.length - 1].classList.contains('on') && buttons()[stages.length - 1].getAttribute('aria-pressed') === 'false', key + ': its button reads off');
+    ok(!d.querySelector('#card svg [data-id="' + bottomPart.id + '"]') && !d.querySelector('#tree .node[data-id="' + bottom.id + '"]'), key + ': the hidden stage is gone from drawing and tree');
+    ok(hashStages() === Array.from(stages.keys()).slice(0, -1).join(','), key + ': hash lists the stages shown: ' + w.location.hash);
+    if (stages.length === 2) {
+      ok(d.getElementById('stats').textContent.includes(inches(aloneLength(top))), key + ': length is the top stage alone, ' + inches(aloneLength(top)) + ': ' + d.getElementById('stats').textContent);
+      ok(/only/.test(d.getElementById('stats').textContent), key + ': stats say only some stages are shown');
+      // only the bottom stage: positions are measured from its own front
+      click(w, buttons()[1]); click(w, buttons()[0]);
+      ok(api.state.stages.length === 1 && api.state.stages[0] === bottom.id, key + ': bottom stage alone');
+      ok(d.getElementById('stats').textContent.includes(inches(aloneLength(bottom))), key + ': length is the bottom stage alone, ' + inches(aloneLength(bottom)));
+      const firstBody = inStage(bottom.id).filter(c => ['nosecone', 'bodytube', 'transition'].includes(c.kind)).sort((a, b) => a.x0 - b.x0)[0];
+      api.select(firstBody.id, true);
+      const dts = Array.from(d.querySelectorAll('#detail dt')).map(x => x.textContent), dds = Array.from(d.querySelectorAll('#detail dd')).map(x => x.textContent);
+      const at = dts.findIndex(t => /^From .+ front$/.test(t));
+      ok(at >= 0 && dds[at] === inches(firstBody.x0 - bottom.x0), key + ': details measure from the stage front: ' + dts[at] + ' = ' + dds[at]);
+      ok(d.querySelector('#card svg .body[data-id="' + firstBody.id + '"]'), key + ': bottom stage drawn');
+      click(w, buttons()[1]);
+      ok(api.state.stages.length === 1 && api.state.stages[0] === bottom.id, key + ': the last stage shown cannot be turned off');
+      // a fresh load from the hash restores the choice and the controls
+      const fresh = load(w.location.hash);
+      ok(fresh.errors.length === 0 && fresh.w.vehicleSideview.state.design === key && fresh.w.vehicleSideview.state.stages.join() === bottom.id, key + ': stages round-trip through the hash: ' + w.location.hash);
+      ok(Array.from(fresh.d.querySelectorAll('#stages button')).map(b => b.classList.contains('on')).join() === 'false,true', key + ': and the buttons with them');
+      click(w, buttons()[0]);
+    } else {
+      click(w, buttons()[stages.length - 1]);
+    }
+    ok(api.state.stages === null && hashStages() === null && buttons().every(b => b.classList.contains('on')), key + ': all stages on again, hash clean');
+    ok(d.getElementById('stats').textContent.includes(inches(g.length)), key + ': full stack length back');
+    api.setStages([top.id]);
+    api.setDesign(KEYS.find(k => k !== key) || key);
+    ok(api.state.stages === null && hashStages() === null, 'changing design shows every stage again');
+  }
+  ok(errors.length === 0, 'no errors in stage tests: ' + errors.map(String).join('; '));
+}
+
 console.log('ok: ' + checks + ' checks passed (' + KEYS.length + ' designs)');

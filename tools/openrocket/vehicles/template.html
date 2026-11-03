@@ -23,6 +23,7 @@
   .bar { display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: center; margin-bottom: 12px; }
   .bar label { color: var(--muted); }
   .bar .grp { display: inline-flex; align-items: center; gap: 6px; }
+  .bar .grp[hidden] { display: none; }
   select { font: inherit; color: var(--fg); background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 3px 26px 3px 8px; }
   .seg { display: inline-flex; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
   .seg button { font: inherit; color: var(--muted); background: var(--bg); border: 0; padding: 3px 10px; cursor: pointer; }
@@ -146,6 +147,9 @@
     <span class="grp" id="unitsGrp"><label>Units</label>
       <span class="seg" id="units"><button data-u="in" class="on">in</button><button data-u="mm">mm</button></span>
     </span>
+    <span class="grp" id="stagesGrp" hidden><label>Stages</label>
+      <span class="seg" id="stages" role="group" aria-label="Stages shown" title="Show or hide each stage; at least one stays on"></span>
+    </span>
     <label class="chk"><input type="checkbox" id="adv"> Advanced info</label>
     <span class="built" id="built">__BUILT__</span>
     <button class="btn" id="treeToggle" type="button" aria-pressed="true" title="Show or hide the component tree">Hide tree</button>
@@ -182,7 +186,7 @@ var DATA = JSON.parse(document.getElementById('geo').textContent);
 var NAMES = Object.keys(DATA);
 NAMES.forEach(function (n) { DATA[n].title = n; });
 var UNITS = { 'in': { f: 1 / 0.0254, d: 2, s: 'in' }, 'mm': { f: 1000, d: 0, s: 'mm' } };
-var state = { design: NAMES[0], units: 'in', selected: null, query: '', tree: true, adv: false, embed: false, collapsed: {} };
+var state = { design: NAMES[0], units: 'in', selected: null, query: '', tree: true, adv: false, embed: false, collapsed: {}, stages: null };
 
 var BODY = { nosecone: 1, bodytube: 1, transition: 1 };
 var MASSY = { masscomponent: 1, parachute: 1, streamer: 1, shockcord: 1 };
@@ -297,6 +301,44 @@ function dimV(X, Y1, Y2, value, ext, cls) {
   else out += line(X, Y1 - 16, X, Y2 + 16) + arrow(X, Y1, Math.PI / 2) + arrow(X, Y2, -Math.PI / 2);
   out += text(X + 6, (Y1 + Y2) / 2 + 4, value, cls, 'start');
   return out + '</g>';
+}
+
+/* ---------- stages: a multistage design (Nimitz: sustainer + booster) can be drawn with only some of them ---------- */
+function stagesOf(g) { return g.components.filter(function (c) { return c.kind === 'stage' && !c.parent; }); }
+function stageLabel(st, i) { return String(st.name || '').replace(/\s*stage\s*$/i, '').trim() || 'Stage ' + (i + 1); }
+/* The design with only the stages whose ids are in `shown` (null = all): their components, moved so the front of the
+   first stage shown is at 0, with length and max radius of what is left. The design itself when nothing is hidden. */
+function stageView(g, shown) {
+  var stages = stagesOf(g);
+  if (stages.length < 2 || !shown) return g;
+  var on = {};
+  shown.forEach(function (id) { on[id] = 1; });
+  var kept = stages.filter(function (st) { return on[st.id]; });
+  if (!kept.length || kept.length === stages.length) return g;
+  var byId = {};
+  g.components.forEach(function (c) { byId[c.id] = c; });
+  function stageOf(c) {
+    for (var p = c, guard = 0; p && guard < 64; p = byId[p.parent], guard++) if (p.kind === 'stage' && !p.parent) return p.id;
+    return null;
+  }
+  var dx = Math.min.apply(null, kept.map(function (st) { return num(st.x0) || 0; }));
+  function shift(v) { return num(v) !== null ? v - dx : v; }
+  var comps = g.components.filter(function (c) { return on[stageOf(c)]; }).map(function (c) {
+    var o = {};
+    for (var k in c) o[k] = c[k];
+    o.x0 = shift(c.x0); o.x1 = shift(c.x1);
+    if (c.profile) o.profile = c.profile.map(function (p) { return [p[0] - dx, p[1]]; });
+    return o;
+  });
+  var length = 0, R = 0;
+  comps.forEach(function (c) {
+    if (!BODY[c.kind] || !c.profile || !c.profile.length) return;
+    length = Math.max(length, c.x1);
+    c.profile.forEach(function (p) { R = Math.max(R, p[1]); });
+  });
+  return { name: g.name, file: g.file, title: g.title, or_version: g.or_version, length: length, max_radius: R, components: comps,
+    offset: dx, shownStages: kept.map(function (st) { return stageLabel(st, stages.indexOf(st)); }),
+    front: dx > 1e-9 ? 'From ' + stageLabel(kept[0], stages.indexOf(kept[0])).toLowerCase() + ' front' : null };
 }
 
 /* ---------- main renderer: returns { svg, parts, stats } ---------- */
@@ -442,11 +484,12 @@ function render(g) {
   var finCount = finSets.reduce(function (a, f) { return a + (f.fins.count || 0); }, 0);
   var groups = {}; parts.forEach(function (c) { groups[kindOf(c)[0]] = 1; });
   return { svg: out.join('\n'), parts: parts, byId: byId, boxes: boxes, groups: GROUP_ORDER.filter(function (k) { return groups[k]; }),
+    posLabel: g.front || 'From nose tip',
     stats: { length: L, diameter: 2 * R, fins: finCount, parts: parts.length, ld: (2 * R) ? L / (2 * R) : null } };
 }
 
 /* ---------- tooltip text ---------- */
-function describe(c, byId) {
+function describe(c, byId, posLabel) {
   var rows = [];
   var len = num(c.length);
   if (c.fins) {
@@ -469,7 +512,7 @@ function describe(c, byId) {
       if (num(c.inner_radius) !== null && c.inner_radius > 0) rows.push(['Inner dia.', fmtLen(2 * c.inner_radius)]);
     }
   }
-  if (num(c.x0) !== null) rows.push(['From nose tip', fmtLen(c.x0) + (num(c.x1) !== null ? ' – ' + fmtLen(c.x1) : '')]);
+  if (num(c.x0) !== null) rows.push([posLabel || 'From nose tip', fmtLen(c.x0) + (num(c.x1) !== null ? ' – ' + fmtLen(c.x1) : '')]);
   if (num(c.mass) !== null) rows.push(['Mass', fmtMass(c.mass)]);
   var p = byId[c.parent];
   if (p && p.kind !== 'stage') rows.push(['Inside', p.name]);
@@ -491,7 +534,7 @@ function buildModel(g) {
 }
 
 /* ---------- details panel ---------- */
-function detailRows(n, byId) {
+function detailRows(n, byId, posLabel) {
   var c = n.c, rows = [];
   function add(k, v) { rows.push([k, v]); }
   if (c.kind === 'stage') {
@@ -499,7 +542,7 @@ function detailRows(n, byId) {
     var k = 0; (function w(x) { x.children.forEach(function (y) { k++; w(y); }); })(n);
     add('Components', n.children.length + ' body components, ' + k + ' total');
   } else {
-    add('From nose tip', fmtLenOpt(c.x0));
+    add(posLabel || 'From nose tip', fmtLenOpt(c.x0));
     add('Ends at', fmtLenOpt(c.x1));
     add('Length', fmtLenOpt(c.length));
     if (BODY[c.kind]) {
@@ -525,8 +568,8 @@ function detailRows(n, byId) {
   rows.push(['Mass', num(c.mass) !== null ? fmtMass(c.mass) : '—', massNote(c)]);
   return rows;
 }
-function detailHTML(n, byId) {
-  var c = n.c, rows = detailRows(n, byId), massRow = rows.pop();
+function detailHTML(n, byId, posLabel) {
+  var c = n.c, rows = detailRows(n, byId, posLabel), massRow = rows.pop();
   var h = '<div class="head"><h2>' + esc(c.name) + '</h2><span class="kindlabel ' + kcls(c) + '">' + esc(c.label || c.kind) + '</span></div>';
   h += '<div class="grid"><div><h3>Dimensions</h3><dl>';
   rows.forEach(function (r) { h += '<dt>' + esc(r[0]) + '</dt><dd>' + esc(r[1]) + '</dd>'; });
@@ -547,7 +590,20 @@ function detailHTML(n, byId) {
   return h + '</div></div>';
 }
 
-/* ---------- URL hash: design / units / sel / tree / adv are ours; embed, stab and (when embedded) units belong to the parent page ---------- */
+/* ---------- URL hash: design / units / sel / tree / adv / stages are ours; embed, stab and (when embedded) units belong to the parent page ----------
+   stages: the stages shown by index, top stage 0 (Nimitz: "stages=1" is the booster alone); left out when all are */
+function stagesToHash(g, shown) {
+  if (!shown) return null;
+  var idx = [];
+  stagesOf(g).forEach(function (st, i) { if (shown.indexOf(st.id) >= 0) idx.push(i); });
+  return idx.length && idx.length < stagesOf(g).length ? idx.join(',') : null;
+}
+function stagesFromHash(g, v) {
+  var stages = stagesOf(g);
+  if (!v || stages.length < 2) return null;
+  var ids = String(v).split(',').map(function (s) { return stages[parseInt(s, 10)]; }).filter(Boolean).map(function (st) { return st.id; });
+  return ids.length && ids.length < stages.length ? ids : null;
+}
 function hashParams() {
   var h = (typeof location !== 'undefined' && location.hash) ? location.hash.replace(/^#/, '') : '';
   return new URLSearchParams(h);
@@ -561,6 +617,8 @@ function writeHash() {
   if (state.selected) p.set('sel', state.selected); else p.delete('sel');
   if (!state.tree) p.set('tree', '0'); else p.delete('tree');
   if (state.adv) p.set('adv', '1'); else p.delete('adv');
+  var sh = stagesToHash(DATA[state.design], state.stages);
+  if (sh) p.set('stages', sh); else p.delete('stages');
   var q = p.toString(), next = q ? '#' + q : '';
   if ((location.hash || '') === next) return;
   if (!next && !location.hash) return;
@@ -583,8 +641,23 @@ function init() {
     var b = e.target.closest('button'); if (!b) return;
     setUnits(b.getAttribute('data-u'));
   });
+  var stagesGrp = document.getElementById('stagesGrp'), stagesEl = document.getElementById('stages');
+  stagesEl.addEventListener('click', function (e) {
+    var b = e.target.closest('button'); if (!b) return;
+    toggleStage(b.getAttribute('data-stage'));
+  });
+  function syncStages() {   // one button per stage, shown only for multistage designs
+    var stages = stagesOf(DATA[state.design]);
+    stagesGrp.hidden = stages.length < 2;
+    stagesEl.innerHTML = stages.length < 2 ? '' : stages.map(function (st, i) {
+      var on = !state.stages || state.stages.indexOf(st.id) >= 0;
+      return '<button type="button" data-stage="' + esc(st.id) + '" class="' + (on ? 'on' : '') + '" aria-pressed="' + on + '" title="' +
+        esc((on ? 'Hide ' : 'Show ') + st.name) + '">' + esc(stageLabel(st, i)) + '</button>';
+    }).join('');
+  }
   function syncControls() {
     sel.value = state.design;
+    syncStages();
     Array.prototype.forEach.call(unitsEl.querySelectorAll('button'), function (x) { x.classList.toggle('on', x.getAttribute('data-u') === state.units); });
     layout.classList.toggle('notree', !state.tree);
     treeToggle.textContent = state.tree ? 'Hide tree' : 'Show tree';
@@ -596,8 +669,20 @@ function init() {
   advEl.addEventListener('change', function () { state.adv = advEl.checked; syncControls(); writeHash(); });
   function setDesign(name) {
     if (!DATA[name]) return;
-    state.design = name; state.selected = null; state.collapsed = {};
+    state.design = name; state.selected = null; state.collapsed = {}; state.stages = null;
     syncControls(); draw(); writeHash();
+  }
+  /* Show or hide one stage; the last one shown stays on. All stages shown is stored as null. */
+  function setStages(ids) {
+    var all = stagesOf(DATA[state.design]).map(function (st) { return st.id; });
+    ids = (ids || all).filter(function (id) { return all.indexOf(id) >= 0; });
+    if (!ids.length) return;
+    state.stages = ids.length < all.length ? ids : null;
+    syncControls(); draw(); writeHash();
+  }
+  function toggleStage(id) {
+    var shown = state.stages || stagesOf(DATA[state.design]).map(function (st) { return st.id; });
+    setStages(shown.indexOf(id) >= 0 ? shown.filter(function (x) { return x !== id; }) : shown.concat([id]));
   }
   function setUnits(u) {
     if (!UNITS[u]) return;
@@ -608,15 +693,18 @@ function init() {
 
   var current = null, model = null;
   function draw() {
-    var g = DATA[state.design], res = render(g);
+    var g = stageView(DATA[state.design], state.stages), res = render(g);
     setHL(null); hideTip();
     current = res; model = buildModel(g);
     drawingEl.innerHTML = res.svg;
     var svg0 = svgEl(); fitView = parseVB(svg0);
-    if (state.design !== lastDesign || !zoomed) { lastDesign = state.design; view = { x: fitView.x, y: fitView.y, w: fitView.w, h: fitView.h }; zoomed = false; }
+    // a new design or a different set of stages is a different drawing: fit it
+    var viewKey = state.design + '|' + (state.stages || []).join(',');
+    if (viewKey !== lastViewKey || !zoomed) { lastViewKey = viewKey; view = { x: fitView.x, y: fitView.y, w: fitView.w, h: fitView.h }; zoomed = false; }
     else svg0.setAttribute('viewBox', vbStr(view));
     var st = res.stats;
-    statsEl.innerHTML = '<b>' + esc(g.file) + '</b> · length <b>' + esc(fmtLen(st.length)) + '</b> · max ⌀ <b>' + esc(fmtLen(st.diameter)) + '</b>' +
+    statsEl.innerHTML = '<b>' + esc(g.file) + '</b>' + (g.shownStages ? ' · <b>' + esc(g.shownStages.join(' + ')) + '</b> only' : '') +
+      ' · length <b>' + esc(fmtLen(st.length)) + '</b> · max ⌀ <b>' + esc(fmtLen(st.diameter)) + '</b>' +
       (st.ld ? ' · L/D <b>' + st.ld.toFixed(1) + '</b>' : '') + ' · <b>' + st.fins + '</b> fins · <b>' + st.parts + '</b> parts';
     keyEl.innerHTML = res.groups.map(function (k) { return '<span class="k-' + k + '"><i></i>' + esc(GROUP_LABEL[k]) + '</span>'; }).join('');
     if (state.selected && !model.nodes[state.selected]) state.selected = null;
@@ -640,7 +728,7 @@ function init() {
   if (typeof ResizeObserver !== 'undefined') new ResizeObserver(fitText).observe(card);
 
   /* ---------- zoom & pan: viewBox based, like OpenRocket's rocket figure; never written to the URL hash ---------- */
-  var fitView = null, view = null, zoomed = false, lastDesign = null;
+  var fitView = null, view = null, zoomed = false, lastViewKey = null;
   var ZOOM_MIN = 0.5, ZOOM_MAX = 40, STEP = 1.15;
   function svgEl() { return drawingEl.querySelector('svg'); }
   function parseVB(svg) { var v = (svg.getAttribute('viewBox') || '').split(/[\s,]+/).map(Number); return v.length === 4 ? { x: v[0], y: v[1], w: v[2], h: v[3] } : null; }
@@ -845,7 +933,7 @@ function init() {
     }
     if (svg) svg.classList.toggle('hasSel', inDrawing);
     var n = id !== null ? model.nodes[id] : null;
-    detailEl.innerHTML = n ? detailHTML(n, current.byId) : '<p class="placeholder">Select a part in the tree or the drawing to see its dimensions.</p>';
+    detailEl.innerHTML = n ? detailHTML(n, current.byId, current.posLabel) :'<p class="placeholder">Select a part in the tree or the drawing to see its dimensions.</p>';
     if (n && current.boxes[id]) detailEl.querySelector('.head').insertAdjacentHTML('beforeend', '<button type="button" class="zoomto" data-zoom-to="' + esc(id) + '" title="Fit the drawing to this part">zoom to part</button>');
   }
   detailEl.addEventListener('click', function (e) {
@@ -869,7 +957,7 @@ function init() {
   }
   function showTip(id, x, y) {
     var c = current && current.byId[id]; if (!c) return hideTip();
-    tip.innerHTML = describe(c, current.byId);
+    tip.innerHTML = describe(c, current.byId, current.posLabel);
     tip.style.display = 'block';
     var W = tip.offsetWidth, Hh = tip.offsetHeight;
     var px = x + 14, py = y + 14;
@@ -891,6 +979,8 @@ function init() {
     state.embed = h.get('embed') === '1';
     var dsg = h.get('design');
     if (dsg && DATA[dsg] && dsg !== state.design) { state.design = dsg; state.collapsed = {}; redraw = true; }
+    var stg = stagesFromHash(DATA[state.design], h.get('stages'));
+    if ((stg || []).join(',') !== (state.stages || []).join(',')) { state.stages = stg; redraw = true; }
     var u = unitsFromHash(h.get('units'));
     if (u && u !== state.units) { state.units = u; redraw = true; }
     state.tree = h.get('tree') !== '0';
@@ -902,11 +992,12 @@ function init() {
   }
   window.addEventListener('hashchange', applyHash);
   applyHash();
-  window.vehicleSideview = { state: state, select: select, setDesign: setDesign, setUnits: setUnits, renderTree: renderTree, applyHash: applyHash, names: NAMES };
+  window.vehicleSideview = { state: state, select: select, setDesign: setDesign, setUnits: setUnits, setStages: setStages, toggleStage: toggleStage,
+    renderTree: renderTree, applyHash: applyHash, names: NAMES };
 }
 
 if (typeof window !== 'undefined' && typeof document !== 'undefined' && document.getElementById('card')) init();
-if (typeof module !== 'undefined') module.exports = { render: render, describe: describe, DATA: DATA, state: state };
+if (typeof module !== 'undefined') module.exports = { render: render, describe: describe, stageView: stageView, stagesOf: stagesOf, DATA: DATA, state: state };
 })();
 </script>
 </body>
