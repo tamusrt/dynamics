@@ -1289,6 +1289,20 @@ def git_file_history(root: Path, rel: str, max_commits: int):
     return entries[::-1]
 
 
+def cache_usable(recs: list, need_series: bool) -> bool:
+    """Whether a version's cached results can stand in for simulating it again.
+
+    A file that failed to load is tried again: the failure is usually OpenRocket's setup, not the design (Nimitz's
+    preset parachute before make_helper; its first two versions were cached as LOAD_ERROR), and a load error costs
+    under a second. A cached flight series thinned differently (older stride) is re-simulated when the site needs it."""
+    if any(r.get("status") == "LOAD_ERROR" for r in recs):
+        return False
+    if not need_series:
+        return True
+    return all("series" in r and (not r["series"] or r["series"].get("stride") == SERIES_DESCENT_STRIDE)
+               for r in recs if r.get("status") == "OK" and "unresolved" not in (r.get("motor_source") or ""))
+
+
 def drop_hidden_versions(cfg: Config, rel: str, versions: list, log=print) -> list:
     """Leave out the versions whose commit is listed under hide_commits in sim_config.json: a broken or
     accidental save that would otherwise show as a huge swing and back. The next version's change is then
@@ -1637,10 +1651,7 @@ def cmd_history(args):
             if hit and hit.is_file():
                 try:
                     recs = json.loads(hit.read_text(encoding="utf-8"))
-                    # a cached series thinned differently (older stride) is re-simulated for the site
-                    has_series = all("series" in r and (not r["series"] or r["series"].get("stride") == SERIES_DESCENT_STRIDE)
-                                     for r in recs if r.get("status") == "OK" and "unresolved" not in (r.get("motor_source") or ""))
-                    if key not in want_series or has_series:
+                    if cache_usable(recs, key in want_series):
                         cached[key] = recs
                         continue
                 except Exception:

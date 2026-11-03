@@ -194,6 +194,19 @@ def test_a_thrust_curve_commit_is_a_version_of_the_design():
     print("thrust-curve versions: ok")
 
 
+def test_a_cached_load_error_is_simulated_again():
+    """Nimitz's first two versions were cached as LOAD_ERROR before OpenRocket could read its preset parachute;
+    a cached load error must not stand in for a run, or the History keeps showing the failure after the fix."""
+    ok = {"status": "OK", "motor_source": "file", "series": {"stride": or_ci.SERIES_DESCENT_STRIDE}}
+    assert or_ci.cache_usable([ok], need_series=False) and or_ci.cache_usable([ok], need_series=True)
+    assert not or_ci.cache_usable([{"status": "LOAD_ERROR", "sim_index": -1}], need_series=False)
+    assert not or_ci.cache_usable([ok, {"status": "LOAD_ERROR"}], need_series=False)
+    assert or_ci.cache_usable([{"status": "SIM_ERROR"}], need_series=False), "a simulation error is the design's own"
+    old_stride = {"status": "OK", "motor_source": "file", "series": {"stride": -1}}
+    assert or_ci.cache_usable([old_stride], need_series=False) and not or_ci.cache_usable([old_stride], need_series=True)
+    print("cached load errors: ok")
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):

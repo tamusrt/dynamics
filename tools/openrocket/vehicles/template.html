@@ -415,10 +415,15 @@ function render(g) {
   // fin root chord (row 1) + span (vertical, right of fin)
   finDims.forEach(function (d) {
     var f = d.f, xs = d.pts.map(function (q) { return q[0]; }), ys = d.pts.map(function (q) { return q[1]; });
-    var xa = f.x0 + Math.min.apply(null, xs), xb = f.x0 + Math.max.apply(null, xs), span = Math.max.apply(null, ys);
+    // the root chord runs along the body (y = 0); a swept tip can reach behind it (Nimitz's booster fins), so the
+    // fin's overall extent is not the root chord
+    var rootXs = d.pts.filter(function (q) { return Math.abs(q[1]) < 1e-9; }).map(function (q) { return q[0]; });
+    if (rootXs.length < 2) rootXs = xs;
+    var xa = f.x0 + Math.min.apply(null, rootXs), xb = f.x0 + Math.max.apply(null, rootXs), span = Math.max.apply(null, ys);
+    var xEnd = f.x0 + Math.max.apply(null, xs);
     var iTip = ys.indexOf(span), xTip = f.x0 + d.pts[iTip][0];
     out.push(dimH(X(xa), X(xb), yRow1, fmtLen(xb - xa), 'fin root chord', [[X(xa), -d.surf * s], [X(xb), -d.surf * s]]));
-    var vx = X(xb) + 16;
+    var vx = X(xEnd) + 16;
     out.push(dimV(vx, -(d.surf + span) * s, -d.surf * s, fmtLen(span) + ' span', [[X(xTip), -(d.surf + span) * s], [X(xb), -d.surf * s]]));
   });
   // max diameter: vertical, in the middle of the longest full-diameter tube

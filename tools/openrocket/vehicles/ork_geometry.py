@@ -50,6 +50,18 @@ def num(el, tag, default=None):
         return t
 
 
+def auto_value(el, tag):
+    """The value OpenRocket resolved an "auto" field to ("auto 0.0762" in 24.12 files), or None for a bare "auto"
+    (older files), which the caller then works out from the neighbouring parts."""
+    parts = (el.findtext(tag) or "").split()
+    if len(parts) == 2 and parts[0] == "auto":
+        try:
+            return float(parts[1])
+        except ValueError:
+            return None
+    return None
+
+
 def leaf_fields(el):
     out = {}
     for c in el:
@@ -73,12 +85,15 @@ def nose_profile(shape, param, L, R, n=40):
         if shape == "conical":
             r = R * t
         elif shape == "ogive":
-            k = param if param not in (None, 0) else 1.0      # 1 = tangent ogive
-            rho = (R * R + L * L) / (2 * R) if R else 1.0
-            # OpenRocket blends secant ogives by k; the tangent ogive is the common case
-            r = math.sqrt(max(rho * rho - (L - x) ** 2, 0)) + R - rho if R else 0.0
-            if k < 1:  # secant: scale towards the conical line
-                r = k * r + (1 - k) * R * t
+            # OpenRocket's Transition.Shape.OGIVE: k = 1 tangent ogive, 0 < k < 1 secant ogive, k = 0 a cone
+            # (Nimitz's aluminium nose tip is an "ogive" with k = 0)
+            k = param if param is not None else 1.0
+            if k < 0.001 or not R or not L:
+                r = R * t
+            else:
+                rc = math.sqrt((L * L + R * R) * (((2 - k) * L) ** 2 + (k * R) ** 2) / (4 * (k * R) ** 2))
+                lk = L / k
+                r = math.sqrt(max(rc * rc - (lk - x) ** 2, 0)) - math.sqrt(max(rc * rc - lk * lk, 0))
         elif shape == "ellipsoid":
             r = R * math.sqrt(max(1 - (1 - t) ** 2, 0))
         elif shape == "power":
@@ -194,11 +209,14 @@ def parse(path: Path) -> dict:
                 rec["x1"] = cursor["x"]; rec["length"] = rec["x1"] - rec["x0"]
                 continue
             if c.tag in BODY:
+                # an "auto" radius takes the value OpenRocket saved with it when there is one; chaining it off the
+                # previous part instead goes wrong when two autos meet (Nimitz's hollow nose cone and the straight
+                # section behind it both came out as the nose tip's 1.2 in instead of the 2.125 in body)
                 L = num(c, "length", 0.0) or 0.0
                 if c.tag == "nosecone":
                     r_aft = num(c, "aftradius"); r_fore = 0.0
                     if r_aft == "auto":
-                        r_aft = cursor["r"] or 0.0
+                        r_aft = auto_value(c, "aftradius") or cursor["r"] or 0.0
                     flipped = (c.findtext("isflipped") or "false").strip() == "true"
                     prof = nose_profile((c.findtext("shape") or "ogive").strip(), num(c, "shapeparameter"), L, r_aft)
                     if flipped:
@@ -206,21 +224,22 @@ def parse(path: Path) -> dict:
                 elif c.tag == "bodytube":
                     r = num(c, "radius")
                     if r == "auto":
-                        r = cursor["r"]
+                        r = auto_value(c, "radius") or cursor["r"]
                     r_fore = r_aft = r or 0.0
                     prof = [[0.0, r_fore], [L, r_aft]]
                 else:  # transition
                     r_fore, r_aft = num(c, "foreradius"), num(c, "aftradius")
                     if r_fore == "auto":
-                        r_fore = cursor["r"]
-                    if r_aft == "auto":
-                        r_aft = r_fore   # resolved after the pass when a tube follows
+                        r_fore = auto_value(c, "foreradius") or cursor["r"]
+                    if r_aft == "auto":   # a bare "auto" is resolved after the pass when a tube follows
+                        r_aft = auto_value(c, "aftradius") or r_fore
                     shape = (c.findtext("shape") or "conical").strip()
-                    base = nose_profile(shape, num(c, "shapeparameter"), L, 1.0)
+                    # shaped by the actual radius change, as OpenRocket does: an ogive's curve depends on it
+                    base = nose_profile(shape, num(c, "shapeparameter"), L, abs(r_aft - r_fore))
                     if r_aft >= r_fore:   # widening: nose-shaped growth from fore to aft
-                        prof = [[x, r_fore + (r_aft - r_fore) * r] for x, r in base]
+                        prof = [[x, r_fore + r] for x, r in base]
                     else:                 # narrowing: mirror the shape
-                        prof = [[L - x, r_aft + (r_fore - r_aft) * r] for x, r in reversed(base)]
+                        prof = [[L - x, r_aft + r] for x, r in reversed(base)]
                 x0 = cursor["x"] + (value if method == "after" else 0.0)
                 rec.update(x0=x0, x1=x0 + L, length=L, r_fore=r_fore, r_aft=r_aft, profile=[[x0 + x, r] for x, r in prof],
                            thickness=num(c, "thickness"))
@@ -270,6 +289,8 @@ def parse(path: Path) -> dict:
                 ro = num(c, "outerradius")
                 fl = lambda v: v if isinstance(v, float) else 0.0   # "auto" or missing -> 0
                 pr = (fl(parent.get("r_aft")) or fl(parent.get("radius"))) - fl(parent.get("thickness")) if parent else 0.0
+                if parent and isinstance(parent.get("inner_radius"), float):   # inside a coupler or inner tube: its bore
+                    pr = parent["inner_radius"]
                 auto_r = ro == "auto" or not isinstance(ro, float)
                 rec["radius"] = pr if auto_r else ro
                 ri = num(c, "innerradius")
@@ -308,12 +329,13 @@ def parse(path: Path) -> dict:
         rec["mass_computed"] = mc
         if rec["mass"] is None and mc is not None:
             rec["mass"], rec["mass_source"] = mc, "material"
-    # a transition whose aft radius was "auto" takes the radius of the body component after it
+    # a transition whose aft radius was a bare "auto" (no saved value) takes the radius of the body component after it
     bodies = [c for c in comps if c["kind"] in BODY]
     for a, b in zip(bodies, bodies[1:]):
-        if a["kind"] == "transition" and str(a["fields"].get("aftradius", "")).startswith("auto") and b["kind"] == "bodytube":
+        bare_auto = str(a["fields"].get("aftradius", "")).strip() == "auto"
+        if a["kind"] == "transition" and bare_auto and b["kind"] == "bodytube":
             a["r_aft"] = b["r_fore"]; a["profile"] = [[x, r if x < a["x1"] else b["r_fore"]] for x, r in a["profile"]]
-        if a["kind"] == "nosecone" and str(a["fields"].get("aftradius", "")).startswith("auto") and b["kind"] == "bodytube":
+        if a["kind"] == "nosecone" and bare_auto and b["kind"] == "bodytube":
             scale = b["r_fore"] / (a["r_aft"] or 1.0); a["r_aft"] = b["r_fore"]; a["profile"] = [[x, r * scale] for x, r in a["profile"]]
     length = max((c["x1"] for c in bodies), default=0.0)
     max_r = max((max(c["r_fore"], c["r_aft"]) for c in bodies), default=0.0)
