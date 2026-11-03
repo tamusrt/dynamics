@@ -69,14 +69,29 @@
       <LaunchShoeArea>0</LaunchShoeArea>
       <Location>61.6279</Location>
       <Color>Black</Color>
-      <BoattailLength>4.15</BoattailLength>
-      <BoattailRearDiameter>3.6</BoattailRearDiameter>
+      <BoattailLength>0</BoattailLength>
+      <BoattailRearDiameter>0</BoattailRearDiameter>
       <BoattailOffset>0</BoattailOffset>
       <Overhang>0</Overhang>
+    </BodyTube>
+    <FinCan>
+      <PartType>FinCan</PartType>
+      <Length>19</Length>
+      <Diameter>6.055</Diameter>
+      <InsideDiameter>6</InsideDiameter>
+      <LaunchLugDiameter>0</LaunchLugDiameter>
+      <LaunchLugLength>0</LaunchLugLength>
+      <RailGuideDiameter>0</RailGuideDiameter>
+      <RailGuideHeight>0</RailGuideHeight>
+      <LaunchShoeArea>0</LaunchShoeArea>
+      <Location>159.6877</Location>
+      <ShoulderLength>0.5</ShoulderLength>
+      <Offset>-19</Offset>
+      <Color>Black</Color>
       <Fin>
         <Count>4</Count>
         <Chord>14</Chord>
-        <Span>6.5</Span>
+        <Span>6.25</Span>
         <SweepDistance>12</SweepDistance>
         <TipChord>4</TipChord>
         <Thickness>0.3</Thickness>
@@ -84,16 +99,16 @@
         <Location>17</Location>
         <AirfoilSection>Double Wedge</AirfoilSection>
         <FX1>3.9</FX1>
-        <FX3>0</FX3>
+        <FX3>3.9</FX3>
       </Fin>
-    </BodyTube>
+    </FinCan>
     <BoatTail>
       <PartType>BoatTail</PartType>
       <Length>4.15</Length>
-      <Diameter>6</Diameter>
+      <Diameter>6.055</Diameter>
       <RearDiameter>3.6</RearDiameter>
       <Location>159.6877</Location>
-      <Color>Blue</Color>
+      <Color>Black</Color>
     </BoatTail>
     <Surface>Rough Camouflage Paint</Surface>
     <CP>0</CP>
@@ -148,9 +163,9 @@
       <Booster2NozzleDiameter>0</Booster2NozzleDiameter>
       <IncludeBooster2>False</IncludeBooster2>
       <FlightTime>0</FlightTime>
-      <TimetoApogee>46.5282</TimetoApogee>
-      <MaxAltitude>34521.18</MaxAltitude>
-      <MaxVelocity>1760.922</MaxVelocity>
+      <TimetoApogee>46.58819</TimetoApogee>
+      <MaxAltitude>34628.24</MaxAltitude>
+      <MaxVelocity>1768.626</MaxVelocity>
       <OptimumWt>0</OptimumWt>
       <OptimumMaxAlt>0</OptimumMaxAlt>
     </Simulation>
