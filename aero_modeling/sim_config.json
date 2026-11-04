@@ -42,6 +42,7 @@
     "LUMINA/OpenRocket/Lumina.ork": {
       "motor_variants": {
         "85%": "LUMINA/Engine Files/85per_Liq.eng",
+        "90%": "LUMINA/Engine Files/90per_Liq.eng",
         "95%": "LUMINA/Engine Files/95per_Liq.eng"
       }
     },
