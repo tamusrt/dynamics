@@ -394,6 +394,7 @@ def config_motor_entries(fcfg: dict):
                 out.append(level[key])
         for key in ("motors", "default_motors"):
             out.extend(v for v in (level.get(key) or {}).values() if v)
+    out.extend(fcfg.get("motor_files") or [])   # curves the lookup finds, listed so a change to them is noticed
     return [e["path"] if isinstance(e, dict) else e for e in out]
 
 
@@ -1185,12 +1186,12 @@ def cmd_compare(args):
         changed_orks = {c for c in changed if c.lower().endswith(".ork") and c in all_orks}
         motor_changed = [c for c in changed if c.lower().endswith((".rse", ".eng"))]
         cfg_rel = rel_posix(cfg.path, root)
-        # an .ork is affected if a motor file in its folder (or its configured motor) changed
+        # an .ork is affected if a motor file in its folder or a subfolder (or its configured motor) changed
         for ork in all_orks:
             folder = PurePosixPath(ork).parent.as_posix()
             fcfg = cfg.file_cfg(rel_posix(root / ork, cfg.dir))
             cfg_motors = {cfg.to_repo_rel(m, root) for m in config_motor_entries(fcfg)}
-            if any(PurePosixPath(m).parent.as_posix() == folder or m in cfg_motors for m in motor_changed):
+            if any(PurePosixPath(folder) in PurePosixPath(m).parents or m in cfg_motors for m in motor_changed):
                 changed_orks.add(ork)
         if cfg_rel in changed:
             changed_orks |= set(all_orks)
@@ -1389,7 +1390,8 @@ def _config_strings(value):
 
 def design_motor_paths(cfg: Config, root: Path, f: str) -> list:
     """The thrust-curve files sim_config.json names for a design (default_motor(s), a simulation's motor(s),
-    motor_variants), repo-relative. A motor the designation lookup finds on its own is not listed."""
+    motor_variants, motor_files), repo-relative. A motor the designation lookup finds on its own is not listed
+    unless it is in motor_files."""
     fcfg = cfg.file_cfg(rel_posix(root / f, cfg.dir))
     return sorted({cfg.to_repo_rel(t, root) for t in _config_strings(fcfg) if t.lower().endswith((".eng", ".rse"))})
 
@@ -1465,10 +1467,10 @@ MOTOR_FIELDS = [("total_impulse", "total impulse", "N\u00b7s", "lbf\u00b7s", 0.2
                 ("total_mass", "total mass", "kg", "lb", 2.2046226, 3, 2)]
 
 
-def motor_summary(path) -> dict:
+def motor_summary(path, designation=None) -> dict:
     """What a thrust-curve file (.eng or .rse) says about its motor, in SI: total impulse, burn time, peak and
     average thrust, propellant and total mass. Whatever the header does not state is read off the curve.
-    Missing or unreadable -> {}."""
+    An .eng can hold several motors: `designation` picks one, else the first. Missing or unreadable -> {}."""
     if path is None:
         return {}
     try:
@@ -1503,14 +1505,18 @@ def motor_summary(path) -> dict:
             if not line or line.startswith(";"):
                 continue
             parts = line.split()
-            if header is None and len(parts) >= 7:
+            if len(parts) >= 7:
+                if header is not None:   # the next motor in the file
+                    break
+                if designation is not None and parts[0].lower() != designation.lower():
+                    continue
                 header = parts
                 try:
                     out = {"propellant_mass": float(parts[4]), "total_mass": float(parts[5])}
                 except ValueError:
                     out = {}
                 continue
-            if len(parts) >= 2:
+            if header is not None and len(parts) >= 2:
                 try:
                     pts.append((float(parts[0]), float(parts[1])))
                 except ValueError:
@@ -1528,15 +1534,33 @@ def motor_summary(path) -> dict:
     return {k: v for k, v in out.items() if v is not None}
 
 
+def _motors_in_changed_files(changed: list) -> list:
+    """(path, older file, newer file, label, designation) per motor. A file holding several motors is listed motor by
+    motor, without the ones that did not change; blending them would add up curves that never fly together."""
+    out = []
+    for rel, before, after in changed:
+        name = PurePosixPath(rel).name
+        desigs = {p: motor_file_designations(Path(p)) if p else [] for p in (before, after)}
+        every = list(dict.fromkeys(d for found in desigs.values() for d in found))
+        if len(every) < 2:
+            out.append((rel, before, after, name, None))
+            continue
+        moved = [d for d in every if motor_summary(before, d) != motor_summary(after, d)]
+        out.extend((rel, before, after, f"{name} {d}", d) for d in moved)
+        if not moved:
+            out.append((rel, before, after, name, None))
+    return out
+
+
 def motor_change_record(changed: list) -> dict:
     """The changelog entry for a commit that changed a design's thrust curve(s) and not the design: `changed` is
     [(repo-relative motor path, the file at the older commit or None, the file at the newer commit or None)].
     Same shape as change_record (headline, empty, lines and rows per unit system) plus kind: "motor"."""
     lines, rows, names = {u: [] for u in UNIT_SYSTEMS}, {u: [] for u in UNIT_SYSTEMS}, []
-    for rel, before, after in changed:
-        name = PurePosixPath(rel).name
-        names.append(name)
-        a, b = motor_summary(before), motor_summary(after)
+    for rel, before, after, label, designation in _motors_in_changed_files(changed):
+        name = label
+        names.append(PurePosixPath(rel).name)
+        a, b = motor_summary(before, designation), motor_summary(after, designation)
         for u in UNIT_SYSTEMS:
             parts = []
             for key, label, si_unit, imp_unit, factor, si_dec, imp_dec in MOTOR_FIELDS:
@@ -1552,7 +1576,8 @@ def motor_change_record(changed: list) -> dict:
                 rows[u].append([name, label, f"{fx} {unit}", f"{fy} {unit}"])
             what = "; ".join(parts) if parts else ("added" if not a else "removed" if not b else "changed (no difference at display precision)")
             lines[u].append(f"**{name}**: {what}")
-    return {"headline": "Thrust curve changed: " + ", ".join(names), "empty": False, "lines": lines, "rows": rows, "kind": "motor"}
+    return {"headline": "Thrust curve changed: " + ", ".join(dict.fromkeys(names)), "empty": False, "lines": lines, "rows": rows,
+            "kind": "motor"}
 
 
 def _hash_file(path: Path) -> str:
@@ -2718,8 +2743,10 @@ def write_site(series: dict, site_dir: Path, units: str, repo_url: str, files_ve
         # the motor the newest version flew (its file(s) when a curve was attached, else the designation it resolved to),
         # shown after the simulation's name on the page; a motor_variants simulation already carries its label
         newest = rows[-1] if rows else {}
-        flown = [Path(p).name for p in (newest.get("motor_file") or "").split(", ") if p] or \
-                [d for d in (newest.get("motor") or "").split(" + ") if d and d != "none"]
+        files = [Path(p).name for p in (newest.get("motor_file") or "").split(", ") if p]
+        mounts = [d for d in (newest.get("motor") or "").split(" + ") if d]
+        # file names, unless a motor has no file of its own (Nimitz: one file, and a booster OpenRocket finds itself)
+        flown = files if files and len(files) >= len(mounts) else [d for d in mounts if d != "none"]
         if flown and not sim.endswith("]"):
             motors.setdefault(file, {})[sim] = " + ".join(flown)
         out_rows = []

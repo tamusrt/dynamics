@@ -13,8 +13,9 @@
     "rasaero: the .CDX1 that models the same rocket. The site puts an (i) after the design's name when the two disagree",
     "(shape, fins), and after a simulation's name when its fully loaded launch mass or CG does.",
     "tools/openrocket/ork_vs_ras.py. rasaero_sim picks the RASAero row by motor name. Lumina and Nimitz have no RASAero model yet.",
-    "Nimitz flies commercial motors (Loki M3464LB booster, AeroTech K2050ST sustainer), which OpenRocket finds itself;",
-    "its entry is empty and only puts it on the Vehicles page.",
+    "motor_files: curves a design's motors come from when no setting above names them. It does not choose a motor: each",
+    "version of the .ork still flies its own designation. It makes a change to the file a new version of the design.",
+    "Nimitz flies the Loki M3464LB booster, which OpenRocket finds itself, and the SRT K2144 sustainer from motor_files.",
     "Full docs, metric definitions and examples: tools/openrocket/CI.md"
   ],
   "units": "imperial",
@@ -57,6 +58,8 @@
       "default_motor": "SOL_INVICTUS/OpenRocket/IGNIS_INJECTOR_SCALED_FULL_THRUST_FOR_DYN.rse",
       "rasaero": "SOL_INVICTUS/RasAero/Latest/Invictus_RasAero_4_30.CDX1"
     },
-    "NIMITZ/Nimitz.ork": {}
+    "NIMITZ/Nimitz.ork": {
+      "motor_files": ["NIMITZ/motor thrust curves/Loki_M3464LB and Aerotech K2050.eng"]
+    }
   }
 }

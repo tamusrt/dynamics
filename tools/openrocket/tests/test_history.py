@@ -194,6 +194,53 @@ def test_a_thrust_curve_commit_is_a_version_of_the_design():
     print("thrust-curve versions: ok")
 
 
+def test_motor_files_watches_a_curve_without_choosing_a_motor():
+    """Nimitz's sustainer curve is found by designation, so nothing noticed it arrive: the push simulated nothing and the
+    History kept the run with no sustainer. motor_files makes it a watched file; it must not pick a motor for any mount."""
+    import json
+    with tempfile.TemporaryDirectory() as tmp:
+        root = new_repo(tmp)
+        write(root, "R/curves/m.eng", "A 54 383 P 0.6 1.3 X\n0.1 100\n1.0 0\n")
+        write(root, "R/r.ork", design(0))
+        commit(root, "design and curve")
+        (root / "sim_config.json").write_text(json.dumps({"files": {"R/r.ork": {"motor_files": ["R/curves/m.eng"]}}}), encoding="utf-8")
+        cfg = or_ci.Config(root / "sim_config.json")
+        assert or_ci.design_motor_paths(cfg, root, "R/r.ork") == ["R/curves/m.eng"]
+        fcfg = cfg.file_cfg("R/r.ork")
+        assert or_ci.config_motor_entries(fcfg) == ["R/curves/m.eng"], "a change to it counts as a change to the design"
+        snap = or_ci.Snapshot(root)
+        src = or_ci.resolve_motor(cfg, snap, root, "R/r.ork", fcfg, {}, "Mount", 2, "OLD", True)
+        assert src == ("file", None, None), f"a version flying its own motor keeps it: {src}"
+        src = or_ci.resolve_motor(cfg, snap, root, "R/r.ork", fcfg, {}, "Mount", 2, "A", False)
+        assert src == ("auto", "R/curves/m.eng", "A"), f"and the lookup still finds the curve: {src}"
+    print("motor_files: ok")
+
+
+def test_a_file_with_several_motors_is_reported_motor_by_motor():
+    """Nimitz's .eng holds four motors. Reading it as one added their curves together under the first one's masses."""
+    with tempfile.TemporaryDirectory() as tmp:
+        d = Path(tmp)
+
+        def eng(name, peak_b):
+            (d / name).write_text("; team curves\nA 76 1038 P 4.0 7.0 X\n0.5 1000\n1.0 0\n"
+                                  f"b 54 383 P 0.6 1.3 Y\n0.1 {peak_b}\n0.5 0\n;\n;\n", encoding="utf-8")
+            return d / name
+        new = eng("new.eng", 300)
+        a, b = or_ci.motor_summary(new, "A"), or_ci.motor_summary(new, "B")
+        assert a["peak_thrust"] == 1000 and a["propellant_mass"] == 4.0 and a["burn_time"] == 1.0, a
+        assert b["peak_thrust"] == 300 and b["propellant_mass"] == 0.6 and b["burn_time"] == 0.5, f"lower case in the file: {b}"
+        assert or_ci.motor_summary(new) == a, "no designation: the first motor"
+        assert or_ci.motor_summary(new, "ZZZ") == {}, "a motor the file does not hold"
+
+        rec = or_ci.motor_change_record([("R/c.eng", eng("old.eng", 200), new)])
+        assert len(rec["lines"]["metric"]) == 1 and rec["lines"]["metric"][0].startswith("**c.eng b**:"), rec["lines"]["metric"]
+        assert "peak thrust 200 \u2192 300 N" in rec["lines"]["metric"][0], "only the motor that moved"
+        assert rec["headline"] == "Thrust curve changed: c.eng", rec["headline"]
+        same = or_ci.motor_change_record([("R/c.eng", new, new)])
+        assert same["lines"]["metric"] == ["**c.eng**: changed (no difference at display precision)"], same["lines"]
+    print("several motors in one file: ok")
+
+
 def test_a_cached_load_error_is_simulated_again():
     """Nimitz's first two versions were cached as LOAD_ERROR before OpenRocket could read its preset parachute;
     a cached load error must not stand in for a run, or the History keeps showing the failure after the fix."""
