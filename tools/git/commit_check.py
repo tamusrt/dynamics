@@ -73,14 +73,12 @@ def suggestion(changed, projects: list):
 
 
 def explain(line: str, why: str, projects: list, changed) -> str:
+    """One line: VS Code's commit error shows only the first line a hook prints."""
     rest = re.sub(r"^[^:]*:\s*", "", line) if ":" in line else line
     tip = suggestion(changed, projects)
-    out = [f'Commit message must start with the project it changes, then a colon, like "{EXAMPLE}".',
-           f'  "{line}": {why}.',
-           f"  Projects: {', '.join(projects)}"]
-    if tip:
-        out.append(f"  Your changes are in {tip}, so try:  {tip}: {rest or '<what you changed>'}")
-    return "\n".join(out)
+    example = f"{tip}: {rest or '<what you changed>'}" if tip else EXAMPLE
+    return (f"Commit message needs a project first: {why}. Try \"{example}\". "
+            f"Projects: {', '.join(projects)}.")
 
 
 def git(repo, *args) -> str:

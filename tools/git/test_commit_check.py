@@ -46,8 +46,10 @@ def test_suggestion():
     assert cc.suggestion(changed, PROJECTS) == "NIMITZ, tools", "most-touched first"
     assert cc.suggestion(["README.md"], PROJECTS) is None
     text = cc.explain("fin test", "it does not start with a project and a colon", PROJECTS, changed)
-    assert "Projects: AIRMAIL, NIMITZ, postflight_analysis, tools" in text and "try:  NIMITZ, tools: fin test" in text, text
-    assert "try:  NIMITZ: moved fins" in cc.explain("SOL: moved fins", "x", PROJECTS, changed[:1]), "keeps their text"
+    assert "Projects: AIRMAIL, NIMITZ, postflight_analysis, tools" in text and 'Try "NIMITZ, tools: fin test"' in text, text
+    assert "\n" not in text, "VS Code shows only the first line of a hook's output"
+    assert 'Try "NIMITZ: moved fins"' in cc.explain("SOL: moved fins", "x", PROJECTS, changed[:1]), "keeps their text"
+    assert f'Try "{cc.EXAMPLE}"' in cc.explain("x", "y", PROJECTS, ["README.md"]), "no project touched: the example"
     assert all(ord(ch) < 128 for ch in text), "a Windows console must be able to print it"
 
 
@@ -82,7 +84,8 @@ def test_hook_and_ci_on_a_real_repo():
             with contextlib.redirect_stderr(err):
                 assert cc.cmd_hook(msg, repo) == want, (text, err.getvalue())
             if want:
-                assert "Projects: AIRMAIL, NEWROCKET" in err.getvalue() and "try:  NEWROCKET:" in err.getvalue(), err.getvalue()
+                first = err.getvalue().splitlines()[0]
+                assert "Projects: AIRMAIL, NEWROCKET" in first and 'Try "NEWROCKET: ' in first, err.getvalue()
         run(repo, "commit", "-q", "-m", "NEWROCKET: added")
         good = run(repo, "rev-parse", "HEAD")
         bad1 = commit("tools/x.py", "fixed stuff")
