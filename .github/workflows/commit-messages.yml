@@ -1,0 +1,30 @@
+name: Commit messages
+
+# Every commit message starts with the project it changes: "NIMITZ: moved the fins", "tools: fix the site". The projects
+# are the folders in aero_modeling/ and at the top of the repo (tools/git/commit_check.py). This flags the commits of a
+# push that don't: the run fails, which puts a red X on the commit, but nothing waits on it, so the site still deploys.
+# The hook in .githooks/ runs the same check before each commit (README.md, "Commit messages").
+on:
+  push:
+    branches: ["**"]
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0       # the whole push, and each commit's folders
+          persist-credentials: false
+
+      - name: Test the check
+        run: python3 tools/git/test_commit_check.py
+
+      - name: Check the pushed commit messages
+        env:
+          BEFORE: ${{ github.event.before }}
+          AFTER: ${{ github.event.after }}
+        run: python3 tools/git/commit_check.py ci --before "$BEFORE" --after "$AFTER" --summary "$GITHUB_STEP_SUMMARY"

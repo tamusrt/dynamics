@@ -1,0 +1,11 @@
+#!/bin/sh
+# Rejects a commit whose message does not start with a project, like "NIMITZ: moved the fins" (tools/git/commit_check.py).
+# Turn it on once per clone:  git config core.hooksPath .githooks
+# Without Python the commit goes through unchecked; the Commit messages workflow still flags it after the push.
+for py in python3 python py; do
+  if "$py" -c "import sys; sys.exit(sys.version_info < (3, 8))" >/dev/null 2>&1; then
+    exec "$py" "$(git rev-parse --show-toplevel)/tools/git/commit_check.py" hook "$1"
+  fi
+done
+echo "commit-msg hook: no Python found, so the commit message was not checked." >&2
+exit 0

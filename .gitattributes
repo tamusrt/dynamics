@@ -1,1 +1,3 @@
 *_aero.csv -diff -merge
+# git hooks run under sh: Windows line endings would break them
+.githooks/* text eol=lf
