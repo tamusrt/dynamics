@@ -12,7 +12,44 @@ from scipy import integrate as sci_integrate
 from scipy.integrate import quad_vec
 import pandas as pd
 from filterpy.kalman import KalmanFilter
+from scipy.ndimage import gaussian_filter1d
 
+def align_thrust_to_accel(t, thrust, accel_mag, frac=0.5, smooth_s=0.05):
+    """Shift the thrust curve so its falling edge lands on the measured accel falling edge.
+    Optionally low-pass it so it has the same 'sharpness' as the smoothed accel."""
+    t = np.asarray(t, float); thrust = np.asarray(thrust, float); accel_mag = np.asarray(accel_mag, float)
+
+    def falling_edge(y):
+        pk = np.argmax(y)
+        below = np.where(y[pk:] < frac * y[pk])[0]
+        return t[pk + below[0]]
+
+    dt = falling_edge(accel_mag) - falling_edge(thrust)        # + means thrust ends too early
+    shifted = np.interp(t - dt, t, thrust, left=0.0, right=0.0)
+
+    if smooth_s > 0:
+        sigma = smooth_s / float(np.median(np.diff(t)))
+        shifted = gaussian_filter1d(shifted, sigma)
+    print(f"[thrust align] shifted thrust by {dt:+.3f} s")
+    return shifted
+def fit_thrust_to_accel(t, thrust, target, t_max=4.0,
+                        shifts=np.arange(-0.6, 0.6, 0.01),
+                        sigmas=(0.0, 0.05, 0.1, 0.15, 0.2, 0.3, 0.4)):
+    """Find the time shift and gaussian smoothing that make the thrust curve best match
+    `target` (= m*a_axial + reference drag, in lbf) over the boost."""
+    t = np.asarray(t, float); thrust = np.asarray(thrust, float); target = np.asarray(target, float)
+    dt = float(np.median(np.diff(t)))
+    w = t <= t_max
+    best = (np.inf, 0.0, 0.0, thrust)
+    for s in shifts:
+        th = np.interp(t - s, t, thrust, left=0.0, right=0.0)   # s<0 moves thrust earlier
+        for sg in sigmas:
+            f = gaussian_filter1d(th, sg / dt) if sg > 0 else th
+            err = np.mean((f[w] - target[w]) ** 2)
+            if err < best[0]:
+                best = (err, s, sg, f)
+    print(f"[thrust fit] shift {best[1]:+.2f} s, smoothing sigma {best[2]:.2f} s, rms {np.sqrt(best[0]):.1f} lbf")
+    return best[3]
 G_FT = 32.174   # ft/s^2, and the lbm-ft/(lbf-s^2) unit conversion
 IN_PER_FT = 12
 

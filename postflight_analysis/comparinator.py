@@ -396,7 +396,8 @@ def calculate(data_dict, cutoff_dict, rocket=None, smooth_ab=True, align_ab=True
     v_dr = accel_bundle.v_dr.magnitude                  # ft/s
     v_cr = accel_bundle.v_cr.magnitude                  # ft/s
     tilt = accel_bundle.tilt.magnitude                  # deg
-
+    calc["time"] = time
+    
     if gyro_present:
         gx_accel = gyro_bundle.gx_accel.magnitude           # g_0
         gy_accel = gyro_bundle.gy_accel.magnitude           # g_0
@@ -434,7 +435,6 @@ def calculate(data_dict, cutoff_dict, rocket=None, smooth_ab=True, align_ab=True
     if thrust_present: cutoff_dict["coast"] = np.where(spec_thrust <= 5)[0][2]
     theta = faa.theta(v_dr, v_cr)
 
-    calc["time"] = time
     calc["flight_angle"], calc["aoa"] = faa.angle(v_up, v_dr, v_cr, tilt)
     calc["theta"] = theta
     calc["accel_v"] = faa.magnitude(v_up, v_dr, v_cr)
@@ -450,8 +450,21 @@ def calculate(data_dict, cutoff_dict, rocket=None, smooth_ab=True, align_ab=True
     calc["density"] = faa.density(pressure, temperature)
 
     # drag is the component along the relative wind
-    calc["fdx"], calc["fdy"], calc["fdz"], calc["f_aero"] = faa.fd(spec_thrust, tilt, theta, weight, calc["ax"], calc["ay"], calc["az"])
+    m = np.asarray(weight, float) / faa.G_FT
+    sf = faa.specific_force(calc["ax"], calc["ay"], calc["az"])
+    ma_axial = m * np.sum(sf * faa.axial_unit(tilt, theta), axis=-1)
+    ref_d = ork_fd if ork_present else np.zeros_like(ma_axial)
+
+    spec_thrust_al = faa.fit_thrust_to_accel(calc["time"], spec_thrust, ma_axial + ref_d)
+    calc["fdx"], calc["fdy"], calc["fdz"], calc["f_aero"] = faa.fd(spec_thrust_al, tilt, theta, weight, calc["ax"], calc["ay"], calc["az"])
     calc["fd"], calc["lift"] = faa.wind_axes(calc["fdx"], calc["fdy"], calc["fdz"], v_cr, v_dr, v_up)
+    m = np.asarray(weight, float) / faa.G_FT
+    sf = faa.specific_force(calc["ax"], calc["ay"], calc["az"])
+    ax_unit = faa.axial_unit(tilt, theta)
+    ma_axial = m * np.sum(sf * ax_unit, axis=-1)          # lbf, what the rocket "feels" along its axis
+
+
+    print("weight:", np.min(weight), np.max(weight))
     calc["cd"] = faa.cd(calc["fd"], calc["density"], calc["accel_v"])
     calc["fnx"], calc["fny"], calc["fnz"], calc["fn"] = faa.fn1(tilt, theta, weight, calc["ax"], calc["ay"], calc["az"])
     calc["cn"], calc["cna"] = faa.cna(calc["fn"], calc["density"], calc["accel_v"], calc["aoa"])
@@ -489,12 +502,11 @@ def calculate(data_dict, cutoff_dict, rocket=None, smooth_ab=True, align_ab=True
         q = (ab_qw, ab_qx, ab_qy, ab_qz)
         t_ab = ab_bundle.time.magnitude
         axis = faa.body_axis_world(*q)
+
         if smooth_ab:
-            # same kalman_smooth the Raven path uses, fusing the board's accelerometer with its EKF vz
-            # R is calibrated on the board's own pre-launch (pad) rows, same process as the Raven path
             ab_pre = _ab_pad_arrays(ab_bundle, float(np.median(np.diff(t_ab))))
             sm = faa.ab_smooth(t_ab, *q, ab_ax, ab_ay, ab_az, v_up=ab_ekf_vz, pre=ab_pre,
-                               **(ab_smooth_kwargs or {}))
+                            **(ab_smooth_kwargs or {}))
             vx, vy, vz = sm["v"]
             awx, awy, awz = sm["a"]                            # coordinate acceleration (gravity removed)
         else:
@@ -509,24 +521,41 @@ def calculate(data_dict, cutoff_dict, rocket=None, smooth_ab=True, align_ab=True
         calc["ab_theta"] = faa.ab_theta(vx, vy, off)
         calc["ab_accel_total"] = np.sqrt(awx**2 + awy**2 + awz**2)
         if ab_altitude is not None:
-            # board altitude is AGL from its own zero; put it on the Flight's (MSL) datum at t=0
             calc["ab_altitude"] = ab_altitude - ab_altitude[0] + altitude[0]
         th_body = np.degrees(np.arctan2(axis[:, 1], axis[:, 0]))
 
-        fdx, fdy, fdz, _ = faa.fd(spec_thrust, calc["ab_tilt"], th_body, weight, awx, awy, awz)
-        calc["ab_fd"], calc["ab_lift"] = faa.wind_axes(fdx, fdy, fdz, vx, vy, vz)
-        _, _, _, calc["ab_fn"] = faa.fn1(calc["ab_tilt"], th_body, weight, awx, awy, awz)
-
+        dt_s = float(np.median(np.diff(calc["time"])))
         if align_ab:
-            # board t=0 and Raven t=0 are different launch-detect events: line the two up on
-            # vertical velocity (same quantity, scale/offset-free correlation) and shift every ab_*.
-            dt_s = float(np.median(np.diff(calc["time"])))
             if ab_lag_s is None:
                 lag_n, lag_s = faa.estimate_lag(calc["time"], v_up, vz)
             else:
                 lag_n, lag_s = int(round(ab_lag_s / dt_s)), ab_lag_s
             print(f"[airbrakes] board lags Flight by {lag_s:+.3f} s ({lag_n:+d} samples); shifting ab_* series")
-            for key in [k for k in calc if k.startswith("ab_")]:
+        else:
+            lag_n = 0
+
+        def _sh(x):
+            return faa.shift_series(x, lag_n) if lag_n else x
+
+        vx_s, vy_s, vz_s = _sh(vx), _sh(vy), _sh(vz)
+        awx_s, awy_s, awz_s = _sh(awx), _sh(awy), _sh(awz)
+        tilt_s = _sh(calc["ab_tilt"])
+        th_body_s = _sh(th_body)
+
+        #ab_acc_mag = np.sqrt(awx_s**2 + awy_s**2 + awz_s**2)
+        #thr_ab = faa.align_thrust_to_accel(calc["time"], spec_thrust, ab_acc_mag)
+        m_ab = np.asarray(weight, float) / faa.G_FT
+        sf_ab = faa.specific_force(awx_s, awy_s, awz_s)
+        th_ax = faa.axial_unit(tilt_s, th_body_s)
+        ma_ab = m_ab * np.sum(sf_ab * th_ax, axis=-1)
+        thr_ab = faa.fit_thrust_to_accel(calc["time"], spec_thrust, ma_ab + ref_d)
+        fdx, fdy, fdz, _ = faa.fd(thr_ab, tilt_s, th_body_s, weight, awx_s, awy_s, awz_s)
+        calc["ab_fd"], calc["ab_lift"] = faa.wind_axes(fdx, fdy, fdz, vx_s, vy_s, vz_s)
+        _, _, _, calc["ab_fn"] = faa.fn1(tilt_s, th_body_s, weight, awx_s, awy_s, awz_s)
+
+        if align_ab:
+            already_shifted = {"ab_fd", "ab_lift", "ab_fn"}
+            for key in [k for k in calc if k.startswith("ab_") and k not in already_shifted]:
                 calc[key] = faa.shift_series(calc[key], lag_n)
     print(calc)
     df = pd.DataFrame.from_dict(calc)   

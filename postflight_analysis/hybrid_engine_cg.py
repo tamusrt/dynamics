@@ -1044,8 +1044,7 @@ if __name__ == "__main__":
     print(np.isnan(p).sum(), np.nanmin(p), np.nanmax(p))
     print((p < 12.7).sum(), "samples below the triple point")
     engine = build_engine(sol_ignis, sets['time'], pressure_psi=sets['run_tank_pressure'], chamber_pressure_psi=sets['chamber_pressure'])
-    arr = np.column_stack([sets['time'], engine.cg_at(sets['time']), engine.mdot_at(sets['time']), engine.of_ratio_at(sets['time']), engine.mass_at(sets['time']), engine.dyer_mdot_array(sets['time']), engine.])
-    df = pd.DataFrame(arr, columns=["time","cg", "mdot", "of ratio", "mass"])
-
-
-    df.to_csv("output.csv", index=False)
+    print("***")
+    print(engine.cg_at)
+    print("***")
+    print(engine.mass_at)
