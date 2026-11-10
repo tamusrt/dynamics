@@ -42,7 +42,16 @@
     },
     "LUMINA/OpenRocket/Lumina.ork": {
       "motor_variants": {
-        "90%": "LUMINA/Engine Files/90per_Liq.eng"
+        "90%": "LUMINA/Engine Files/90per_Liq.eng",
+        "400psi": "LUMINA/Engine Files/400psi_Liq.eng",
+        "450psi": "LUMINA/Engine Files/450psi_Liq.eng",
+        "500psi": "LUMINA/Engine Files/500psi_Liq.eng",
+        "550psi": "LUMINA/Engine Files/550psi_Liq.eng",
+        "600psi": "LUMINA/Engine Files/600psi_Liq.eng",
+        "650psi": "LUMINA/Engine Files/650psi_Liq.eng",
+        "700psi": "LUMINA/Engine Files/700psi_Liq.eng",
+        "750psi": "LUMINA/Engine Files/750psi_Liq.eng",
+        "800psi": "LUMINA/Engine Files/800psi_Liq.eng"
       }
     },
     "SOL_INVICTUS/OpenRocket/SOL_4_30.ork": {
