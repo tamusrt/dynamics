@@ -147,9 +147,9 @@
   <SimulationList>
     <Simulation>
       <SustainerEngine>PER_MY_LAST-eng  (TAMUSRT)</SustainerEngine>
-      <SustainerLaunchWt>135.73</SustainerLaunchWt>
+      <SustainerLaunchWt>137</SustainerLaunchWt>
       <SustainerNozzleDiameter>0</SustainerNozzleDiameter>
-      <SustainerCG>93.72</SustainerCG>
+      <SustainerCG>93.27</SustainerCG>
       <SustainerIgnitionDelay>0</SustainerIgnitionDelay>
       <Booster1LaunchWt>0</Booster1LaunchWt>
       <Booster1SeparationDelay>0</Booster1SeparationDelay>
@@ -163,9 +163,9 @@
       <Booster2NozzleDiameter>0</Booster2NozzleDiameter>
       <IncludeBooster2>False</IncludeBooster2>
       <FlightTime>0</FlightTime>
-      <TimetoApogee>45.8983</TimetoApogee>
-      <MaxAltitude>33697.6</MaxAltitude>
-      <MaxVelocity>1755.639</MaxVelocity>
+      <TimetoApogee>45.62835</TimetoApogee>
+      <MaxAltitude>33152.12</MaxAltitude>
+      <MaxVelocity>1728.16</MaxVelocity>
       <OptimumWt>0</OptimumWt>
       <OptimumMaxAlt>0</OptimumMaxAlt>
     </Simulation>
