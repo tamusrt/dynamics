@@ -62,7 +62,10 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write   # commit comments
-    timeout-minutes: 30   # a few minutes; a history backfill after the cache is lost takes longer
+    # A few minutes, but a backfill takes longer: a config change for a design re-simulates its whole history (Lumina
+    # with 10 motor variants: about 2,000 runs, 35 min). The two history steps have their own limits inside this one,
+    # so the history cache is always saved, and a backfill cut short carries on from there in the next run.
+    timeout-minutes: 90
     steps:
       - name: Check out (full history, so the base commit is available)
         uses: actions/checkout@v7
@@ -107,9 +110,11 @@ jobs:
       - name: Fetch OpenRocket 24.12 (verified download, cached across runs)
         run: python -m orlab fetch 24.12
 
-      # Per-version simulation results, design diffs and AI narrations, keyed by git blob id.
+      # Per-version simulation results, design diffs and AI narrations, keyed by git blob id. Saved by its own step
+      # below even when the run fails: a combined cache step saves only after a success, so a timed-out backfill
+      # used to lose all its work and every later run started it again.
       - name: Restore the history cache
-        uses: actions/cache@v6
+        uses: actions/cache/restore@v6
         with:
           path: .or_ci_cache
           key: openrocket-history-${{ github.sha }}
@@ -134,6 +139,7 @@ jobs:
 
       - name: Performance history (Mermaid charts) for the changed designs
         if: always() && hashFiles('or_ci_results/targets.txt') != ''
+        timeout-minutes: 25   # each version is cached as it is simulated: the site step below carries on from there
         run: |
           targets=$(tr '\n' ' ' < or_ci_results/targets.txt)
           if [ -n "$(echo $targets | tr -d ' ')" ]; then
@@ -192,6 +198,7 @@ jobs:
 
       - name: Build the history site for every design (main only)
         if: always() && github.ref == 'refs/heads/main'
+        timeout-minutes: 55   # a Lumina backfill alone is about 35
         run: |
           python tools/openrocket/or_ci.py history \
             --config aero_modeling/sim_config.json \
@@ -201,6 +208,15 @@ jobs:
             --site site \
             --repo-url "${{ github.server_url }}/${{ github.repository }}" \
             --quiet
+
+      # Right after the steps that fill it, and whatever they did. The key is new every run (a key can't be saved
+      # twice), and the restore above takes the newest.
+      - name: Save the history cache
+        if: always()
+        uses: actions/cache/save@v6
+        with:
+          path: .or_ci_cache
+          key: openrocket-history-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
 
       # The next job (JARVIS, VISION, EDITH) builds on this site and needs OpenRocket's results.json; it gets both here
       # instead of simulating again. Kept for a day: only this run uses it.
