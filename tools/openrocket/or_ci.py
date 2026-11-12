@@ -264,9 +264,11 @@ class Snapshot:
 # config
 # ----------------------------------------------------------------------------
 class Config:
-    def __init__(self, path: Path):
+    def __init__(self, path: Path, raw: dict = None):
+        """`raw`: the file's content when it is not read from `path` (sim_config.json at an older commit)."""
         self.path = path.resolve()
-        raw = json.loads(self.path.read_text(encoding="utf-8"))
+        if raw is None:
+            raw = json.loads(self.path.read_text(encoding="utf-8"))
         self.dir = self.path.parent
         self.seed = int(raw.get("seed", DEFAULT_SEED))
         self.units = str(raw.get("units", "metric")).strip().lower()
@@ -338,6 +340,49 @@ class Config:
             for metric, spec in layer.items():
                 merged.setdefault(metric, {}).update(spec)
         return merged
+
+
+class ConfigHistory:
+    """sim_config.json as it was at each commit. The History flies every version of a design with its own commit's
+    entry for it (motors, variants), so adding a curve today adds points from today on and leaves the past alone.
+    Only the "files" entries come from that commit: the run settings (seed, wind, which the cache key holds) and the
+    shared settings (units, limits, hide_commits, ignore) stay the current ones."""
+
+    def __init__(self, cfg: Config, root: Path):
+        self.cfg, self.root = cfg, root
+        self.rel = rel_posix(cfg.path, root)
+        self._by_blob = {}
+
+    def at(self, sha) -> Config:
+        """The config at commit `sha`; the current one for the working tree (None). A commit without the file, or
+        with one that does not parse, has no entries."""
+        if sha is None:
+            return self.cfg
+        blob = _blob(self.root, sha, self.rel)
+        if blob not in self._by_blob:
+            files = {}
+            if blob is not None:
+                try:
+                    raw = json.loads(_git(self.root, "show", f"{sha}:{self.rel}").stdout)
+                    files = raw.get("files", {}) if isinstance(raw, dict) else {}
+                except ValueError:
+                    print(f"  sim_config.json at {sha[:7]} does not parse: its versions fly with no config entry")
+            c = Config(self.cfg.path, {"files": files if isinstance(files, dict) else {}})
+            for name in ("seed", "deterministic_wind", "fail_on_limits", "units", "stability_units", "limits",
+                         "hide_commits", "ignore"):
+                setattr(c, name, getattr(self.cfg, name))
+            self._by_blob[blob] = c
+        return self._by_blob[blob]
+
+    def entry(self, sha, ork_rel: str) -> dict:
+        """The design's entry at `sha`, under its name at that commit."""
+        c = self.at(sha)
+        return c.file_cfg(rel_posix(self.root / ork_rel, c.dir))
+
+
+def entry_hash(fcfg: dict) -> str:
+    import hashlib
+    return hashlib.sha1(json.dumps(fcfg, sort_keys=True).encode()).hexdigest()[:8]
 
 
 # ----------------------------------------------------------------------------
@@ -1208,11 +1253,12 @@ def cmd_compare(args):
     orlab, jar = open_jvm(args.jar)
     print(f"Comparing {len(targets)} file(s): base={base_label or 'none'} head={head_sha}; jar {jar}")
     head_recs, base_recs = [], []
+    base_cfg = ConfigHistory(cfg, root).at(base_sha) if base is not None else None   # as the History flies it
     with orlab.OpenRocketInstance(jar, log_level="ERROR") as inst:
         helper = make_helper(orlab, inst)
         for f in targets:
             if base is not None and base.exists(f):
-                base_recs.extend(run_ork(helper, cfg, base, root, f, cfg.seed, fallback=head))
+                base_recs.extend(run_ork(helper, base_cfg, base, root, f, cfg.seed))
             head_recs.extend(run_ork(helper, cfg, head, root, f, cfg.seed))
     strict = args.strict or cfg.fail_on_limits
     out = Path(args.results)
@@ -1392,8 +1438,44 @@ def design_motor_paths(cfg: Config, root: Path, f: str) -> list:
     """The thrust-curve files sim_config.json names for a design (default_motor(s), a simulation's motor(s),
     motor_variants, motor_files), repo-relative. A motor the designation lookup finds on its own is not listed
     unless it is in motor_files."""
-    fcfg = cfg.file_cfg(rel_posix(root / f, cfg.dir))
+    return entry_motor_paths(cfg, root, cfg.file_cfg(rel_posix(root / f, cfg.dir)))
+
+
+def entry_motor_paths(cfg: Config, root: Path, fcfg: dict) -> list:
+    """The thrust-curve files one config entry names, repo-relative."""
     return sorted({cfg.to_repo_rel(t, root) for t in _config_strings(fcfg) if t.lower().endswith((".eng", ".rse"))})
+
+
+def config_motor_versions(root: Path, hist: ConfigHistory, versions: list, max_commits: int) -> list:
+    """The commits that are versions of a design without changing it, from its first version on (oldest first): one
+    that changed its entry in sim_config.json (kind "config"), or a thrust curve that entry named at that commit
+    (kind "motor"). With each version flown with its own commit's config, these are the other points where the
+    results can move. A curve the config did not name yet is not followed, and neither is one found by designation
+    alone, unless motor_files lists it."""
+    if not versions:
+        return []
+    since = versions[0]["time"]
+
+    def name_at(t):   # the design's name then (it may have been renamed since)
+        return next((v["path"] for v in reversed(versions) if v["time"] <= t), versions[0]["path"])
+
+    out, prev = {}, hist.entry(versions[0]["sha"], versions[0]["path"])
+    config_commits = git_motor_versions(root, [hist.rel], since, max_commits)   # commits touching these paths
+    for c in config_commits:
+        e = hist.entry(c["sha"], name_at(c["time"]))
+        if e != prev:
+            out[c["sha"]] = dict(c, kind="config")
+        prev = e
+    named = set()
+    for x in [*versions, *config_commits]:
+        named.update(entry_motor_paths(hist.at(x["sha"]), root, hist.entry(x["sha"], name_at(x["time"]))))
+    for m in git_motor_versions(root, sorted(named), since, max_commits):
+        if m["sha"] in out:
+            continue
+        flown = entry_motor_paths(hist.at(m["sha"]), root, hist.entry(m["sha"], name_at(m["time"])))
+        if any(_blob(root, m["sha"], p) != _blob(root, f"{m['sha']}^", p) for p in flown):
+            out[m["sha"]] = dict(m, kind="motor")
+    return sorted(out.values(), key=lambda x: x["time"])
 
 
 def git_motor_versions(root: Path, motor_paths: list, since: int, max_commits: int) -> list:
@@ -1415,9 +1497,10 @@ def git_motor_versions(root: Path, motor_paths: list, since: int, max_commits: i
 
 
 def merge_motor_versions(root: Path, versions: list, motor_versions: list) -> list:
-    """A commit that changed a design's thrust curve but not the design is a version of the design too, flown
-    with the .ork as it was then, so the History shows the data at every commit whichever file moved. A commit
-    that changed both stays one version. Every entry gets kind: "design" or "motor"."""
+    """A commit that changed a design's thrust curve or config entry but not the design is a version of the design
+    too, flown with the .ork as it was then, so the History shows the data at every commit whichever file moved. A
+    commit that changed both stays one version. Every entry gets kind: "design", or the extra's own ("motor",
+    "config")."""
     out = [dict(v, kind=v.get("kind", "design")) for v in versions]
     have = {v["sha"] for v in out if v["sha"]}
     for m in motor_versions:
@@ -1430,24 +1513,56 @@ def merge_motor_versions(root: Path, versions: list, motor_versions: list) -> li
         if _blob(root, m["sha"], path) is None:         # the design is not at that commit under that name
             continue
         j = i + 1                                       # after that design version and the motor versions already there
-        while j < len(out) and out[j]["kind"] == "motor" and out[j]["time"] <= m["time"]:
+        while j < len(out) and out[j]["kind"] != "design" and out[j]["time"] <= m["time"]:
             j += 1
-        out.insert(j, dict(m, path=path, kind="motor"))
+        out.insert(j, dict(m, path=path, kind=m.get("kind", "motor")))
         have.add(m["sha"])
     return out
 
 
 def _motor_blobs(root: Path, sha, motor_paths: list, head: Snapshot) -> list:
-    """The blob of each of a design's thrust-curve files at `sha` (the working tree when None). A file that is
-    not there yet reads as the current one: that is the copy run_ork falls back to."""
+    """The blob of each of a design's thrust-curve files at `sha` (the working tree when None); "" for a file
+    that is not there: that version flies without it, as it would have then."""
     out = []
     for m in motor_paths:
-        b = _blob(root, sha, m) if sha else None
-        if b is None:
+        if sha:
+            b = _blob(root, sha, m) or ""
+        else:
             p = head.path(m)
             b = _hash_file(p) if p else ""
         out.append(b)
     return out
+
+
+def plan_versions(cfg: Config, hist: ConfigHistory, root: Path, head: Snapshot, f: str, max_commits: int,
+                  cache_salt: str) -> list:
+    """Every version of design `f` to chart, oldest first: the commits that changed it, its config entry or a
+    curve that entry names (hidden ones left out), then the working tree when it differs. Each carries what it is
+    flown with (cfg: that commit's config, entry, mpaths, mblobs), vid (what its results depend on, the key they are
+    kept under) and cache_name (the file in the history cache)."""
+    versions = git_file_history(root, f, max_commits)
+    if versions:
+        versions = merge_motor_versions(root, versions, config_motor_versions(root, hist, versions, max_commits))
+    versions = drop_hidden_versions(cfg, f, versions)
+    wt = head.path(f)
+    if wt is not None:
+        versions.append({"sha": None, "short": "working", "time": int(time.time()), "author": "",
+                         "message": "(uncommitted working tree)", "path": f, "kind": "design", "blob": _hash_file(wt)})
+    for v in versions:
+        v.setdefault("kind", "design")
+        if v["sha"] is not None:
+            v["blob"] = _blob(root, v["sha"], v["path"])
+        v["cfg"] = hist.at(v["sha"])
+        v["entry"] = v["cfg"].file_cfg(rel_posix(root / v["path"], v["cfg"].dir))
+        v["mpaths"] = entry_motor_paths(v["cfg"], root, v["entry"])
+        v["mblobs"] = _motor_blobs(root, v["sha"], v["mpaths"], head)
+        # the cache file name is the one results were kept under when every version flew today's entry, so a
+        # version whose entry has not changed since keeps its cached results
+        base, eh = version_id(v), entry_hash(v["entry"])
+        v["vid"], v["cache_name"] = f"{base}-{eh}", f"{base}-{cache_salt}-{eh}.json"
+    if len(versions) > 1 and versions[-1]["sha"] is None and versions[-1]["vid"] == versions[-2]["vid"]:
+        versions.pop()   # the working tree is the newest commit
+    return versions
 
 
 def version_id(v: dict) -> str:
@@ -1580,6 +1695,54 @@ def motor_change_record(changed: list) -> dict:
             "kind": "motor"}
 
 
+def _short_value(v) -> str:
+    """A config value for the changelog: a curve path by its file name."""
+    if isinstance(v, str):
+        return PurePosixPath(v).name if v.lower().endswith((".eng", ".rse")) else v
+    return json.dumps(v, sort_keys=True)
+
+
+def config_change_lines(old: dict, new: dict) -> list:
+    """What changed in a design's sim_config.json entry, one line per setting: "motor_variants: added 400psi,
+    450psi", "default_motor: a.rse → b.rse". [(line, row)] with row = [setting, what, before, after]."""
+    out = []
+    for key in sorted(set(old) | set(new)):
+        a, b = old.get(key), new.get(key)
+        if a == b:
+            continue
+        if isinstance(a, dict) and isinstance(b, dict):
+            added = [k for k in b if k not in a]
+            removed = [k for k in a if k not in b]
+            changed = [k for k in b if k in a and a[k] != b[k]]
+            parts = ([f"added {', '.join(added)}"] if added else []) + ([f"removed {', '.join(removed)}"] if removed else [])
+            parts += [f"{k} {_short_value(a[k])} → {_short_value(b[k])}" for k in changed]
+            out.append((f"**{key}**: " + "; ".join(parts), [key, "; ".join(parts), "", ""]))
+        elif a is None:
+            out.append((f"**{key}** set to {_short_value(b)}", [key, "set", "", _short_value(b)]))
+        elif b is None:
+            out.append((f"**{key}** removed (was {_short_value(a)})", [key, "removed", _short_value(a), ""]))
+        else:
+            out.append((f"**{key}**: {_short_value(a)} → {_short_value(b)}", [key, "changed", _short_value(a), _short_value(b)]))
+    return out
+
+
+def side_change_record(root: Path, head: Snapshot, prev: dict, v: dict) -> dict:
+    """The changelog entry for a version that did not change the design: its config entry, the curves it names,
+    or both. Same shape as change_record plus kind: "config" when the entry changed, else "motor"."""
+    cfg_lines = config_change_lines(prev["entry"], v["entry"])
+    snaps = [head if x["sha"] is None else Snapshot(root, x["sha"]) for x in (prev, v)]
+    before, after = dict(zip(prev["mpaths"], prev["mblobs"])), dict(zip(v["mpaths"], v["mblobs"]))
+    moved = [m for m in v["mpaths"] if m in before and before[m] != after[m]]   # a curve newly named is in cfg_lines
+    record = motor_change_record([(m, snaps[0].path(m), snaps[1].path(m)) for m in moved]) if moved else None
+    if not cfg_lines:
+        return record or {"headline": "Nothing changed", "empty": True, "lines": {u: [] for u in UNIT_SYSTEMS},
+                          "rows": {u: [] for u in UNIT_SYSTEMS}, "kind": "motor"}
+    lines = {u: [line for line, _ in cfg_lines] + (record["lines"][u] if record else []) for u in UNIT_SYSTEMS}
+    rows = {u: [row for _, row in cfg_lines] + (record["rows"][u] if record else []) for u in UNIT_SYSTEMS}
+    headline = "Sim config changed" + (f"; {record['headline'][0].lower()}{record['headline'][1:]}" if record else "")
+    return {"headline": headline, "empty": False, "lines": lines, "rows": rows, "kind": "config"}
+
+
 def _hash_file(path: Path) -> str:
     import hashlib
     h = hashlib.sha1(b"blob %d\0" % path.stat().st_size)
@@ -1689,43 +1852,20 @@ def cmd_history(args):
     if cache_dir:
         cache_dir.mkdir(parents=True, exist_ok=True)
     cache_salt = f"s{cfg.seed}-w{int(cfg.deterministic_wind)}-m6"  # bump the suffix when metrics or the run setup change (m5: TWR metrics; m6: % L per stage)
-
-    def salt_for(f):  # the file's config entry (motors, variants) changes the results too
-        import hashlib
-        fcfg = cfg.file_cfg(rel_posix(root / f, cfg.dir))
-        # the content of the thrust-curve files it names is part of each version's id (version_id), not of the salt
-        return cache_salt + "-" + hashlib.sha1(json.dumps(fcfg, sort_keys=True).encode()).hexdigest()[:8]
+    hist = ConfigHistory(cfg, root)
 
     # plan: (file, version entry) for every version; look up the cache first. A version is a commit that changed
-    # the design OR one of the thrust curves the config names for it, flown with both as they were at that commit.
-    plan, cached, files_versions, want_series, motor_paths = [], {}, {}, set(), {}
+    # the design, its config entry or a thrust curve that entry names, flown with all three as they were then.
+    plan, cached, files_versions, want_series = [], {}, {}, set()
     for f in files:
-        mpaths = motor_paths[f] = design_motor_paths(cfg, root, f)
-        versions = git_file_history(root, f, args.max_commits)
-        if versions and mpaths:
-            versions = merge_motor_versions(root, versions, git_motor_versions(root, mpaths, versions[0]["time"], args.max_commits))
-        versions = drop_hidden_versions(cfg, f, versions)
-        for v in versions:
-            v["blob"] = _blob(root, v["sha"], v["path"])
-            v["mblobs"] = _motor_blobs(root, v["sha"], mpaths, head)
-            v["kind"] = v.get("kind", "design")
-            v["vid"] = version_id(v)
-        # uncommitted working-tree version, if it differs from HEAD (the design or a curve)
-        wt = head.path(f)
-        if wt is not None:
-            wt_blob, wt_mblobs = _hash_file(wt), _motor_blobs(root, None, mpaths, head)
-            if not versions or versions[-1]["blob"] != wt_blob or versions[-1]["mblobs"] != wt_mblobs:
-                v = {"sha": None, "short": "working", "time": int(time.time()), "author": "",
-                     "message": "(uncommitted working tree)", "path": f, "blob": wt_blob, "mblobs": wt_mblobs, "kind": "design"}
-                v["vid"] = version_id(v)
-                versions.append(v)
+        versions = plan_versions(cfg, hist, root, head, f, args.max_commits, cache_salt)
         # flight plots on the site need the full time series of the newest two versions. Kept on the run without
         # --site too, so the site step that follows finds them in the cache instead of simulating that version again
         for v in versions[-2:]:
             want_series.add((f, v["vid"]))
         for v in versions:
             key = (f, v["vid"])
-            hit = cache_dir / f"{v['vid']}-{salt_for(f)}.json" if (cache_dir and v["blob"]) else None
+            hit = cache_dir / v["cache_name"] if (cache_dir and v["blob"]) else None
             if hit and hit.is_file():
                 try:
                     recs = json.loads(hit.read_text(encoding="utf-8"))
@@ -1747,12 +1887,12 @@ def cmd_history(args):
             helper = make_helper(orlab, inst)
             for f, v in todo:
                 snap = head if v["sha"] is None else Snapshot(root, v["sha"])
-                cfg_key = rel_posix(root / f, cfg.dir)  # config is keyed by the CURRENT name
-                recs = run_ork(helper, cfg, snap, root, v["path"], cfg.seed, fallback=head, cfg_key=cfg_key,
+                # that commit's config, under the design's name then; the current seed and wind
+                recs = run_ork(helper, v["cfg"], snap, root, v["path"], cfg.seed,
                                capture_series=(f, v["vid"]) in want_series)
                 results[(f, v["vid"])] = recs
                 if cache_dir and v["blob"]:
-                    (cache_dir / f"{v['vid']}-{salt_for(f)}.json").write_text(json.dumps(recs), encoding="utf-8")
+                    (cache_dir / v["cache_name"]).write_text(json.dumps(recs), encoding="utf-8")
 
     # assemble series per (file, sim name)
     series, csv_rows = {}, []
@@ -1787,21 +1927,19 @@ def cmd_history(args):
         for prev, v in zip(versions, versions[1:]):
             if not prev["blob"] or not v["blob"]:
                 continue
-            motor_only = prev["blob"] == v["blob"]          # same design: an entry only when a thrust curve changed
-            if motor_only and prev.get("mblobs") == v.get("mblobs"):
+            side = prev["blob"] == v["blob"]          # same design: an entry only when its config or a curve changed
+            if side and prev["vid"] == v["vid"]:
                 continue
-            key = narration_key(prev["vid"], v["vid"]) if motor_only else narration_key(prev["blob"], v["blob"])
+            key = narration_key(prev["vid"], v["vid"]) if side else narration_key(prev["blob"], v["blob"])
             cached_diff = cache_dir / f"diff-{key}.json" if cache_dir else None
             try:
                 if cached_diff and cached_diff.is_file():
                     record = json.loads(cached_diff.read_text(encoding="utf-8"))
                 else:
-                    snaps = [head if x["sha"] is None else Snapshot(root, x["sha"]) for x in (prev, v)]
-                    if motor_only:
-                        changed = [(m, snaps[0].path(m) or head.path(m), snaps[1].path(m) or head.path(m))
-                                   for m, a, b in zip(motor_paths[f], prev["mblobs"], v["mblobs"]) if a != b]
-                        record = motor_change_record(changed)
+                    if side:
+                        record = side_change_record(root, head, prev, v)
                     else:
+                        snaps = [head if x["sha"] is None else Snapshot(root, x["sha"]) for x in (prev, v)]
                         record = change_record(snaps[0].path(prev["path"]), snaps[1].path(v["path"]))
                     if cached_diff:
                         cached_diff.write_text(json.dumps(record), encoding="utf-8")
@@ -1815,7 +1953,7 @@ def cmd_history(args):
                             "kind": record.get("kind", "design"),
                             "headline": record["headline"], "empty": record["empty"], "lines": record["lines"],
                             "rows": {u: record["rows"][u][:300] for u in UNIT_SYSTEMS}})
-            if narration is None and not record["empty"] and record.get("kind") != "motor":
+            if narration is None and not record["empty"] and record.get("kind", "design") == "design":
                 entries[-1]["_prompt"] = (prev, v, record)
         # prompts for the newest few un-narrated entries only, so a backfill never floods the narrator
         for e in reversed(entries):
@@ -2237,6 +2375,8 @@ function buildMetrics() {
 // ---- history chart (Plotly) ----
 const hplot = document.getElementById('hplot'), empty = document.getElementById('empty');
 const filesTicked = () => new Set([...state.sel].map(id => id.split('|')[0]));
+// a point that did not change the design says what did
+function kindNote(kind) { return kind === 'motor' ? '<br>thrust curve change' : kind === 'config' ? '<br>sim config change' : ''; }
 function simLabel(a) { return (filesTicked().size > 1 ? short(a.file) + ' \u00b7 ' : '') + a.name; }
 const isDark = () => window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
 function baseLayout(xTitle, yTitle) {
@@ -2296,7 +2436,7 @@ function drawBars(spec, unit) {
     return { type: 'bar', name: simLabel(a), x: labels, y: rows.map(p => p ? p.d : null), customdata: rows.map((p, i) => ({ sha: order[i].sha, p })),
              marker: { color: rows.map(p => dirColor(p ? p.d : null, tol)), line: { color: colorOf.get(a.id), width: series.length > 1 ? 2 : 0 } },
              hovertemplate: rows.map((p, i) => p ? `<b>${order[i].short}</b> \u00b7 ${order[i].date} \u00b7 ${order[i].author}<br>${simLabel(a)}: \u0394 ${p.d >= 0 ? '+' : ''}${fmt(p.d, spec.dec)}${unit}`
-                                            + (p.v - p.d ? ` (${(p.d / (p.v - p.d) * 100).toFixed(1)}%)` : '') + `<br>now ${fmt(p.v, spec.dec)}${unit}${order[i].kind === 'motor' ? '<br>thrust curve change' : ''}<br>${order[i].message}<extra></extra>` : '') };
+                                            + (p.v - p.d ? ` (${(p.d / (p.v - p.d) * 100).toFixed(1)}%)` : '') + `<br>now ${fmt(p.v, spec.dec)}${unit}${kindNote(order[i].kind)}<br>${order[i].message}<extra></extra>` : '') };
   });
   const layout = baseLayout('commit', '\u0394 ' + spec.label + (spec.unit ? ` (${spec.unit})` : '')); layout.barmode = 'group'; layout.showlegend = series.length > 1;
   Plotly.react(hplot, traces, layout, plotConfig(`delta_${state.metric}`)); openCommit(hplot);
@@ -2315,7 +2455,7 @@ function draw() {
                   line: { color: col, width: 2 }, marker: { size: 9, color: pts.map(p => dirColor(p.d, tol)), line: { color: col, width: 1.5 } },
                   hovertemplate: pts.map(p => `<b>${p.r.short}</b> \u00b7 ${p.r.date} \u00b7 ${p.r.author}<br>${simLabel(a)}: ${fmt(p.v, spec.dec)}${unit}`
                                    + (p.d != null ? `<br>\u0394 vs previous: ${p.d >= 0 ? '+' : ''}${fmt(p.d, spec.dec)}${unit}` + (p.v - p.d ? ` (${(p.d / (p.v - p.d) * 100).toFixed(1)}%)` : '') : '')
-                                   + (p.r.kind === 'motor' ? '<br>thrust curve change' : '') + `<br>${p.r.message}<extra></extra>`) });
+                                   + kindNote(p.r.kind) + `<br>${p.r.message}<extra></extra>`) });
     const jp = state.jarvis ? jarvisSeries(a, state.metric) : [];
     if (jp.length) traces.push({ type: 'scatter', mode: 'lines+markers', name: simLabel(a) + ' (Jarvis)',
                   x: jp.map(p => new Date(p.r.t * 1000).toISOString()), y: jp.map(p => delta ? (p.d ?? 0) : p.v), customdata: jp.map(p => ({ sha: p.r.sha })),
@@ -2323,7 +2463,7 @@ function draw() {
                   hovertemplate: jp.map(p => `<b>${p.r.short}</b> \u00b7 ${p.r.date} \u00b7 ${p.r.author}<br>${simLabel(a)}, Jarvis: ${fmt(p.v, spec.dec)}${unit}`
                                    + (p.o != null ? `<br>OpenRocket: ${fmt(p.o, spec.dec)}${unit} (Jarvis ${p.v - p.o >= 0 ? '+' : ''}${fmt(p.v - p.o, spec.dec)})` : '')
                                    + (p.d != null ? `<br>\u0394 vs previous Jarvis: ${p.d >= 0 ? '+' : ''}${fmt(p.d, spec.dec)}${unit}` : '')
-                                   + (p.r.kind === 'motor' ? '<br>thrust curve change' : '') + `<br>${p.r.message}<extra></extra>`) });
+                                   + kindNote(p.r.kind) + `<br>${p.r.message}<extra></extra>`) });
   }
   empty.hidden = traces.length > 0;
   empty.textContent = state.sel.size && !showOr && !state.jarvis ? 'OpenRocket and Jarvis are both hidden: turn one back on above the chart.' : 'Select simulations in the list.';
@@ -2631,7 +2771,7 @@ function drawChangelog() {
       // the field table only when the bullets do not already list every field: a truncated bullet, or a component or simulation added or removed
       const partial = lines.some(l => /\+\d+ more$/.test(l) || /^(Added|Removed) /.test(l) || /^Simulation \*\*.*\*\* (added|removed)$/.test(l));
       h += `<div class="entry"><div class="ehead">${esc(e.date)} · ${link} · ${esc(e.author)} · <i>${esc(e.message)}</i></div>`
-        + (e.empty ? `<div class="ehl muted">${esc(e.headline)}</div>` : lines.length === 1 && e.kind !== 'motor' ? '' : `<div class="ehl">${esc(e.headline)}</div>`)   // a one-bullet entry needs no count above it
+        + (e.empty ? `<div class="ehl muted">${esc(e.headline)}</div>` : lines.length === 1 && (e.kind || 'design') === 'design' ? '' : `<div class="ehl">${esc(e.headline)}</div>`)   // a one-bullet entry needs no count above it
         + (e.narration ? `<blockquote title="Written by GitHub Copilot from the structured diff below">${esc(e.narration)}</blockquote>` : '')
         + (lines.length ? '<ul>' + lines.map(l => `<li>${bold(l)}</li>`).join('') + '</ul>' : '')
         + `<div class="chips">${changeChips(f, e)}</div>`

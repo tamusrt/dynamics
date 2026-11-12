@@ -194,6 +194,86 @@ def test_a_thrust_curve_commit_is_a_version_of_the_design():
     print("thrust-curve versions: ok")
 
 
+def test_each_version_flies_the_config_of_its_own_commit():
+    """Adding nine Lumina variants made CI re-simulate Lumina's whole history (about 2,000 runs), because every version
+    flew today's config. Each version now flies its own commit's entry: a config or curve change is a point of its own
+    from then on, and the versions before it keep their results (and their cache files)."""
+    import hashlib
+    import json
+    import os
+    with tempfile.TemporaryDirectory() as tmp:
+        root = new_repo(tmp)
+        day = 0
+
+        def dated_commit(message):
+            nonlocal day
+            day += 1
+            env = dict(os.environ, GIT_AUTHOR_DATE=f"2027-02-{day:02d}T12:00:00", GIT_COMMITTER_DATE=f"2027-02-{day:02d}T12:00:00")
+            git(root, "add", "-A")
+            subprocess.run(["git", "commit", "-q", "-m", message], cwd=root, check=True, env=env)
+            return git(root, "rev-parse", "--short", "HEAD")
+
+        def config(entry, other=None):
+            files = {"R/r.ork": entry, **({"O/o.ork": other} if other is not None else {})}
+            (root / "sim_config.json").write_text(json.dumps({"units": "metric", "files": files}), encoding="utf-8")
+
+        def curve(peak):
+            return f"M {peak} 100 0 1.0 2.0 T\n0.1 {peak}\n1.0 0\n"
+
+        def plan():
+            cfg = or_ci.Config(root / "sim_config.json")
+            return cfg, or_ci.plan_versions(cfg, or_ci.ConfigHistory(cfg, root), root, or_ci.Snapshot(root), "R/r.ork", 100, "SALT")
+
+        write(root, "R/r.ork", design(0)); write(root, "R/a.eng", curve(100)); config({"motor_variants": {"A": "R/a.eng"}})
+        v0 = dated_commit("design, curve A and its config")
+        write(root, "R/b.eng", curve(200)); dated_commit("curve B, named by nothing yet")
+        _, before = plan()
+        config({"motor_variants": {"A": "R/a.eng", "B": "R/b.eng"}}); c1 = dated_commit("config adds variant B")
+        write(root, "R/b.eng", curve(250)); c2 = dated_commit("curve B changed")
+        config({"motor_variants": {"A": "R/a.eng", "B": "R/b.eng"}}, other={}); dated_commit("another design's entry")
+        write(root, "R/r.ork", design(1)); v1 = dated_commit("design v1")
+        cfg, versions = plan()
+
+        assert [(v["short"], v["kind"]) for v in versions] == [(v0, "design"), (c1, "config"), (c2, "motor"), (v1, "design")], \
+            [(v["short"], v["kind"], v["message"]) for v in versions]
+        assert list(versions[0]["entry"]["motor_variants"]) == ["A"] and versions[0]["mpaths"] == ["R/a.eng"], "v0 flies its own config"
+        assert versions[1]["mpaths"] == ["R/a.eng", "R/b.eng"]
+        assert versions[1]["mblobs"][1] != versions[2]["mblobs"][1], "the curve B change moves the version id"
+        assert len({v["vid"] for v in versions}) == 4
+        assert before[0]["cache_name"] == versions[0]["cache_name"], "adding a variant leaves the past (and its cache) alone"
+        eh = hashlib.sha1(json.dumps(cfg.file_cfg("R/r.ork"), sort_keys=True).encode()).hexdigest()[:8]
+        assert versions[-1]["cache_name"] == f"{or_ci.version_id(versions[-1])}-SALT-{eh}.json", \
+            "a version flying today's entry keeps the cache file it had when every version flew today's entry"
+
+        head = or_ci.Snapshot(root)
+        rec = or_ci.side_change_record(root, head, versions[0], versions[1])
+        assert rec["kind"] == "config" and rec["lines"]["metric"] == ["**motor_variants**: added B"], rec
+        rec = or_ci.side_change_record(root, head, versions[1], versions[2])
+        assert rec["kind"] == "motor" and rec["headline"] == "Thrust curve changed: b.eng", rec
+        assert or_ci.config_change_lines({"default_motor": "X/a.rse"}, {"default_motor": "X/b.rse"}) == \
+            [("**default_motor**: a.rse → b.rse", ["default_motor", "changed", "a.rse", "b.rse"])]
+
+        # a curve the config names before it is committed: that version flies without it, as it would have then
+        config({"motor_variants": {"A": "R/a.eng", "B": "R/b.eng", "C": "R/c.eng"}}, other={}); dated_commit("config names C")
+        newest = plan()[1][-1]
+        assert newest["kind"] == "config" and newest["mblobs"][-1] == "", "no copy of today's file stands in for it"
+        # an uncommitted config change is a working-tree point; a clean tree adds none
+        assert all(v["sha"] for v in plan()[1])
+        config({"motor_variants": {"A": "R/a.eng"}})
+        assert plan()[1][-1]["short"] == "working"
+        # a commit with no config, or one that does not parse, has no entry for the design
+        hist = or_ci.ConfigHistory(cfg, root)
+        (root / "sim_config.json").write_text("{ not json", encoding="utf-8"); bad = dated_commit("broken config")
+        assert hist.entry(git(root, "rev-parse", bad), "R/r.ork") == {}
+        assert hist.entry(git(root, "rev-parse", v0), "R/r.ork") == {"motor_variants": {"A": "R/a.eng"}}
+        # only the entries are historical: the run settings the cache key holds stay the current ones
+        (root / "sim_config.json").write_text(json.dumps({"units": "imperial", "seed": 7, "deterministic_wind": False, "files": {}}),
+                                              encoding="utf-8")
+        old = or_ci.ConfigHistory(or_ci.Config(root / "sim_config.json"), root).at(git(root, "rev-parse", v0))
+        assert (old.seed, old.deterministic_wind, old.units) == (7, False, "imperial"), (old.seed, old.deterministic_wind, old.units)
+    print("each version's own config: ok")
+
+
 def test_motor_files_watches_a_curve_without_choosing_a_motor():
     """Nimitz's sustainer curve is found by designation, so nothing noticed it arrive: the push simulated nothing and the
     History kept the run with no sustainer. motor_files makes it a watched file; it must not pick a motor for any mount."""
