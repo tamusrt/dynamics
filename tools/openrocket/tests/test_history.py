@@ -231,6 +231,8 @@ def test_each_version_flies_the_config_of_its_own_commit():
         config({"motor_variants": {"A": "R/a.eng", "B": "R/b.eng"}}); c1 = dated_commit("config adds variant B")
         write(root, "R/b.eng", curve(250)); c2 = dated_commit("curve B changed")
         config({"motor_variants": {"A": "R/a.eng", "B": "R/b.eng"}}, other={}); dated_commit("another design's entry")
+        config({"motor_variants": {"A": "R/a.eng", "B": "R/b.eng"}, "_note": "x", "rasaero": "R/r.CDX1"}, other={})
+        dated_commit("a note and the RASAero model: nothing that is flown")
         write(root, "R/r.ork", design(1)); v1 = dated_commit("design v1")
         cfg, versions = plan()
 
@@ -240,8 +242,12 @@ def test_each_version_flies_the_config_of_its_own_commit():
         assert versions[1]["mpaths"] == ["R/a.eng", "R/b.eng"]
         assert versions[1]["mblobs"][1] != versions[2]["mblobs"][1], "the curve B change moves the version id"
         assert len({v["vid"] for v in versions}) == 4
+        assert versions[-1]["vid"].endswith(or_ci.entry_hash({"motor_variants": {"A": "R/a.eng", "B": "R/b.eng"}})), \
+            "notes and the RASAero settings are not part of the key"
+        keys = [or_ci.changelog_key(a, b) for a, b in zip(versions, versions[1:])]
+        assert len(set(keys)) == 3, f"each changelog entry has a key of its own: {keys}"
         assert before[0]["cache_name"] == versions[0]["cache_name"], "adding a variant leaves the past (and its cache) alone"
-        eh = hashlib.sha1(json.dumps(cfg.file_cfg("R/r.ork"), sort_keys=True).encode()).hexdigest()[:8]
+        eh = hashlib.sha1(json.dumps(or_ci.flown_entry(cfg.file_cfg("R/r.ork")), sort_keys=True).encode()).hexdigest()[:8]
         assert versions[-1]["cache_name"] == f"{or_ci.version_id(versions[-1])}-SALT-{eh}.json", \
             "a version flying today's entry keeps the cache file it had when every version flew today's entry"
 

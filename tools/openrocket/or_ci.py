@@ -380,9 +380,18 @@ class ConfigHistory:
         return c.file_cfg(rel_posix(self.root / ork_rel, c.dir))
 
 
+# settings in a design's entry that do not change what is simulated: notes, the RASAero model it is checked against,
+# Discord. A commit changing only these is no new point, and they are not part of a version's cache key.
+NOT_FLOWN = {"rasaero", "rasaero_sim", "discord_ping"}
+
+
+def flown_entry(fcfg: dict) -> dict:
+    return {k: v for k, v in fcfg.items() if not k.startswith("_") and k not in NOT_FLOWN}
+
+
 def entry_hash(fcfg: dict) -> str:
     import hashlib
-    return hashlib.sha1(json.dumps(fcfg, sort_keys=True).encode()).hexdigest()[:8]
+    return hashlib.sha1(json.dumps(flown_entry(fcfg), sort_keys=True).encode()).hexdigest()[:8]
 
 
 # ----------------------------------------------------------------------------
@@ -1459,10 +1468,10 @@ def config_motor_versions(root: Path, hist: ConfigHistory, versions: list, max_c
     def name_at(t):   # the design's name then (it may have been renamed since)
         return next((v["path"] for v in reversed(versions) if v["time"] <= t), versions[0]["path"])
 
-    out, prev = {}, hist.entry(versions[0]["sha"], versions[0]["path"])
+    out, prev = {}, flown_entry(hist.entry(versions[0]["sha"], versions[0]["path"]))
     config_commits = git_motor_versions(root, [hist.rel], since, max_commits)   # commits touching these paths
     for c in config_commits:
-        e = hist.entry(c["sha"], name_at(c["time"]))
+        e = flown_entry(hist.entry(c["sha"], name_at(c["time"])))
         if e != prev:
             out[c["sha"]] = dict(c, kind="config")
         prev = e
@@ -1556,8 +1565,8 @@ def plan_versions(cfg: Config, hist: ConfigHistory, root: Path, head: Snapshot, 
         v["entry"] = v["cfg"].file_cfg(rel_posix(root / v["path"], v["cfg"].dir))
         v["mpaths"] = entry_motor_paths(v["cfg"], root, v["entry"])
         v["mblobs"] = _motor_blobs(root, v["sha"], v["mpaths"], head)
-        # the cache file name is the one results were kept under when every version flew today's entry, so a
-        # version whose entry has not changed since keeps its cached results
+        # the cache file name has the form results were kept under when every version flew today's entry, so a
+        # version whose entry (without notes and the RASAero settings) has not changed since keeps its cached results
         base, eh = version_id(v), entry_hash(v["entry"])
         v["vid"], v["cache_name"] = f"{base}-{eh}", f"{base}-{cache_salt}-{eh}.json"
     if len(versions) > 1 and versions[-1]["sha"] is None and versions[-1]["vid"] == versions[-2]["vid"]:
@@ -1726,10 +1735,20 @@ def config_change_lines(old: dict, new: dict) -> list:
     return out
 
 
+def changelog_key(prev: dict, v: dict) -> str:
+    """The key a changelog entry (and its narration) is cached under. A design change is keyed by the two .ork
+    blobs. A config or curve change by the whole of both version ids: narration_key keeps only the first 12
+    characters, which three config points of one unchanged design share."""
+    if prev["blob"] != v["blob"]:
+        return narration_key(prev["blob"], v["blob"])
+    import hashlib
+    return "side-" + hashlib.sha1(f"{prev['vid']}|{v['vid']}".encode()).hexdigest()[:20]
+
+
 def side_change_record(root: Path, head: Snapshot, prev: dict, v: dict) -> dict:
     """The changelog entry for a version that did not change the design: its config entry, the curves it names,
     or both. Same shape as change_record plus kind: "config" when the entry changed, else "motor"."""
-    cfg_lines = config_change_lines(prev["entry"], v["entry"])
+    cfg_lines = config_change_lines(flown_entry(prev["entry"]), flown_entry(v["entry"]))
     snaps = [head if x["sha"] is None else Snapshot(root, x["sha"]) for x in (prev, v)]
     before, after = dict(zip(prev["mpaths"], prev["mblobs"])), dict(zip(v["mpaths"], v["mblobs"]))
     moved = [m for m in v["mpaths"] if m in before and before[m] != after[m]]   # a curve newly named is in cfg_lines
@@ -1930,7 +1949,7 @@ def cmd_history(args):
             side = prev["blob"] == v["blob"]          # same design: an entry only when its config or a curve changed
             if side and prev["vid"] == v["vid"]:
                 continue
-            key = narration_key(prev["vid"], v["vid"]) if side else narration_key(prev["blob"], v["blob"])
+            key = changelog_key(prev, v)
             cached_diff = cache_dir / f"diff-{key}.json" if cache_dir else None
             try:
                 if cached_diff and cached_diff.is_file():
