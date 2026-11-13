@@ -2221,7 +2221,8 @@ for (const [file, sims] of Object.entries(DATA.designs)) for (const [sim, rows] 
 const VIEWS = [['abs', 'Absolute'], ['dline', 'Δ line'], ['dbar', 'Δ bars']];
 const DEFAULTS = () => ({ metric: DATA.metrics[0].key, view: 'abs', units: DATA.default_units || 'metric', stab: DATA.default_stability || 'cal',
                           fx: 'altitude', fys: [{ key: 'stability', side: 'l' }], fapo: true });   // fys: Y variables in order, side l|r
-const state = Object.assign(DEFAULTS(), { sel: new Set(), tab: 'history', fprev: false, jarvis: false, openrocket: true, legend: true });   // Jarvis's lines are off until asked for
+const state = Object.assign(DEFAULTS(), { sel: new Set(), tab: 'history', fprev: false, jarvis: false, openrocket: true, legend: true,
+                                          fevOff: new Set() });   // fevOff: codes of the flight events hidden from the plot   // Jarvis's lines are off until asked for
 const FVARS = DATA.flight_vars || {};
 const FRAMES = { predictions: 'predictions/index.html', vision: 'predictions/viewer/index.html', edith: 'predictions/edith/index.html',
                  vehicles: 'vehicles/index.html' };   // pages shown inside this one (vehicles: built by tools/openrocket/vehicles/build_vehicles.py)
@@ -2279,6 +2280,7 @@ function readHash() {
   state.jarvis = p.get('jarvis') === '1';
   state.openrocket = p.get('or') !== '0';
   state.legend = p.get('legend') !== '0';
+  state.fevOff = new Set((p.get('evoff') || '').split(',').filter(c => MARKED_EVENTS.some(e => e[3] === c)));
   applyStab();
   const s = p.get('sel');
   state.sel = new Set(s ? s.split(',').map(selFromToken).filter(Boolean) : []);
@@ -2294,6 +2296,7 @@ function writeHash() {
     if (state.fx !== d.fx) p.set('fx', state.fx);
     if (fysText(state.fys) !== defaultFys()) p.set('fy', fysText(state.fys));
     if (!state.fapo) p.set('apo', '0'); if (state.fprev) p.set('prev', '1');
+    if (state.fevOff.size) p.set('evoff', MARKED_EVENTS.filter(e => state.fevOff.has(e[3])).map(e => e[3]).join(','));
   } else if (!FRAMES[state.tab]) {
     if (state.metric !== defaultMetric()) p.set('metric', state.metric);
     if (state.view !== d.view) p.set('view', state.view);
@@ -2568,7 +2571,10 @@ const PRESETS = [
   ['CP & CG vs time', 'time', 'cp_location,cg_location', true], ['Dynamic pressure vs altitude', 'altitude', 'dynamic_pressure', true],
   ['Altitude, velocity & acceleration vs time', 'time', 'altitude,velocity_total:r,acceleration_total:r', true],
   ['AoA vs time', 'time', 'aoa', true], ['Altitude vs time (whole flight)', 'time', 'altitude', false]];
-const MARKED_EVENTS = [['LAUNCHROD', 'rod exit'], ['BURNOUT', 'burnout'], ['APOGEE', 'apogee'], ['RECOVERY_DEVICE_DEPLOYMENT', 'deployment']];
+// [OpenRocket event, label, marker symbol, code in links]: drawn as a marker on each curve at the instant it happens
+const MARKED_EVENTS = [['LAUNCHROD', 'rod exit', 'triangle-up', 'rod'], ['BURNOUT', 'burnout', 'diamond', 'burnout'],
+                       ['APOGEE', 'apogee', 'star', 'apogee'], ['RECOVERY_DEVICE_DEPLOYMENT', 'deployment', 'square', 'deploy']];
+function toggleEvent(code) { state.fevOff.has(code) ? state.fevOff.delete(code) : state.fevOff.add(code); update(); }
 
 // axes: one per (side, unit), in the order the variables were added -> [{id, side, unit, vars}], plus variable key -> axis
 function axisPlan() {
@@ -2708,10 +2714,9 @@ function flightPoints(ver, xk, yk, xf, yf) {   // -> {x:[], y:[], t:[]} in displ
 function drawFlight() {
   const sel = ALL.filter(a => state.sel.has(a.id)); sel.forEach(a => ensureFlight(a.id));
   const X = fvar(state.fx), { axes, of } = axisPlan(), Y0 = state.fys.length ? fvar(state.fys[0].key) : null;
-  const traces = [], notes = [], shapes = [], annotations = [], shown = [];
+  const traces = [], notes = [], shown = [], evPoints = [];
   if (flightNote) { notes.push(flightNote); flightNote = ''; }
   const hover = (label, V) => `${label}<br>${V.label}: %{y:.5g}${V.unit ? ' ' + V.unit : ''}<br>${X.label}: %{x:.5g}${X.unit ? ' ' + X.unit : ''}` + (X.key === 'time' ? '' : '<br>t = %{customdata:.2f} s') + '<extra></extra>';
-  let si = 0;
   for (const a of sel) {
     const fl = FLIGHTS[a.id], col = colorOf.get(a.id);
     if (!fl) { notes.push(`${simLabel(a)}: ${(DATA.flights || {})[a.id] ? 'loading\u2026' : 'no flight data (simulation failed or motor unresolved)'}`); continue; }
@@ -2727,35 +2732,50 @@ function drawFlight() {
                       line: { color: col, width: vi ? 1.5 : 2, dash: vi ? 'dot' : dashOf(f.key) }, opacity: vi ? 0.55 : 1,
                       hovertemplate: hover(simLabel(a) + (vi ? ' \u00b7 previous ' + ver.short : ''), V) });
       }
-      if (vi) return;   // event lines for the latest version only
-      // events as vertical lines at the X value the flight had at that instant, labelled along the top; independent of the Y axes
+      if (vi) return;   // events for the latest version only
+      // each event is a point on every plotted curve, at the sample nearest the instant it happened
       const tcol = ver.cols.time, xcol = ver.cols[X.key], tApo = tApogee(ver);
-      for (const [ev, text] of MARKED_EVENTS) for (const te of (ver.events[ev] || [])) {
+      for (const [ev, , , code] of MARKED_EVENTS) for (const te of (ver.events[ev] || [])) {
         if (!tcol || !xcol || (state.fapo && te > tApo + 1e-6)) continue;
         let best = 0; for (let i = 1; i < tcol.length; i++) if (Math.abs(tcol[i] - te) < Math.abs(tcol[best] - te)) best = i;
         if (Math.abs(tcol[best] - te) > 1.0 || xcol[best] == null) continue;
-        const x = xcol[best] * X.factor;
-        shapes.push({ type: 'line', xref: 'x', yref: 'paper', x0: x, x1: x, y0: 0, y1: 1, line: { color: col, width: 1, dash: 'dot' }, opacity: 0.7 });
-        annotations.push({ x, xref: 'x', y: 1, yref: 'paper', yanchor: 'top', yshift: -2 - 13 * si, text, showarrow: false, font: { size: 11, color: col },
-                           xanchor: 'left', xshift: 3, hovertext: `${simLabel(a)} \u00b7 ${text}<br>t = ${te.toFixed(2)} s` + (X.key === 'time' ? '' : `<br>${X.label}: ${+x.toPrecision(5)}${X.unit ? ' ' + X.unit : ''}`) });
+        for (const f of state.fys) {
+          const y = (ver.cols[f.key] || [])[best]; if (y == null) continue;
+          evPoints.push({ code, axis: of.get(f.key).id, x: xcol[best] * X.factor, y: y * fvar(f.key).factor, t: te, col, label: simLabel(a) });
+        }
       }
     });
-    si++;
+  }
+  // one trace per event and axis, every simulation's points in it: the events legend (under the plot) then
+  // hides or shows an event everywhere with one click
+  const fg = css('--fg');
+  for (const [, text, symbol, code] of MARKED_EVENTS) {
+    const mine = evPoints.filter(p => p.code === code);
+    [...new Set(mine.map(p => p.axis))].forEach((axis, i) => {
+      const ps = mine.filter(p => p.axis === axis);
+      traces.push({ type: 'scatter', mode: 'markers', name: text, legend: 'legend2', legendgroup: 'ev-' + code, showlegend: i === 0,
+                    visible: state.fevOff.has(code) ? 'legendonly' : true, x: ps.map(p => p.x), y: ps.map(p => p.y), yaxis: axis,
+                    customdata: ps.map(p => p.t), text: ps.map(p => p.label),
+                    marker: { symbol, size: 10, color: fg, line: { color: ps.map(p => p.col), width: 2 } },
+                    hovertemplate: `%{text} \u00b7 ${text}<br>t = %{customdata:.2f} s` + (X.key === 'time' ? '' : `<br>${X.label}: %{x:.5g}${X.unit ? ' ' + X.unit : ''}`) + '<extra></extra>' });
+    });
   }
   // the versions plotted: one note when every ticked simulation is at the same commit (the usual case), else one per simulation
   const one = shown.length && shown.every(x => x.vers.length === 1 && x.vers[0].short === shown[0].vers[0].short);
   if (one) notes.push(`Latest version ${shown[0].vers[0].short} (${shown[0].vers[0].date})`);
   else for (const { a, vers } of shown) notes.push(`${simLabel(a)}: ${vers.map(v => `${v.short} (${v.date})`).join(' vs ')}`);
   finfo.textContent = notes.join('   |   ');
-  fempty.hidden = traces.length > 0; fempty.textContent = !sel.length ? 'Select simulations in the list.' : !state.fys.length ? 'Tick a Y variable in the panel on the right.' : 'Loading flight data\u2026';
-  if (!traces.length) { if (window.Plotly) Plotly.purge(fplot); return; }
-  const dark = isDark(), fg = css('--fg'), grid = dark ? '#30363d' : '#d0d7de';
+  fempty.hidden = traces.some(t => t.mode === 'lines'); fempty.textContent = !sel.length ? 'Select simulations in the list.' : !state.fys.length ? 'Tick a Y variable in the panel on the right.' : 'Loading flight data\u2026';
+  if (!traces.some(t => t.mode === 'lines')) { if (window.Plotly) Plotly.purge(fplot); return; }
+  const dark = isDark(), grid = dark ? '#30363d' : '#d0d7de';
   const layout = {
     paper_bgcolor: 'rgba(0,0,0,0)', plot_bgcolor: 'rgba(0,0,0,0)', font: { color: fg, size: 12 },
     margin: { l: 60, r: 20, t: 30, b: 50 }, hovermode: 'closest', dragmode: 'zoom',
     legend: { orientation: 'h', y: 1.02, yanchor: 'bottom', x: 0, groupclick: 'toggleitem', grouptitlefont: { size: 12 } },
+    // the events legend: one row under the X axis title, clear of the curves
+    legend2: { orientation: 'h', x: 1, xanchor: 'right', y: -0.17, yanchor: 'top', title: { text: 'events', side: 'left' },
+               font: { size: 11 }, itemclick: 'toggle', itemdoubleclick: false },
     xaxis: { title: { text: axisText(X) }, gridcolor: grid, zeroline: false, automargin: true },
-    shapes, annotations,
   };
   if (!state.legend) layout.showlegend = false;   // otherwise Plotly's own rule: a legend from two traces up
   // one Plotly axis per (side, unit): the first on each side sits on the plot edge, the rest are shifted outwards by Plotly
@@ -2769,6 +2789,14 @@ function drawFlight() {
   const config = { responsive: true, displaylogo: false, scrollZoom: true, modeBarButtonsToRemove: ['lasso2d', 'select2d'],
                    toImageButtonOptions: { format: 'png', filename: `${state.fys.map(f => f.key).join('+')}_vs_${state.fx}`, scale: 2 } };
   Plotly.react(fplot, traces, layout, config);
+  if (fplot.on && !fplot.__events) {   // a click on an event in its legend hides or shows it, and the choice stays
+    fplot.__events = true;
+    fplot.on('plotly_legendclick', d => {
+      const g = String((d.data[d.curveNumber] || {}).legendgroup || '');
+      if (!g.startsWith('ev-')) return true;   // a simulation's curve: Plotly's own toggle
+      toggleEvent(g.slice(3)); return false;
+    });
+  }
 }
 
 // ---- CSV of exactly what is plotted: one row per sample, display units, ascent only when ticked ----

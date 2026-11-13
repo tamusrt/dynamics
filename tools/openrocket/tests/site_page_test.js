@@ -66,7 +66,9 @@ function checkCall(traces, layout) {
   }
   for (const k of Object.keys(layout).filter(k => /^yaxis\d*$/.test(k))) assert(layout[k].title && typeof layout[k].title.text === 'string', `${k}: no title`);
 }
-global.Plotly = { react(div, traces, layout, config) { checkCall(traces, layout); calls.push({ div: div.tag, traces, layout, config }); }, purge() {}, Plots: { resize() {} } };
+const isEvent = t => String(t.legendgroup || '').startsWith('ev-');
+global.Plotly = { react(div, traces, layout, config) { checkCall(traces, layout);
+  calls.push({ div: div.tag, traces: traces.filter(t => !isEvent(t)), events: traces.filter(isEvent), all: traces, layout, config }); }, purge() {}, Plots: { resize() {} } };
 global.window.Plotly = global.Plotly;
 
 // ---------------------------------------------------------------- run the page
@@ -75,7 +77,7 @@ function run(params) {
   global.location = { hash: '#' + new URLSearchParams(params).toString() };
   requested.length = 0; calls.length = 0; simRows = [];
   for (const k of Object.keys(els)) delete els[k];
-  eval(js + ';globalThis.__P = { state, addY, flipY, removeY, exportCsv, csvText, update, stabSel, unitSel, simLabel, fvar, ALL, frames, FRAMES, syncFrame, frameMissing, setJarvis, rasIcons, pickX };');
+  eval(js + ';globalThis.__P = { state, addY, flipY, removeY, exportCsv, csvText, update, stabSel, unitSel, simLabel, fvar, ALL, frames, FRAMES, syncFrame, frameMissing, setJarvis, rasIcons, pickX, toggleEvent };');
   P = globalThis.__P;
   for (const src of [...requested]) eval(fs.readFileSync(path.join(site, src), 'utf8'));   // what the browser's <script> tags do
   return calls[calls.length - 1];
@@ -162,24 +164,47 @@ test('the panel lists every variable with a checkbox, the filter hides rows, Cle
   assert.deepStrictEqual(P.state.fys, []);
   assert.strictEqual(els.ypanel.children.find(c => c.className === 'filter').value, 'mass', 'filter text survives the rebuild');
 });
-test('events are vertical lines with labels, within the window shown', () => {
+test('events are markers on the curves, with their own legend, within the window shown', () => {
   let c = run({ tab: 'flight', fx: 'time', fy: 'altitude', apo: '1', units: 'metric', sel: enc([A]) });
-  assert.deepStrictEqual(c.layout.annotations.map(a => a.text), ['rod exit', 'burnout', 'apogee']);
-  assert.strictEqual(c.layout.shapes.length, 3);
-  c.layout.annotations.forEach((a, i) => { assert.strictEqual(a.xref, 'x'); assert.strictEqual(a.yref, 'paper'); assert(close(a.x, c.layout.shapes[i].x0)); });
-  assert(close(c.layout.annotations[1].x, va.events.BURNOUT[0]), 'burnout line sits at the burnout time');
-  assert(c.layout.annotations[2].hovertext.includes(`t = ${tApo.toFixed(2)} s`));
+  assert.deepStrictEqual(c.events.map(t => t.name), ['rod exit', 'burnout', 'apogee']);
+  assert(!c.layout.shapes && !c.layout.annotations, 'no vertical lines or labels any more');
+  assert(c.events.every(t => t.legend === 'legend2' && t.mode === 'markers' && t.showlegend && t.visible === true));
+  assert.deepStrictEqual(c.events.map(t => t.marker.symbol), ['triangle-up', 'diamond', 'star']);
+  assert(c.layout.legend2 && c.layout.legend2.title.text === 'events');
+  const burn = c.events[1], iB = va.cols.time.findIndex(t => t >= va.events.BURNOUT[0]);
+  const near = [iB - 1, iB].filter(i => i >= 0).reduce((b, i) => Math.abs(va.cols.time[i] - va.events.BURNOUT[0]) < Math.abs(va.cols.time[b] - va.events.BURNOUT[0]) ? i : b);
+  assert(close(burn.x[0], va.cols.time[near]) && close(burn.y[0], va.cols.altitude[near]), 'the burnout marker sits on the altitude curve at burnout');
+  assert(close(c.events[2].customdata[0], tApo) && c.events[2].hovertemplate.includes('t = %{customdata:.2f} s'));
+  assert.strictEqual(c.events[2].text[0], P.simLabel(P.ALL.find(a => a.id === A)));
   c = run({ tab: 'flight', fx: 'time', fy: 'altitude', apo: '0', units: 'metric', sel: enc([A]) });
-  assert.deepStrictEqual(c.layout.annotations.map(a => a.text), ['rod exit', 'burnout', 'apogee', 'deployment']);
+  assert.deepStrictEqual(c.events.map(t => t.name), ['rod exit', 'burnout', 'apogee', 'deployment']);
   c = run({ tab: 'flight', fx: 'altitude', fy: 'mass', apo: '1', units: 'metric', sel: enc([A]) });
-  const iB = va.cols.time.findIndex(t => t >= va.events.BURNOUT[0]);
-  assert(close(c.layout.annotations[1].x, va.cols.altitude[iB], 1e-3), 'with X = altitude the line sits at the altitude at burnout');
+  assert(close(c.events[1].x[0], va.cols.altitude[near], 1e-6) && close(c.events[1].y[0], va.cols.mass[near]), 'with X = altitude: at the altitude at burnout');
+  c = run({ tab: 'flight', fx: 'time', fy: 'altitude,mass:r', apo: '1', units: 'metric', sel: enc([A]) });
+  const burns = c.events.filter(t => t.name === 'burnout');
+  assert.deepStrictEqual(burns.map(t => t.yaxis), ['y', 'y2'], 'a marker on each curve, on its own axis');
+  assert.deepStrictEqual(burns.map(t => t.showlegend), [true, false], 'one legend entry per event');
+});
+test('an event hidden from its legend stays hidden for every simulation, and in the link', () => {
+  run({ tab: 'flight', fx: 'time', fy: 'altitude', apo: '1', sel: enc([A, A2]) });
+  let c = last();
+  const apo = c.events.find(t => t.name === 'apogee');
+  assert.strictEqual(apo.x.length, 2, 'both simulations in one trace');
+  assert.strictEqual(new Set(apo.marker.line.color).size, 2, 'outlined in each simulation\'s colour');
+  P.toggleEvent('apogee');
+  c = last();
+  assert.strictEqual(c.events.find(t => t.name === 'apogee').visible, 'legendonly');
+  assert(c.events.filter(t => t.name !== 'apogee').every(t => t.visible === true));
+  assert(hash.includes('evoff=apogee'), hash);
+  c = run({ tab: 'flight', fx: 'time', fy: 'altitude', apo: '1', sel: enc([A, A2]), evoff: 'apogee' });
+  assert.strictEqual(c.events.find(t => t.name === 'apogee').visible, 'legendonly', 'restored from the link');
+  P.toggleEvent('apogee');
+  assert(last().events.every(t => t.visible === true) && !hash.includes('evoff'));
 });
 test('legend groups appear only when comparing simulations; design names only across designs', () => {
   let c = run({ tab: 'flight', fx: 'time', fy: 'altitude', apo: '1', sel: enc([A, A2]) });
   const shown = id => { const [f, s] = id.split('|'), m = (DATA.motors[f] || {})[s]; return m ? `${s} [${m}]` : s; };
   assert.deepStrictEqual([...new Set(c.traces.map(t => t.legendgrouptitle.text))], [shown(A), shown(A2)]);
-  assert.deepStrictEqual([...new Set(c.layout.annotations.map(a => a.yshift))], [-2, -15], 'event labels of the second simulation are staggered');
   c = run({ tab: 'flight', fx: 'time', fy: 'altitude', apo: '1', sel: enc([A, B]) });
   const titles = [...new Set(c.traces.map(t => t.legendgrouptitle.text))];
   assert(titles.every(x => x.includes(' · ')), `design prefix expected across designs: ${titles}`);
@@ -596,10 +621,11 @@ else {
   (async () => {
     for (const [name, c] of renders) {
       try {
-        await Plotly.newPlot(div, c.traces, c.layout, c.config);
+        await Plotly.newPlot(div, c.all, c.layout, c.config);
         const fd = div._fullData, fl = div._fullLayout;
-        assert.strictEqual(fd.length, c.traces.length);
-        fd.forEach((t, i) => { assert.strictEqual(t.y.length, c.traces[i].y.length, `trace ${i} y length after render`); assert.strictEqual(t.x.length, c.traces[i].x.length); });
+        assert.strictEqual(fd.length, c.all.length);
+        fd.forEach((t, i) => { assert.strictEqual(t.y.length, c.all[i].y.length, `trace ${i} y length after render`); assert.strictEqual(t.x.length, c.all[i].x.length); });
+        if (c.layout.legend2) assert(fl.legend2 && c.events.every((t, i) => fd[c.traces.length + i].legend === 'legend2'), 'the events legend is drawn');
         for (const k of Object.keys(c.layout).filter(k => k.startsWith('yaxis'))) assert(fl[k] && fl[k].range && fl[k].range[1] > fl[k].range[0], `${k} got a range`);
         if (c.layout.shapes) assert.strictEqual(fl.shapes.length, c.layout.shapes.length);
         passed++; console.log(`  ok   ${name}: ${fd.length} traces, margins l=${fl._size.l} r=${fl._size.r}`);
