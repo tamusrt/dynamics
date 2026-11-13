@@ -26,3 +26,6 @@ aero_modeling/**/JARVIS/alpha/
 
 *.fig
 *.jar
+
+# macOS Finder's per-folder view settings: not part of any design
+.DS_Store
