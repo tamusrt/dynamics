@@ -60,7 +60,7 @@
     </BodyTube>
     <BodyTube>
       <PartType>BodyTube</PartType>
-      <Length>100.0598</Length>
+      <Length>102.2</Length>
       <Diameter>6</Diameter>
       <LaunchLugDiameter>0</LaunchLugDiameter>
       <LaunchLugLength>0</LaunchLugLength>
@@ -84,14 +84,14 @@
       <RailGuideDiameter>0</RailGuideDiameter>
       <RailGuideHeight>0</RailGuideHeight>
       <LaunchShoeArea>0</LaunchShoeArea>
-      <Location>161.6877</Location>
+      <Location>163.8279</Location>
       <ShoulderLength>0.287</ShoulderLength>
       <Offset>-18</Offset>
       <Color>Black</Color>
       <Fin>
         <Count>4</Count>
         <Chord>14</Chord>
-        <Span>6.35</Span>
+        <Span>6.4</Span>
         <SweepDistance>12</SweepDistance>
         <TipChord>4</TipChord>
         <Thickness>0.3</Thickness>
@@ -107,7 +107,7 @@
       <Length>4.15</Length>
       <Diameter>6.154</Diameter>
       <RearDiameter>3.6</RearDiameter>
-      <Location>161.6877</Location>
+      <Location>163.8279</Location>
       <Color>Black</Color>
     </BoatTail>
     <Surface>Rough Camouflage Paint</Surface>
@@ -147,9 +147,9 @@
   <SimulationList>
     <Simulation>
       <SustainerEngine>PER_MY_LAST-eng  (TAMUSRT)</SustainerEngine>
-      <SustainerLaunchWt>137</SustainerLaunchWt>
+      <SustainerLaunchWt>145</SustainerLaunchWt>
       <SustainerNozzleDiameter>0</SustainerNozzleDiameter>
-      <SustainerCG>93.27</SustainerCG>
+      <SustainerCG>96.32</SustainerCG>
       <SustainerIgnitionDelay>0</SustainerIgnitionDelay>
       <Booster1LaunchWt>0</Booster1LaunchWt>
       <Booster1SeparationDelay>0</Booster1SeparationDelay>
@@ -163,9 +163,9 @@
       <Booster2NozzleDiameter>0</Booster2NozzleDiameter>
       <IncludeBooster2>False</IncludeBooster2>
       <FlightTime>0</FlightTime>
-      <TimetoApogee>45.62835</TimetoApogee>
-      <MaxAltitude>33152.12</MaxAltitude>
-      <MaxVelocity>1728.16</MaxVelocity>
+      <TimetoApogee>44.99846</TimetoApogee>
+      <MaxAltitude>31741.85</MaxAltitude>
+      <MaxVelocity>1648.907</MaxVelocity>
       <OptimumWt>0</OptimumWt>
       <OptimumMaxAlt>0</OptimumMaxAlt>
     </Simulation>
