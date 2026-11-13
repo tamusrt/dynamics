@@ -75,7 +75,7 @@ function run(params) {
   global.location = { hash: '#' + new URLSearchParams(params).toString() };
   requested.length = 0; calls.length = 0; simRows = [];
   for (const k of Object.keys(els)) delete els[k];
-  eval(js + ';globalThis.__P = { state, addY, flipY, removeY, exportCsv, csvText, update, stabSel, unitSel, simLabel, fvar, ALL, frames, FRAMES, syncFrame, frameMissing, setJarvis, rasIcons };');
+  eval(js + ';globalThis.__P = { state, addY, flipY, removeY, exportCsv, csvText, update, stabSel, unitSel, simLabel, fvar, ALL, frames, FRAMES, syncFrame, frameMissing, setJarvis, rasIcons, pickX };');
   P = globalThis.__P;
   for (const src of [...requested]) eval(fs.readFileSync(path.join(site, src), 'utf8'));   // what the browser's <script> tags do
   return calls[calls.length - 1];
@@ -517,6 +517,60 @@ test('a page that was not built is explained instead of shown empty', () => {
   assert.strictEqual(holder.children.length, 1); assert.strictEqual(holder.children[0].className, 'framemsg');
   assert(holder.children[0].textContent.includes('not been built'), holder.children[0].textContent);
   assert.strictEqual(P.frames.predictions, undefined);
+});
+
+console.log('list, legend and X axis');
+const simRow = id => simRows.find(r => r.className === 'sim' && r.dataset.id === id);
+function clickSim(id, shiftKey) {   // what a click does to the box before the page's handler runs: it flips
+  const cb = simRow(id).children[0]; cb.checked = !cb.checked; cb.onclick({ shiftKey });
+}
+test('shift-click ticks every simulation between the last click and this one, and unticks them the same way', () => {
+  run({ tab: 'history', sel: enc([A]) });
+  const order = simRows.filter(r => r.className === 'sim').map(r => r.dataset.id);
+  assert(order.length >= 3 && order[1] === A2, 'fixture needs three simulations, the second in the first design');
+  const [first, second, third] = order;
+  P.state.sel.clear(); P.update();
+  clickSim(first, false);
+  clickSim(third, true);
+  assert(order.slice(0, 3).every(id => P.state.sel.has(id)), 'the rows from the first click to the shift-click are ticked');
+  clickSim(first, false);   // unticks the first one
+  assert(!P.state.sel.has(first));
+  clickSim(third, true);    // the third was ticked: this click unticks it, and the range with it
+  assert(order.slice(0, 3).every(id => !P.state.sel.has(id)), 'a shift-click that unticks unticks the range');
+  // a folded design's rows inside the range are left alone: they can't be seen
+  const firstDesign = els.nav.children[1]; firstDesign.children[0].onclick();   // fold it
+  clickSim(third, false);
+  clickSim(first, true);
+  assert(P.state.sel.has(first) && P.state.sel.has(third) && !P.state.sel.has(second), [...P.state.sel].join(' / '));
+});
+test('a plain click after a shift-click changes only its own row', () => {
+  run({ tab: 'history', sel: enc([A]) });
+  const order = simRows.filter(r => r.className === 'sim').map(r => r.dataset.id);
+  clickSim(order[2], false);
+  assert(P.state.sel.has(order[2]) && P.state.sel.has(A) && !P.state.sel.has(order[1]), [...P.state.sel].join(' / '));
+});
+test('the legend checkbox hides the legend on the History and Flight plots and travels in the link', () => {
+  run({ tab: 'history', sel: enc([A, A2]) });
+  assert.strictEqual(last().layout.showlegend, true, 'two simulations: a legend');
+  run({ tab: 'history', sel: enc([A, A2]), legend: '0' });
+  assert.strictEqual(last().layout.showlegend, false);
+  assert(hash.includes('legend=0'), hash);
+  run({ tab: 'history', view: 'dbar', sel: enc([A, A2]), legend: '0' });
+  assert.strictEqual(last().layout.showlegend, false, 'the bar view too');
+  run({ tab: 'flight', fx: 'time', fy: 'altitude', sel: enc([A, A2]) });
+  assert.notStrictEqual(last().layout.showlegend, false, 'on by default');
+  run({ tab: 'flight', fx: 'time', fy: 'altitude', sel: enc([A, A2]), legend: '0' });
+  assert.strictEqual(last().layout.showlegend, false);
+  run({ tab: 'flight', fx: 'time', fy: 'altitude', sel: enc([A, A2]) });
+  assert(!hash.includes('legend'), 'shown is the default: not written');
+});
+test('the X axis is picked by typing: a whole name, or the first variable that contains the text', () => {
+  run({ tab: 'flight', fx: 'time', fy: 'altitude', units: 'metric', sel: enc([A]) });
+  assert(P.pickX('mach') && P.state.fx === 'mach_number', P.state.fx);
+  assert.strictEqual(last().layout.xaxis.title.text, P.fvar('mach_number').label + (P.fvar('mach_number').unit ? ` (${P.fvar('mach_number').unit})` : ''));
+  assert(!P.pickX('altitu', true) && P.state.fx === 'mach_number', 'a partial name is not taken while typing');
+  assert(P.pickX('Altitude (m)', true) && P.state.fx === 'altitude', 'a whole name picked from the list is');
+  assert(!P.pickX('no such variable') && P.state.fx === 'altitude', 'nothing matches: unchanged');
 });
 
 // ---------------------------------------------------------------- real Plotly (optional)

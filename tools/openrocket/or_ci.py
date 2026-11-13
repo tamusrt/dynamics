@@ -2128,7 +2128,7 @@ SITE_HTML = r"""<!doctype html>
   .fwrap > .chartbox { flex:1 1 auto; min-width:0; }
   .ypanel { flex:none; width:250px; display:flex; flex-direction:column; background:var(--card); border:1px solid var(--line); border-radius:8px; padding:8px 10px; overflow:auto; font-size:12.5px; }
   .ypanel h3 { font-size:12px; color:var(--muted); font-weight:600; margin:8px 0 4px; text-transform:uppercase; letter-spacing:.03em; }
-  .ypanel .xsel { width:100%; margin:0 0 4px; }
+  .ypanel .xsel { width:100%; margin:0 0 4px; padding:4px 7px; font:inherit; font-size:13px; border:1px solid var(--line); border-radius:6px; background:var(--bg); color:var(--fg); }
   .yvar { display:flex; align-items:center; gap:6px; padding:4px 6px; border-radius:6px; cursor:pointer; }
   .yvar:hover { background:var(--hover); }
   .yvar svg { flex:none; color:var(--fg); }
@@ -2221,7 +2221,7 @@ for (const [file, sims] of Object.entries(DATA.designs)) for (const [sim, rows] 
 const VIEWS = [['abs', 'Absolute'], ['dline', 'Δ line'], ['dbar', 'Δ bars']];
 const DEFAULTS = () => ({ metric: DATA.metrics[0].key, view: 'abs', units: DATA.default_units || 'metric', stab: DATA.default_stability || 'cal',
                           fx: 'altitude', fys: [{ key: 'stability', side: 'l' }], fapo: true });   // fys: Y variables in order, side l|r
-const state = Object.assign(DEFAULTS(), { sel: new Set(), tab: 'history', fprev: false, jarvis: false, openrocket: true });   // Jarvis's lines are off until asked for
+const state = Object.assign(DEFAULTS(), { sel: new Set(), tab: 'history', fprev: false, jarvis: false, openrocket: true, legend: true });   // Jarvis's lines are off until asked for
 const FVARS = DATA.flight_vars || {};
 const FRAMES = { predictions: 'predictions/index.html', vision: 'predictions/viewer/index.html', edith: 'predictions/edith/index.html',
                  vehicles: 'vehicles/index.html' };   // pages shown inside this one (vehicles: built by tools/openrocket/vehicles/build_vehicles.py)
@@ -2278,6 +2278,7 @@ function readHash() {
   state.fprev = p.get('prev') === '1';
   state.jarvis = p.get('jarvis') === '1';
   state.openrocket = p.get('or') !== '0';
+  state.legend = p.get('legend') !== '0';
   applyStab();
   const s = p.get('sel');
   state.sel = new Set(s ? s.split(',').map(selFromToken).filter(Boolean) : []);
@@ -2288,6 +2289,7 @@ function writeHash() {
   p.set('tab', state.tab);
   if (state.units !== d.units) p.set('units', state.units);
   if (state.stab !== d.stab) p.set('stab', state.stab);
+  if (!state.legend && (state.tab === 'flight' || !FRAMES[state.tab])) p.set('legend', '0');
   if (state.tab === 'flight') {
     if (state.fx !== d.fx) p.set('fx', state.fx);
     if (fysText(state.fys) !== defaultFys()) p.set('fy', fysText(state.fys));
@@ -2325,8 +2327,16 @@ function rasTitle(o) {
   return 'Differs from its RASAero model ' + String(o.ras.rasaero).split('/').pop() + ':\n'
     + (o.lines[state.units] || o.lines.metric).map(t => '• ' + t).join('\n');
 }
+let lastSim = null;   // the simulation last ticked or unticked by a click: a shift-click sets every row from it to the one clicked
+function simRange(from, to) {   // the ids from one row to another in list order, without the rows of folded designs
+  const rows = [...nav.querySelectorAll('.sim')], at = id => rows.findIndex(r => r.dataset.id === id);
+  const i = at(from), j = at(to);
+  if (i < 0 || j < 0) return [to];
+  return rows.slice(Math.min(i, j), Math.max(i, j) + 1).filter(r => r.dataset.id === from || r.dataset.id === to || !designOpen.has(r.dataset.file) || designOpen.get(r.dataset.file)()).map(r => r.dataset.id);
+}
+const designOpen = new Map();   // design file -> () => is its list unfolded
 function buildNav() {
-  nav.innerHTML = '';
+  nav.innerHTML = ''; designOpen.clear();
   const tools = document.createElement('div'); tools.className = 'navtools';
   const bNone = document.createElement('button'); bNone.textContent = 'Clear'; bNone.onclick = () => { state.sel.clear(); update(); };
   const cap = document.createElement('span'); cap.id = 'navcap'; cap.className = 'lbl';
@@ -2341,12 +2351,19 @@ function buildNav() {
     const all = document.createElement('button'); all.textContent = 'all';
     all.onclick = e => { e.stopPropagation(); const ids = ALL.filter(a => a.file === file).map(a => a.id); const every = ids.every(id => state.sel.has(id)); ids.forEach(id => every ? state.sel.delete(id) : state.sel.add(id)); update(); };
     head.append(caret, name, ...info, mini, all); head.onclick = () => d.classList.toggle('closed');
+    designOpen.set(file, () => !d.classList.contains('closed'));
     const list = document.createElement('div'); list.className = 'sims';
     for (const [sim, rows] of Object.entries(sims)) {
       const id = `${file}|${sim}`;
-      const row = document.createElement('label'); row.className = 'sim'; row.dataset.id = id;
+      const row = document.createElement('label'); row.className = 'sim'; row.dataset.id = id; row.dataset.file = file;
+      row.onmousedown = e => { if (e.shiftKey) e.preventDefault(); };   // a shift-click selects rows, not their text
       const cb = document.createElement('input'); cb.type = 'checkbox'; cb.checked = state.sel.has(id);
-      cb.onchange = () => { cb.checked ? state.sel.add(id) : state.sel.delete(id); update(); };
+      cb.title = 'Shift-click to tick or untick every simulation from the last one clicked';
+      cb.onclick = e => {   // the box has already flipped: the range takes its new state
+        const ids = e && e.shiftKey && lastSim && lastSim !== id ? simRange(lastSim, id) : [id];
+        ids.forEach(x => cb.checked ? state.sel.add(x) : state.sel.delete(x));
+        lastSim = id; update();
+      };
       const sw = document.createElement('span'); sw.className = 'swatch';
       const lab = document.createElement('span'); lab.className = 'label'; lab.textContent = lab.title = simName(file, sim);
       const val = document.createElement('span'); val.className = 'val';
@@ -2373,6 +2390,12 @@ function refreshNav() {
 }
 
 // ---- metric buttons ----
+function legendCheck(row) {   // a checkbox showing or hiding the plot's legend; the choice is the same on History and Flight plots
+  const l = document.createElement('label'); l.className = 'toggle'; l.title = 'Show or hide the legend on the plot';
+  const c = document.createElement('input'); c.type = 'checkbox'; c.checked = state.legend; c.className = 'legend-toggle';
+  c.onchange = () => { state.legend = c.checked; update(); };
+  l.append(c, document.createTextNode('legend')); row.appendChild(l);
+}
 const mrow = document.getElementById('metrics');
 function buildMetrics() {
   mrow.innerHTML = '';
@@ -2382,6 +2405,7 @@ function buildMetrics() {
   for (const [key, text] of VIEWS) { const b = document.createElement('button'); b.textContent = text; b.className = key === state.view ? 'on' : '';
     b.title = key === 'abs' ? 'Value of each version over commit date' : key === 'dline' ? 'Change from the previous version over commit date' : 'Change from the previous version, one bar per commit (green up, red down)';
     b.onclick = () => { state.view = key; update(); }; mrow.appendChild(b); }
+  legendCheck(mrow);
   if (jarvisShown()) {   // which simulator's lines are drawn: OpenRocket, Jarvis or both
     const lab2 = document.createElement('span'); lab2.className = 'toggle'; lab2.textContent = 'show'; lab2.style.marginLeft = '10px'; mrow.appendChild(lab2);
     const o = document.createElement('button'); o.textContent = 'OpenRocket'; o.className = state.openrocket ? 'on' : ''; o.id = 'openrocket-toggle';
@@ -2457,7 +2481,7 @@ function drawBars(spec, unit) {
              hovertemplate: rows.map((p, i) => p ? `<b>${order[i].short}</b> \u00b7 ${order[i].date} \u00b7 ${order[i].author}<br>${simLabel(a)}: \u0394 ${p.d >= 0 ? '+' : ''}${fmt(p.d, spec.dec)}${unit}`
                                             + (p.v - p.d ? ` (${(p.d / (p.v - p.d) * 100).toFixed(1)}%)` : '') + `<br>now ${fmt(p.v, spec.dec)}${unit}${kindNote(order[i].kind)}<br>${order[i].message}<extra></extra>` : '') };
   });
-  const layout = baseLayout('commit', '\u0394 ' + spec.label + (spec.unit ? ` (${spec.unit})` : '')); layout.barmode = 'group'; layout.showlegend = series.length > 1;
+  const layout = baseLayout('commit', '\u0394 ' + spec.label + (spec.unit ? ` (${spec.unit})` : '')); layout.barmode = 'group'; layout.showlegend = state.legend && series.length > 1;
   Plotly.react(hplot, traces, layout, plotConfig(`delta_${state.metric}`)); openCommit(hplot);
 }
 
@@ -2488,7 +2512,7 @@ function draw() {
   empty.textContent = state.sel.size && !showOr && !state.jarvis ? 'OpenRocket and Jarvis are both hidden: turn one back on above the chart.' : 'Select simulations in the list.';
   if (!traces.length) { Plotly.purge(hplot); return; }
   const layout = baseLayout('commit date', (delta ? '\u0394 ' : '') + spec.label + (spec.unit ? ` (${spec.unit})` : ''));
-  layout.xaxis.type = 'date'; layout.showlegend = traces.length > 1;
+  layout.xaxis.type = 'date'; layout.showlegend = state.legend && traces.length > 1;
   Plotly.react(hplot, traces, layout, plotConfig(`${delta ? 'delta_' : ''}${state.metric}`)); openCommit(hplot);
 }
 
@@ -2597,6 +2621,7 @@ function buildFlightControls() {
     l.append(c, document.createTextNode(text)); row.appendChild(l); };
   addCheck('ascent only', state.fapo, v => state.fapo = v);
   addCheck('previous version', state.fprev, v => state.fprev = v);
+  legendCheck(row);
   const ex = document.createElement('button'); ex.textContent = 'Export CSV'; ex.title = 'Download the plotted series (display units; ascent only when ticked) as CSV';
   ex.onclick = exportCsv; row.appendChild(ex);
   buildYPanel();
@@ -2607,13 +2632,32 @@ function dashIcon(dash) {
   l.setAttribute('stroke', 'currentColor'); l.setAttribute('stroke-width', '2'); if (DASH_SVG[dash]) l.setAttribute('stroke-dasharray', DASH_SVG[dash]);
   s.appendChild(l); return s;
 }
+// the X variable for what was typed: its whole name, or (not exact) the first variable whose name or key contains it.
+// -> whether it was taken
+function pickX(text, exact) {
+  const q = String(text || '').trim().toLowerCase(); if (!q) return false;
+  const keys = fvarKeys(), name = k => axisText(fvar(k)).toLowerCase();
+  const k = keys.find(k => name(k) === q) || (exact ? null : keys.find(k => name(k).includes(q) || k.toLowerCase().includes(q)));
+  if (!k) return false;
+  if (k !== state.fx) { state.fx = k; update(); }
+  return true;
+}
 function buildYPanel() {   // the X variable, the plotted variables by axis side (click to move, x to remove), then a checkmark for every variable
   const panel = document.getElementById('ypanel'); panel.innerHTML = '';
   const xh = document.createElement('h3'); xh.textContent = 'X axis';
-  const xs = document.createElement('select'); xs.className = 'xsel';
-  for (const k of fvarKeys()) { const o = document.createElement('option'); o.value = k; o.textContent = axisText(fvar(k)); xs.appendChild(o); }
-  xs.value = state.fx; xs.onchange = () => { state.fx = xs.value; update(); };
-  panel.append(xh, xs);
+  // a text box with the variables as suggestions: typing narrows them, Enter takes the first that matches
+  const xs = document.createElement('input'); xs.className = 'xsel'; xs.type = 'text'; xs.setAttribute('list', 'xvars');
+  xs.setAttribute('aria-label', 'X axis variable'); xs.spellcheck = false; xs.autocomplete = 'off';
+  const dl = document.createElement('datalist'); dl.id = 'xvars';
+  for (const k of fvarKeys()) { const o = document.createElement('option'); o.value = axisText(fvar(k)); dl.appendChild(o); }
+  const current = axisText(fvar(state.fx));
+  xs.value = current; xs.title = 'Type to search the variables; Enter takes the first match';
+  xs.onfocus = () => { xs.placeholder = current; xs.value = ''; };   // empty, so every variable is offered
+  xs.onblur = () => { if (!pickX(xs.value, true)) xs.value = current; };
+  xs.oninput = () => { pickX(xs.value, true); };   // a suggestion picked from the list is its whole name
+  xs.onkeydown = e => { if (e.key === 'Enter') { e.preventDefault(); if (!pickX(xs.value)) xs.value = ''; }
+                        else if (e.key === 'Escape') xs.blur(); };
+  panel.append(xh, xs, dl);
   const plotted = document.createElement('div'); plotted.className = 'plotted';
   for (const [side, title] of state.fys.length ? [['l', 'Left axes'], ['r', 'Right axes']] : []) {   // nothing plotted: no axis lists
     const h = document.createElement('h3'); h.textContent = title; plotted.appendChild(h);
@@ -2713,6 +2757,7 @@ function drawFlight() {
     xaxis: { title: { text: axisText(X) }, gridcolor: grid, zeroline: false, automargin: true },
     shapes, annotations,
   };
+  if (!state.legend) layout.showlegend = false;   // otherwise Plotly's own rule: a legend from two traces up
   // one Plotly axis per (side, unit): the first on each side sits on the plot edge, the rest are shifted outwards by Plotly
   const seen = new Set();
   for (const ax of axes) {
