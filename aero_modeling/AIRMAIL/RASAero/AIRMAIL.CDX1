@@ -112,8 +112,8 @@
     </BoatTail>
     <Surface>Camouflage Paint</Surface>
     <CP>0</CP>
-    <ModifiedBarrowman>False</ModifiedBarrowman>
-    <Turbulence>False</Turbulence>
+    <ModifiedBarrowman>True</ModifiedBarrowman>
+    <Turbulence>True</Turbulence>
     <SustainerNozzle>0</SustainerNozzle>
     <Booster1Nozzle>0</Booster1Nozzle>
     <Booster2Nozzle>0</Booster2Nozzle>
@@ -122,12 +122,12 @@
     <Comments>2027 IREC Rocket Design</Comments>
   </RocketDesign>
   <LaunchSite>
-    <Altitude>0</Altitude>
-    <Pressure>27.1141</Pressure>
-    <RodAngle>8</RodAngle>
+    <Altitude>2950</Altitude>
+    <Pressure>29.83</Pressure>
+    <RodAngle>4</RodAngle>
     <RodLength>32.8</RodLength>
-    <Temperature>78.942</Temperature>
-    <WindSpeed>18</WindSpeed>
+    <Temperature>92.19</Temperature>
+    <WindSpeed>11.46</WindSpeed>
   </LaunchSite>
   <Recovery>
     <Altitude1>0</Altitude1>
@@ -163,9 +163,9 @@
       <Booster2NozzleDiameter>0</Booster2NozzleDiameter>
       <IncludeBooster2>False</IncludeBooster2>
       <FlightTime>0</FlightTime>
-      <TimetoApogee>43.89864</TimetoApogee>
-      <MaxAltitude>30163.43</MaxAltitude>
-      <MaxVelocity>1658.137</MaxVelocity>
+      <TimetoApogee>45.65834</TimetoApogee>
+      <MaxAltitude>32562.27</MaxAltitude>
+      <MaxVelocity>1647.279</MaxVelocity>
       <OptimumWt>0</OptimumWt>
       <OptimumMaxAlt>0</OptimumMaxAlt>
     </Simulation>
