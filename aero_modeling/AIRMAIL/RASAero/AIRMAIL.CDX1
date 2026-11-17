@@ -76,8 +76,8 @@
       <Fin>
         <Count>4</Count>
         <Chord>16</Chord>
-        <Span>6.875</Span>
-        <SweepDistance>15</SweepDistance>
+        <Span>6.7</Span>
+        <SweepDistance>16</SweepDistance>
         <TipChord>4</TipChord>
         <Thickness>0.3</Thickness>
         <LERadius>0.0313</LERadius>
