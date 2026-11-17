@@ -32,33 +32,25 @@
         <SweepDistance>4</SweepDistance>
         <TipChord>2.5</TipChord>
         <Thickness>0.125</Thickness>
-        <LERadius>1</LERadius>
+        <LERadius>0</LERadius>
         <Location>5.125</Location>
         <AirfoilSection>Hexagonal</AirfoilSection>
         <FX1>2</FX1>
         <FX3>2</FX3>
       </Fin>
     </BodyTube>
-    <Transition>
-      <PartType>Transition</PartType>
-      <Length>9.5</Length>
-      <Diameter>2.985</Diameter>
-      <Location>45.818</Location>
-      <RearDiameter>2.985</RearDiameter>
-      <Color>Black</Color>
-    </Transition>
     <Booster>
       <PartType>Booster</PartType>
       <Length>45.366</Length>
       <Diameter>2.985</Diameter>
-      <InsideDiameter>2.985</InsideDiameter>
+      <InsideDiameter>2.125</InsideDiameter>
       <LaunchLugDiameter>0</LaunchLugDiameter>
       <LaunchLugLength>0</LaunchLugLength>
       <RailGuideDiameter>0</RailGuideDiameter>
       <RailGuideHeight>0</RailGuideHeight>
       <LaunchShoeArea>0</LaunchShoeArea>
-      <Location>55.318</Location>
-      <ShoulderLength>0</ShoulderLength>
+      <Location>45.818</Location>
+      <ShoulderLength>9.5</ShoulderLength>
       <Color>Black</Color>
       <NozzleExitDiameter>0</NozzleExitDiameter>
       <BoattailLength>0</BoattailLength>
@@ -70,14 +62,14 @@
         <SweepDistance>7.794</SweepDistance>
         <TipChord>2.75</TipChord>
         <Thickness>0.18</Thickness>
-        <LERadius>1</LERadius>
+        <LERadius>0.1</LERadius>
         <Location>8.6</Location>
         <AirfoilSection>Hexagonal</AirfoilSection>
         <FX1>2</FX1>
         <FX3>2</FX3>
       </Fin>
     </Booster>
-    <Surface>Camouflage Paint</Surface>
+    <Surface>Rough Camouflage Paint</Surface>
     <CP>0</CP>
     <ModifiedBarrowman>True</ModifiedBarrowman>
     <Turbulence>True</Turbulence>
@@ -98,17 +90,17 @@
   </LaunchSite>
   <Recovery>
     <Altitude1>1000</Altitude1>
-    <Altitude2>1000</Altitude2>
-    <DeviceType1>None</DeviceType1>
-    <DeviceType2>None</DeviceType2>
-    <Event1>False</Event1>
-    <Event2>False</Event2>
-    <Size1>1</Size1>
-    <Size2>1</Size2>
-    <EventType1>None</EventType1>
-    <EventType2>None</EventType2>
-    <CD1>1.33</CD1>
-    <CD2>1.33</CD2>
+    <Altitude2>1500</Altitude2>
+    <DeviceType1>Parachute</DeviceType1>
+    <DeviceType2>Parachute</DeviceType2>
+    <Event1>True</Event1>
+    <Event2>True</Event2>
+    <Size1>9</Size1>
+    <Size2>36</Size2>
+    <EventType1>Apogee</EventType1>
+    <EventType2>Altitude</EventType2>
+    <CD1>0.8</CD1>
+    <CD2>0.8</CD2>
   </Recovery>
   <MachAlt />
   <SimulationList>
@@ -119,7 +111,7 @@
       <SustainerCG>29.52</SustainerCG>
       <SustainerIgnitionDelay>0.5</SustainerIgnitionDelay>
       <Booster1Engine>M3464LB  (Loki)</Booster1Engine>
-      <Booster1LaunchWt>24.75</Booster1LaunchWt>
+      <Booster1LaunchWt>24.7</Booster1LaunchWt>
       <Booster1SeparationDelay>0</Booster1SeparationDelay>
       <Booster1IgnitionDelay>0</Booster1IgnitionDelay>
       <Booster1CG>68.32</Booster1CG>
@@ -131,9 +123,9 @@
       <Booster2NozzleDiameter>0</Booster2NozzleDiameter>
       <IncludeBooster2>False</IncludeBooster2>
       <FlightTime>0</FlightTime>
-      <TimetoApogee>24.99041</TimetoApogee>
-      <MaxAltitude>17018.69</MaxAltitude>
-      <MaxVelocity>2666.009</MaxVelocity>
+      <TimetoApogee>37.30025</TimetoApogee>
+      <MaxAltitude>38804.01</MaxAltitude>
+      <MaxVelocity>4122.929</MaxVelocity>
       <OptimumWt>0</OptimumWt>
       <OptimumMaxAlt>0</OptimumMaxAlt>
     </Simulation>
