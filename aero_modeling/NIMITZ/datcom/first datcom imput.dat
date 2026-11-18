@@ -1,0 +1,213 @@
+DIM IN
+SOSE
+ $FLTCON NALPHA=20.0,NMACH=19.0,
+        MACH=0.4,0.6,0.8,1.0,1.2,
+        MACH(6)=1.4,1.6,1.8,2.0,2.2,
+        MACH(11)=2.4,2.6,2.8,3.0,3.2,
+        MACH(16)=3.4,3.6,3.8,4.0,
+        ALPHA=0.,1.,2.,3.,4.,5.,
+        ALPHA(7)=6.,7.,8.,9.,10.,
+        ALPHA(12)=11.,12.,13.,14.,15.,
+        ALPHA(17)=16.,17.,18.,19.,
+        ALT=0.,0.,0.,0.,0.,0.,0.,0.,0.,0.,0.,0.,0.,0.,0.,0.,0.,0.,0.,0.,
+ $END
+ $REFQXCG=28.002,ROUGH=0.000787,LREF=2.984,$
+ $AXIBOD LNOSE=22.838, DNOSE=2.125, LAFT=22.98, 
+        DAFT=2.125, TNOSE=OGIVE,$
+ $FINSET1 XLE=42.568,NPANEL=4.,PHIF=0.,90.,180.,270.,SWEEP=58.,
+        LMAXU=0.5, 0.5,
+        LFLATU=0.0, 0.0,
+        SSPAN=1.0625,3.5625, CHORD=5.0,2.5
+        LER=0.1, 
+        GAM=0.0,
+$END
+DAMP
+PRESSURES
+WRITE CNVIS
+PLOT
+NEXT CASE
+
+DIM IN
+SOSE
+ $FLTCON NALPHA=20.0,NMACH=19.0,
+        MACH=0.4,0.6,0.8,1.0,1.2,
+        MACH(6)=1.4,1.6,1.8,2.0,2.2,
+        MACH(11)=2.4,2.6,2.8,3.0,3.2,
+        MACH(16)=3.4,3.6,3.8,4.0,
+        ALPHA=0.,1.,2.,3.,4.,5.,
+        ALPHA(7)=6.,7.,8.,9.,10.,
+        ALPHA(12)=11.,12.,13.,14.,15.,
+        ALPHA(17)=16.,17.,18.,19.,
+        ALT=0.,0.,0.,0.,0.,0.,0.,0.,0.,0.,0.,0.,0.,0.,0.,0.,0.,0.,0.,0.,
+ $END
+ $REFQ XCG=67.97,ROUGH=0.000787,LREF=2.984,$
+ $AXIBOD LNOSE=22.838, DNOSE=2.125, LCENTR=22.98,
+        DCENTR=2.125, LAFT=54.866, DAFT=2.984,
+        TNOSE=OGIVE,$
+ $FINSET1 XLE=42.568,NPANEL=4.,PHIF=0.,90.,180.,270.,SWEEP=58.,
+        LMAXU=0.5, 0.5,
+        LFLATU=0.0, 0.0,
+        SSPAN=1.0625,3.5625, CHORD=5.0,2.5
+        LER=0.1, 
+        GAM=0.0,
+$END
+$FINSET2 XLE=94.4, SWEEP=58.6, 
+        LMAXU=0.5, 0.5,
+        LFLATU=0.0, 0.0,
+        SSPAN=1.492,6.242, CHORD=8.0, 2.75
+        NPANEL=4., LER=0.0, PHIF=0.,90.,180.,270.,
+        GAM=0.0,
+$END
+DAMP
+PRESSURES
+WRITE CNVIS
+PLOT
+NEXT CASE
+
+DIM IN
+SOSE
+ $FLTCON NALPHA=20.0,NMACH=19.0,
+        MACH=0.4,0.6,0.8,1.0,1.2,
+        MACH(6)=1.4,1.6,1.8,2.0,2.2,
+        MACH(11)=2.4,2.6,2.8,3.0,3.2,
+        MACH(16)=3.4,3.6,3.8,4.0,
+        ALPHA=0.,1.,2.,3.,4.,5.,
+        ALPHA(7)=6.,7.,8.,9.,10.,
+        ALPHA(12)=11.,12.,13.,14.,15.,
+        ALPHA(17)=16.,17.,18.,19.,
+        ALT=0.,0.,0.,0.,0.,0.,0.,0.,0.,0.,0.,0.,0.,0.,0.,0.,0.,0.,0.,0.,
+ $END
+ $REFQ XCG=67.977,ROUGH=0.000787,LREF=2.984,$
+ $AXIBOD LNOSE=22.838, DNOSE=2.125, LCENTR=22.98,
+        DCENTR=2.125, LAFT=54.866, DAFT=2.984,
+        TNOSE=OGIVE,$
+$FINSET1 XLE=42.568, SWEEP=63.4, 
+        LMAXU=0.5, 0.5,
+        LFLATU=0.0, 0.0,
+        SSPAN=1.0625,3.5625, CHORD=5.0, 2.5
+        NPANEL=4., LER=0.1, PHIF=0.,90.,180.,270.,
+        GAM=0.0,
+$END
+$FINSET2 XLE=94.4, SWEEP=58.6, 
+        LMAXU=0.5, 0.5,
+        LFLATU=0.0, 0.0,
+        SSPAN=1.492,6.242, CHORD=8.0, 2.75
+        NPANEL=4., LER=0.0, PHIF=0.,90.,180.,270.,
+        GAM=0.0,
+$END
+DAMP
+PRESSURES
+WRITE CNVIS
+PLOT
+NEXT CASE
+
+DIM IN
+SOSE
+ $FLTCON NALPHA=20.0,NMACH=19.0,
+        MACH=0.4,0.6,0.8,1.0,1.2,
+        MACH(6)=1.4,1.6,1.8,2.0,2.2,
+        MACH(11)=2.4,2.6,2.8,3.0,3.2,
+        MACH(16)=3.4,3.6,3.8,4.0,
+        ALPHA=0.,1.,2.,3.,4.,5.,
+        ALPHA(7)=6.,7.,8.,9.,10.,
+        ALPHA(12)=11.,12.,13.,14.,15.,
+        ALPHA(17)=16.,17.,18.,19.,
+        ALT=0.,0.,0.,0.,0.,0.,0.,0.,0.,0.,0.,0.,0.,0.,0.,0.,0.,0.,0.,0.,
+ $END
+ $REFQ XCG=67.97,ROUGH=0.000787,LREF=2.984,$
+ $AXIBOD LNOSE=22.838, DNOSE=2.125, LCENTR=22.98,
+        DCENTR=2.125, LAFT=54.866, DAFT=2.984,
+        TNOSE=OGIVE,$
+ $FINSET1 XLE=42.568,NPANEL=4.,PHIF=0.,90.,180.,270.,SWEEP=58.,
+        LMAXU=0.25, 0.25,
+        LFLATU=0.50, 0.50,
+        SSPAN=1.0625,3.5625, CHORD=5.0,2.5
+        LER=0.1, 
+        GAM=0.0,
+$END
+$FINSET2 XLE=94.4, SWEEP=58.6, 
+        LMAXU=0.5, 0.5,
+        LFLATU=0.0, 0.0,
+        SSPAN=1.492,6.242, CHORD=8.0, 2.75
+        NPANEL=4., LER=0.0, PHIF=0.,90.,180.,270.,
+        GAM=0.0,
+$END
+DAMP
+PRESSURES
+WRITE CNVIS
+PLOT
+NEXT CASE
+
+DIM IN
+SOSE
+ $FLTCON NALPHA=20.0,NMACH=19.0,
+        MACH=0.4,0.6,0.8,1.0,1.2,
+        MACH(6)=1.4,1.6,1.8,2.0,2.2,
+        MACH(11)=2.4,2.6,2.8,3.0,3.2,
+        MACH(16)=3.4,3.6,3.8,4.0,
+        ALPHA=0.,1.,2.,3.,4.,5.,
+        ALPHA(7)=6.,7.,8.,9.,10.,
+        ALPHA(12)=11.,12.,13.,14.,15.,
+        ALPHA(17)=16.,17.,18.,19.,
+        ALT=0.,0.,0.,0.,0.,0.,0.,0.,0.,0.,0.,0.,0.,0.,0.,0.,0.,0.,0.,0.,
+ $END
+ $REFQ XCG=67.97,ROUGH=0.09291339,LREF=2.984,$
+ $AXIBOD LNOSE=22.838, DNOSE=2.125, LCENTR=22.98,
+        DCENTR=2.125, LAFT=54.866, DAFT=2.984,
+        TNOSE=OGIVE,$
+ $FINSET1 XLE=42.568,NPANEL=4.,PHIF=0.,90.,180.,270.,SWEEP=58.,
+        LMAXU=0.5, 0.5,
+        LFLATU=0.0, 0.0,
+        SSPAN=1.0625,3.5625, CHORD=5.0,2.5
+        LER=0.1, 
+        GAM=0.0,
+$END
+$FINSET2 XLE=94.4, SWEEP=58.6, 
+        LMAXU=0.5, 0.5,
+        LFLATU=0.0, 0.0,
+        SSPAN=1.492,6.242, CHORD=8.0, 2.75
+        NPANEL=4., LER=0.0, PHIF=0.,90.,180.,270.,
+        GAM=0.0,
+$END
+DAMP
+PRESSURES
+WRITE CNVIS
+PLOT
+NEXT CASE
+DIM IN 
+SOSE
+ $FLTCON NALPHA=20.0,NMACH=19.0,
+        MACH=0.4,0.6,0.8,1.0,1.2,
+        MACH(6)=1.4,1.6,1.8,2.0,2.2,
+        MACH(11)=2.4,2.6,2.8,3.0,3.2,
+        MACH(16)=3.4,3.6,3.8,4.0,
+        ALPHA=0.,1.,2.,3.,4.,5.,
+        ALPHA(7)=6.,7.,8.,9.,10.,
+        ALPHA(12)=11.,12.,13.,14.,15.,
+        ALPHA(17)=16.,17.,18.,19.,
+        ALT=0.,0.,0.,0.,0.,0.,0.,0.,0.,0.,0.,0.,0.,0.,0.,0.,0.,0.,0.,0.,
+ $END
+ $REFQ XCG=67.97,ROUGH=0.2326772,LREF=2.984,$
+ $AXIBOD LNOSE=22.838, DNOSE=2.125, LCENTR=22.98,
+        DCENTR=2.125, LAFT=54.866, DAFT=2.984,
+        TNOSE=OGIVE,$
+ $FINSET1 XLE=42.568,NPANEL=4.,PHIF=0.,90.,180.,270.,SWEEP=58.,
+        LMAXU=0.5, 0.5,
+        LFLATU=0.0, 0.0,
+        SSPAN=1.0625,3.5625, CHORD=5.0,2.5
+        LER=0.1, 
+        GAM=0.0,
+$END
+$FINSET2 XLE=94.4, SWEEP=58.6, 
+        LMAXU=0.5, 0.5,
+        LFLATU=0.0, 0.0,
+        SSPAN=1.492,6.242, CHORD=8.0, 2.75
+        NPANEL=4., LER=0.0, PHIF=0.,90.,180.,270.,
+        GAM=0.0,
+$END
+DAMP
+PRESSURES
+WRITE CNVIS
+PLOT
+NEXT CASE
+
