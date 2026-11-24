@@ -7,10 +7,14 @@ name: Rocket milestone release
 #
 # The rocket name must match a folder in aero_modeling/ (case-insensitive). The
 # release is tagged <ROCKET>/<milestone> on the commit that carried the
-# directive, and the zip holds that folder exactly as committed there. Every
-# commit in the push is scanned, so directives survive merge commits, and one
-# push may release several rockets. An existing tag is an error, never an
-# overwrite: bump the milestone instead.
+# directive, and the zip holds that folder exactly as committed there. Spaces in
+# the milestone become underscores ("Design Freeze" -> Design_Freeze), since a
+# tag cannot hold one. Every commit in the push is scanned, so directives
+# survive merge commits, and one push may release several rockets.
+#
+# A "[release:" that does not read as [release: ROCKET/milestone] fails the run,
+# so a typo never passes as "no directive". An existing tag is an error, never an
+# overwrite: bump the milestone, or (when its release was deleted) delete the tag.
 on:
   push:
     branches:
@@ -48,14 +52,25 @@ jobs:
             COMMITS=$(git rev-list --reverse "$BEFORE..$AFTER")
           fi
 
-          directive='\[release:[[:space:]]*([A-Za-z0-9_-]+)/([A-Za-z0-9._-]+)[[:space:]]*\]'
+          # [release: ROCKET/milestone], any case; the parts are checked one by one below so a bad one gets a message
+          shopt -s nocasematch
+          directive='\[release:([^]/]*)/([^]]*)\]'
+          trim() { sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//'; }
           released=0
 
           for sha in $COMMITS; do
             msg=$(git log -1 --format=%B "$sha")
-            [[ "$msg" =~ $directive ]] || continue
-            requested="${BASH_REMATCH[1]}"
-            milestone="${BASH_REMATCH[2]}"
+            [[ "$msg" == *"[release:"* ]] || continue
+            if ! [[ "$msg" =~ $directive ]]; then
+              echo "::error::Commit ${sha:0:7} has a [release: ...] that does not read as [release: ROCKET/milestone]. Nothing was released."
+              exit 1
+            fi
+            requested=$(printf '%s' "${BASH_REMATCH[1]}" | trim)
+            milestone=$(printf '%s' "${BASH_REMATCH[2]}" | trim | sed 's/[[:space:]]\{1,\}/_/g')   # a tag holds no spaces
+            if ! [[ "$requested" =~ ^[A-Za-z0-9_-]+$ && "$milestone" =~ ^[A-Za-z0-9._-]+$ ]]; then
+              echo "::error::Commit ${sha:0:7}: '[release: $requested/$milestone]' may only use letters, digits, '.', '_' and '-' (and spaces in the milestone). Nothing was released."
+              exit 1
+            fi
 
             # Resolve the folder name case-insensitively as it exists at that commit.
             rocket=$(git ls-tree -d --name-only "$sha" aero_modeling/ \
@@ -68,7 +83,12 @@ jobs:
 
             tag="$rocket/$milestone"
             if git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
-              echo "::error::Tag $tag already exists. Use a new milestone name."
+              at=$(git rev-list -n 1 "refs/tags/$tag" | cut -c1-7)
+              if gh release view "$tag" >/dev/null 2>&1; then
+                echo "::error::Release $tag already exists (commit $at). Use a new milestone name."
+              else   # its release was deleted, the tag was not
+                echo "::error::Tag $tag already exists (commit $at) but has no release: it was deleted. To release it again, delete the tag (git push origin :refs/tags/$tag) and push the directive again, or use a new milestone name."
+              fi
               exit 1
             fi
 

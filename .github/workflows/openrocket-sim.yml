@@ -21,6 +21,7 @@ on:
       - "aero_modeling/**/*.json"     # whatif_config.json, sim_config.json and any EDITH site settings file
       - "tools/whatif/**"
       - "tools/openrocket/or_ci.py"
+      - "tools/git/**"                      # the commit message hook: its test runs in page-test
       - "tools/openrocket/site_icons/**"   # the site's favicon
       - "tools/openrocket/tests/**"
       - "tools/openrocket/vehicles/**"
@@ -550,6 +551,9 @@ jobs:
         run: python tools/openrocket/tests/test_site.py
       - name: Test the Vehicles page build (geometry parser, template, page)
         run: python tools/openrocket/tests/test_vehicles.py
+      - name: Test the commit message hook
+        run: python tools/git/test_commit_check.py
+
       - name: Test the history walk (every version of a design, through renames and merges)
         run: python tools/openrocket/tests/test_history.py
       - name: Test the predictions build script and the Update CSV helper

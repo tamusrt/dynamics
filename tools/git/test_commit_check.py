@@ -57,7 +57,7 @@ def run(repo, *args):
     return subprocess.run(["git", *args], cwd=repo, capture_output=True, text=True, check=True).stdout.strip()
 
 
-def test_hook_and_ci_on_a_real_repo():
+def test_hook_on_a_real_repo():
     with tempfile.TemporaryDirectory() as tmp:
         repo = Path(tmp)
         run(repo, "init", "-q", "-b", "main")
@@ -72,7 +72,7 @@ def test_hook_and_ci_on_a_real_repo():
             run(repo, "commit", "-q", "-m", message)
             return run(repo, "rev-parse", "HEAD")
 
-        first = commit("aero_modeling/AIRMAIL/a.ork", "AIRMAIL: first")
+        commit("aero_modeling/AIRMAIL/a.ork", "AIRMAIL: first")
         # a new vehicle folder is a project in the commit that adds it
         (repo / "aero_modeling/NEWROCKET").mkdir(parents=True)
         (repo / "aero_modeling/NEWROCKET/n.ork").write_text("x", encoding="utf-8")
@@ -84,31 +84,8 @@ def test_hook_and_ci_on_a_real_repo():
             with contextlib.redirect_stderr(err):
                 assert cc.cmd_hook(msg, repo) == want, (text, err.getvalue())
             if want:
-                first = err.getvalue().splitlines()[0]
-                assert "Projects: AIRMAIL, NEWROCKET" in first and 'Try "NEWROCKET: ' in first, err.getvalue()
-        run(repo, "commit", "-q", "-m", "NEWROCKET: added")
-        good = run(repo, "rev-parse", "HEAD")
-        bad1 = commit("tools/x.py", "fixed stuff")
-        bad2 = commit("aero_modeling/AIRMAIL/b.ork", "AIRMAIL: ok")
-
-        def ci(before, after):
-            summary = repo / "summary.md"
-            summary.unlink(missing_ok=True)
-            out = io.StringIO()
-            with contextlib.redirect_stdout(out):
-                code = cc.cmd_ci(before, after, summary, repo)
-            return code, out.getvalue(), summary.read_text(encoding="utf-8")
-
-        code, out, md = ci(good, bad2)
-        assert code == 1 and out.count("::error") == 1 and bad1[:7] in out and "fixed stuff" in md, (out, md)
-        assert "`tools: ...`" in md and "1 of 2 commit message(s)" in out, (out, md)
-        code, out, md = ci(first, good)
-        assert code == 0 and "All 1 commit message(s)" in md, (out, md)
-        code, out, _ = ci(cc.ZERO, bad2)
-        assert code == 0 and "1 of 1" in out, "a new branch: only its tip"
-        code, out, _ = ci("f" * 40, bad1)
-        assert code == 1 and "0 of 1" in out, "a force push whose old tip is gone: only the new tip"
-        assert ci(good, cc.ZERO)[0] == 0, "a deleted branch has nothing to check"
+                line = err.getvalue().splitlines()[0]
+                assert "Projects: AIRMAIL, NEWROCKET" in line and 'Try "NEWROCKET: ' in line, err.getvalue()
 
 
 def main() -> int:

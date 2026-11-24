@@ -41,8 +41,8 @@ Turn on the check once per clone; it then refuses a commit without a project and
 git config core.hooksPath .githooks
 ```
 
-Commits that skip it (made on github.com, or with `--no-verify`) are flagged after the push by the
-**Commit messages** workflow, which fails with a red X on the commit. Nothing else waits on it.
+Only this hook checks: commits made on github.com, from a clone without it, or with `--no-verify` are not
+checked.
 
 # In-progress tasks
 - flight coefficient reconstruction and comparison with RAS, Datcom
