@@ -32,11 +32,11 @@
         <SweepDistance>4</SweepDistance>
         <TipChord>2.5</TipChord>
         <Thickness>0.125</Thickness>
-        <LERadius>0</LERadius>
+        <LERadius>0.01</LERadius>
         <Location>5.125</Location>
         <AirfoilSection>Hexagonal</AirfoilSection>
-        <FX1>2</FX1>
-        <FX3>2</FX3>
+        <FX1>1</FX1>
+        <FX3>1</FX3>
       </Fin>
     </BodyTube>
     <Booster>
@@ -62,11 +62,11 @@
         <SweepDistance>7.794</SweepDistance>
         <TipChord>2.75</TipChord>
         <Thickness>0.18</Thickness>
-        <LERadius>0.1</LERadius>
+        <LERadius>0.01</LERadius>
         <Location>8.6</Location>
         <AirfoilSection>Hexagonal</AirfoilSection>
-        <FX1>2</FX1>
-        <FX3>2</FX3>
+        <FX1>1</FX1>
+        <FX3>1</FX3>
       </Fin>
     </Booster>
     <Surface>Rough Camouflage Paint</Surface>
@@ -123,9 +123,9 @@
       <Booster2NozzleDiameter>0</Booster2NozzleDiameter>
       <IncludeBooster2>False</IncludeBooster2>
       <FlightTime>0</FlightTime>
-      <TimetoApogee>42.48937</TimetoApogee>
-      <MaxAltitude>46451.7</MaxAltitude>
-      <MaxVelocity>4235.98</MaxVelocity>
+      <TimetoApogee>39.90981</TimetoApogee>
+      <MaxAltitude>41775.18</MaxAltitude>
+      <MaxVelocity>4116.501</MaxVelocity>
       <OptimumWt>0</OptimumWt>
       <OptimumMaxAlt>0</OptimumMaxAlt>
     </Simulation>
