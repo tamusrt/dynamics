@@ -65,7 +65,10 @@
       "default_motor": "SOL_INVICTUS/OpenRocket/IGNIS_INJECTOR_SCALED_FULL_THRUST_FOR_DYN.rse",
       "rasaero": "SOL_INVICTUS/RasAero/Latest/Invictus_RasAero_4_30.CDX1"
     },
-    "NIMITZ/Nimitz.ork": {
+    "NIMITZ/Nimitz with Fincan.ork": {
+      "motor_files": ["NIMITZ/motor thrust curves/Loki_M3464LB and Aerotech K2050.eng"]
+    },
+    "NIMITZ/Nimitz No Fincan.ork": {
       "motor_files": ["NIMITZ/motor thrust curves/Loki_M3464LB and Aerotech K2050.eng"]
     }
   }

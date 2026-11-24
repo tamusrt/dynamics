@@ -51,7 +51,7 @@ A hybrid modelled as two motors, an ox-tank curve in one body tube and a combust
 **Watching a curve the lookup finds.** The cache and change detection only know the curves the config names, so a curve found by rule 4 alone is not noticed when it is added or changed. List it in `motor_files` to fix that. It does not choose a motor, so older versions of the design keep flying their own designations; use it instead of `default_motors` when those versions flew something else, as Nimitz's did. A file can hold several motors: each is matched by designation, and the changelog reports them one by one.
 
 ```json
-"NIMITZ/Nimitz.ork": {
+"NIMITZ/Nimitz with Fincan.ork": {
   "motor_files": ["NIMITZ/motor thrust curves/Loki_M3464LB and Aerotech K2050.eng"]
 }
 ```
